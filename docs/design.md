@@ -125,6 +125,8 @@ keep = ["editor.*", "terminal.font"]
 drop = ["window.state", "recent"]
 seal = { "sync.token" = "personal" }
 quiet = "0s"
+merge = "structural"              # how a sync conflict resolves (section 10)
+volatile = ["window.zoom"]        # machine-local keys: a merge keeps this machine's value
 
 [[file]]
 target = ".ssh/config"
@@ -137,6 +139,7 @@ kind = "launchd"
 
 [[root]]
 path = ".config/shell"            # new files here are reported
+ignore = ["cache/**", "*.log"]    # globs under path that are never reported
 
 [tasks.package-bundle]
 on = [".config/packages/list"]
@@ -157,6 +160,8 @@ Resolution for one machine:
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
+- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that a key-level merge always resolves to this machine's value.
+- A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
 `yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it.
 
@@ -369,7 +374,7 @@ Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
 ### 8.5 Retag
 
-`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only.
+`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
 
 ## 9. Commits
 
@@ -442,7 +447,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 
 A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the lock; if a sync holds it, the path stays recorded and `stop` or the timer commits it.
 
-A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
+A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to, and the options to share it, track it for those types with `yadm retag`, ignore it with `yadm hold ignore`, or defer it), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
 
 "Decisions this session caused" are the open holds on the session's recorded paths (or on the owned roots that contain them), except plain drift and deferred ones. A subagent's stop considers only its own paths. `yadm defer <hold-id> --reason <why>` moves one to the review queue: the hold stays and the file stays uncommitted, but the session may end. Session records live under `hooks/` in the state directory as append-only lines (path, agent, tool), so parallel hooks never lose an update.
 
@@ -640,7 +645,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` | Section 9.6 | `{items[{commit, scope, diff}], deferred[]}` |
-| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` | Holds; a take that captures commits and pushes | hold objects |
+| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` / `ignore <id>` | Holds; a take that captures commits and pushes; `ignore` leaves an unmanaged file in an owned root untracked on this machine | hold objects |
 | `hook post-edit` / `stop` / `session-start` | Section 9.7; harness JSON on stdin | a verdict (`docs/hooks.md`) |
 | `defer <hold-id> --reason <why>` | Move a decision to the review queue | the deferred record |
 | `lease take` / `release` / `list` | Leases | leases |
@@ -654,13 +659,14 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 
 ### 15.1 Import
 
-`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…] [--filters <toml>]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
+`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…] [--filters <toml>] [--crypt-filter <name>…]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
 
 | Input | Output |
 |---|---|
 | `path##cond,cond` alternates | A manifest entry per variant with an equivalent `when`; source under `files/` or `sealed/<enclave>/`. Conditions, long and short form: `default`, `class`/`c`, `os`/`o`, `arch`/`a`, `hostname`/`h`, `user`/`u`, `distro`/`d`, `distro_family`/`f`, `template`/`t`, `extension`/`e` (ignored). Values compare case-insensitively upstream, so the importer lowercases `os` and `arch` values. Hostname, user, distro and distro family become declared facts. Anything else fails the import. |
 | Templates (`##template` or `##template.default`) | The built-in processor's variables (`yadm.arch`, `yadm.class`, `yadm.classes`, `yadm.os`, `yadm.hostname`, `yadm.user`, `yadm.distro`, `yadm.distro_family`) become section 5.2 references or facts; `if` with `==`/`!=`, `else` and `endif` become conditions; `include` is inlined when its file exists in the repository. `env.HOME` becomes `{{ home }}`. Any other `env.VAR`, other processors (`esh`, `j2`, `j2cli`, `envtpl`) and anything unconvertible fail the import with path and line. |
-| Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. |
+| Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. A filter of another name counts as transcrypt when the legacy repository's own local config (a bare repository works; the config is read, never run or written) shows a smudge, clean or textconv command that runs transcrypt, or when `--crypt-filter <name>` names it, since a clone lacks that config. A file stored as ciphertext under any other filter fails the import. |
+| Tracked symlinks | Entries that reuse the source of what the link points at, under both conditions. A link that names a path inside a directory alternate (`dir##class.x/file`) reuses the files converted from it, under that alternate's condition. |
 | Paths with any other `filter=<name>` (a strip filter) | The `--filters` file maps each filter, per target or target glob, to the entry's `format`, `keep`, `drop`, `volatile` and `merge`. A strip filter that also ran transcrypt sets `crypt = true`; its files are decrypted and sealed too. A path whose filter has no mapping, or no rule for its target, fails the import, so a filter is never lost silently. |
 | Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. |
 
