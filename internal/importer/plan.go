@@ -483,6 +483,9 @@ func (p *planner) resolveLinks() {
 				add = append(add, a)
 			}
 			if len(add) == 0 {
+				add = p.viaLegacyPath(l, dest)
+			}
+			if len(add) == 0 {
 				p.problem(l.From, "symlink target %s is not provided by any file", dest)
 				continue
 			}
@@ -499,6 +502,37 @@ func (p *planner) resolveLinks() {
 	for _, l := range pending {
 		p.problem(l.From, "symlink chain through %s does not resolve", l.Text)
 	}
+}
+
+// viaLegacyPath resolves a link whose text names a legacy path rather than
+// a target: upstream checks out every alternate under its own name, so a
+// link may point into `dir##class.x/` directly. Each file converted from
+// that legacy path (or below that directory) is reused under the link, with
+// the condition its alternate produced.
+func (p *planner) viaLegacyPath(l pendingLink, dest string) []manifest.Entry {
+	var add []manifest.Entry
+	for _, m := range p.mappings {
+		var nt string
+		switch {
+		case m.From == dest:
+			nt = l.Target
+		case strings.HasPrefix(m.From, dest+"/"):
+			nt = l.Target + m.From[len(dest):]
+		default:
+			continue
+		}
+		for _, e := range p.entries {
+			if e.Target != m.Target || e.Source != m.Source || e.When != m.When {
+				continue
+			}
+			a := e
+			a.Target = model.Target(nt)
+			a.When = andWhen(l.When, e.When)
+			add = append(add, a)
+			break
+		}
+	}
+	return add
 }
 
 // linkDest resolves a link's text against the link's own directory below $HOME.

@@ -93,6 +93,7 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 			opts.ClassEnclaves[k] = model.EnclaveName(v)
 		}
 	}
+	opts.CryptFilters, _ = f.GetStringArray("crypt-filter")
 	if ff, _ := f.GetString("filters"); ff != "" {
 		filters, err := importer.ReadFilters(ff)
 		if err != nil {

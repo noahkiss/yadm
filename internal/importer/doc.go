@@ -32,7 +32,10 @@
 //     decrypted with the password from the environment variable the caller
 //     names, and sealed through the caller's Sealer into the enclave the
 //     caller maps their class to. The importer never writes the password or
-//     the plaintext anywhere.
+//     the plaintext anywhere. Transcrypt filters are "crypt", every filter
+//     whose smudge, clean or textconv command in the legacy repository's own
+//     local config runs transcrypt (read only; never run), and
+//     Options.CryptFilters.
 //   - Strip filters: any other `filter` attribute (a clean filter that
 //     dropped runtime keys or kept only owned tables) maps through
 //     Options.Filters to the entry's format, keep, drop, volatile and merge
@@ -41,7 +44,9 @@
 //     filter has no rule for its target, fails the import: a filter is never
 //     lost silently.
 //   - Tracked symlinks become entries that reuse the source of what they
-//     point at, under both conditions.
+//     point at, under both conditions. A link that names a legacy path
+//     inside a directory alternate (`dir##class.x/file`) reuses the files
+//     converted from it, under that alternate's condition.
 //   - A machines table (TSV with a header): `name`, `hostname`, `classes`
 //     columns become fleet machines (hostname becomes a fact, classes become
 //     types); `os` and `arch` set the machine fields; every other column

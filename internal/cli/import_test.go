@@ -128,6 +128,30 @@ func TestImportSealsThroughCLI(t *testing.T) {
 	secrecytest.AssertTreeClean(t, out, c)
 }
 
+// TestImportCryptFilterFlag: a file marked with a custom transcrypt filter
+// that the legacy config does not declare refuses the import; with
+// --crypt-filter it is treated as encrypted (here it then needs the
+// password, which the dry run does not give).
+func TestImportCryptFilterFlag(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy")
+	git(t, root, "init", "-q", "-b", "main", legacy)
+	writeFile(t, filepath.Join(legacy, ".gitattributes"), ".config/secret.txt filter=vault diff=vault merge=vault -text\n")
+	writeFile(t, filepath.Join(legacy, ".config/secret.txt"), string(transcryptBlob([]byte("s\n"), "pw", [8]byte{1, 2, 3, 4, 5, 6, 7, 8})))
+	git(t, legacy, "add", "-A")
+	git(t, legacy, "commit", "-q", "-m", "legacy")
+
+	_, code, raw := yadm(t, "import", legacy, "--dry-run")
+	if code == ExitOK || !strings.Contains(string(raw), "not marked with a transcrypt filter") {
+		t.Fatalf("unknown crypt filter: exit %d\n%s", code, raw)
+	}
+	_, code, raw = yadm(t, "import", legacy, "--dry-run", "--crypt-filter", "other", "--crypt-filter", "vault")
+	if code == ExitOK || strings.Contains(string(raw), "not marked with a transcrypt filter") || !strings.Contains(string(raw), "password") {
+		t.Fatalf("--crypt-filter vault: exit %d\n%s", code, raw)
+	}
+}
+
 // TestImportStripFilterFlag: a legacy strip filter without --filters fails
 // the import; with a filters file it becomes the entry's rules.
 func TestImportStripFilterFlag(t *testing.T) {

@@ -29,9 +29,11 @@ type Options struct {
 	PasswordEnv    string                       // env var holding the transcrypt password
 	ClassEnclaves  map[string]model.EnclaveName // legacy class -> enclave for its encrypted files
 	DefaultEnclave model.EnclaveName            // enclave for encrypted files with no mapped class
-	// CryptFilters names the gitattributes filters that mark transcrypt files.
-	// Empty means "crypt" plus every filter in the legacy repository's own
-	// config whose smudge command runs transcrypt.
+	// CryptFilters names extra gitattributes filters that mark transcrypt
+	// files. The importer always knows "crypt" and every filter in the legacy
+	// repository's own local config (read, never run) whose smudge, clean or
+	// textconv command runs transcrypt. A clone lacks that config, so a
+	// custom filter name is declared here (`--crypt-filter`).
 	CryptFilters []string
 	// Filters maps the other gitattributes filters (strip filters) to
 	// intra-file rules. A path marked with an unmapped filter fails the import.
@@ -150,13 +152,9 @@ func convert(ctx context.Context, opts Options) (*converted, error) {
 	if err != nil {
 		return nil, err
 	}
-	filters := map[string]bool{}
-	if len(opts.CryptFilters) > 0 {
-		for _, f := range opts.CryptFilters {
-			filters[f] = true
-		}
-	} else {
-		filters = cryptFilters(ctx, legacyDir)
+	filters := cryptFilters(ctx, legacyDir)
+	for _, f := range opts.CryptFilters {
+		filters[f] = true
 	}
 	for name, f := range opts.Filters {
 		if f.Crypt {
