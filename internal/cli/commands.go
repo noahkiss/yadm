@@ -640,6 +640,13 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	_, _ = m.load(ctx) // the syncer reports a source that does not load
+	if bad := unmanaged(m.snap, paths); len(bad) > 0 {
+		next := make([]string, 0, len(bad))
+		for _, t := range bad {
+			next = append(next, "yadm retag "+model.ShellQuote(string(t))+" <type>[,<type>...]")
+		}
+		return result{next: next}, fmt.Errorf("%w: nothing committed: no manifest entry or owned root covers %s on this machine; add an entry first", ErrRefused, joinTargets(bad))
+	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry, Push: !noPush && !dry})
 	if err != nil {
 		return result{}, err
@@ -654,6 +661,47 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 		next = []string{"yadm sync"}
 	}
 	return result{data: data, next: next}, attention(rep.Holds)
+}
+
+// unmanaged returns the named paths a commit would skip: no target planned
+// here and no owned root covers the path or anything under it. A nil plan
+// returns nothing; the syncer reports a source that does not load.
+func unmanaged(snap *apply.Snapshot, paths []model.Target) []model.Target {
+	if snap == nil || snap.Plan == nil {
+		return nil
+	}
+	var out []model.Target
+	for _, p := range paths {
+		if managedOrRooted(snap, p) {
+			continue
+		}
+		prefix := string(p) + "/"
+		covered := false
+		for t := range snap.Plan.Targets {
+			if strings.HasPrefix(string(t), prefix) {
+				covered = true
+				break
+			}
+		}
+		for _, r := range snap.Plan.Roots {
+			if covered {
+				break
+			}
+			covered = strings.HasPrefix(string(r.Path), prefix)
+		}
+		if !covered {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func joinTargets(ts []model.Target) string {
+	s := make([]string, len(ts))
+	for i, t := range ts {
+		s[i] = string(t)
+	}
+	return strings.Join(s, ", ")
 }
 
 func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {

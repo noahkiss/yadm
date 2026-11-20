@@ -451,7 +451,7 @@ A message names paths only. No subject, body or trailer ever carries file conten
 
 ### 9.5 Manual commits
 
-`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. With `--no-push`, the next sync pushes.
+`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. A named path that no manifest entry or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes.
 
 ### 9.6 Review
 

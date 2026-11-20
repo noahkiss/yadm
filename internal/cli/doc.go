@@ -28,7 +28,7 @@
 //	apply                          apply.Engine.Load, Plan, Apply
 //	capture                        apply.Engine.Scan, Capture
 //	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff
-//	commit                         sync.Syncer.Commit (tasks.Gate inside), then push in the same call
+//	commit                         refuses unmanaged named paths, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
 //	sync                           sync.Syncer.Run (--auto implies the quick check)
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md)
