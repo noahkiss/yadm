@@ -264,11 +264,15 @@ func (f *File) Lookup(key string) (model.Machine, error) {
 	return model.Machine{}, fmt.Errorf("machine %q is ambiguous: %s", key, strings.Join(ids, ", "))
 }
 
-// Vocabulary returns the names conditions may mention.
+// Vocabulary returns the names conditions may mention, plus the enclave
+// types, which manifest checks `enclave` and `seal` names against.
 func (f *File) Vocabulary() cond.Vocabulary {
-	v := cond.Vocabulary{Types: map[string]bool{}, FactKeys: map[string]bool{}, Collectors: map[string]bool{}}
-	for t := range f.Types {
+	v := cond.Vocabulary{Types: map[string]bool{}, FactKeys: map[string]bool{}, Collectors: map[string]bool{}, Enclaves: map[string]bool{}}
+	for t, d := range f.Types {
 		v.Types[string(t)] = true
+		if d.Enclave {
+			v.Enclaves[string(t)] = true
+		}
 	}
 	for _, m := range f.Machines {
 		for k := range m.Facts {
@@ -376,9 +380,9 @@ func NewMachineID() (model.MachineID, error) {
 	return model.MachineID("m-" + hex.EncodeToString(b)), nil
 }
 
-// matchWhen evaluates a collector's condition for this machine. Tests replace
-// it while package cond is a stub.
-var matchWhen = func(when string, v cond.Vocabulary, mctx model.Context) (bool, error) {
+// matchWhen evaluates a collector's condition for this machine with package
+// cond. An empty condition matches every machine.
+func matchWhen(when string, v cond.Vocabulary, mctx model.Context) (bool, error) {
 	e, err := cond.Parse(when, v)
 	if err != nil {
 		return false, err
