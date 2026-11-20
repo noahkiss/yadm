@@ -185,14 +185,7 @@ func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.Encla
 		if err != nil {
 			return out, err
 		}
-		plain, err := e.Rules.ToTarget(raw, nil, spec, sealer)
-		if err != nil {
-			return out, fmt.Errorf("reseal %s: %w", p, err)
-		}
-		fresh, viol, err := e.Rules.ToSource(plain, raw, spec, sealer)
-		if len(viol) > 0 {
-			return out, fmt.Errorf("reseal %s: seal guard: %v", p, viol)
-		}
+		fresh, err := e.Rules.Reseal(raw, spec, enclave, sealer)
 		if err != nil {
 			return out, fmt.Errorf("reseal %s: %w", p, err)
 		}
