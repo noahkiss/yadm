@@ -859,7 +859,7 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	target := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
 		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &target,
-		Changes: c.Changes[:last], ChangesScope: scope, Push: true,
+		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: true,
 	})
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()
@@ -923,7 +923,7 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	src := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
 		Message: "track " + string(t), Capture: &src,
-		Changes: c.Changes[:last], ChangesScope: scope, Push: !noPush,
+		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: !noPush,
 	})
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()

@@ -10,6 +10,10 @@ import (
 const trackManifest = hookManifest + `
 [[file]]
 target = ".config/globbed/*"
+
+[[file]]
+target = ".alias"
+source = "files/.zshenv"
 `
 
 // TestTrack: track adds an entry and the file's source in one commit,
@@ -23,6 +27,7 @@ func TestTrack(t *testing.T) {
 	tree := hookTree()
 	tree["manifest.toml"] = trackManifest
 	tree["files/.config/globbed/one"] = "g\n"
+	tree["files/.zshenv"] = "alias\n"
 	remote := seedRemote(t, root, tree)
 	b := useMachine(t, root, "b")
 	yadmOK(t, "init", remote, "--machine", "host-b", "--no-schedule")
@@ -63,6 +68,7 @@ func TestTrack(t *testing.T) {
 	writeFile(t, filepath.Join(a.Home, ".config/tool/new"), "n\n")
 	writeFile(t, filepath.Join(a.Home, ".config/globbed/two"), "g2\n")
 	writeFile(t, filepath.Join(a.Home, ".other"), "o\n")
+	writeFile(t, filepath.Join(a.Home, ".zshenv"), "mine\n")
 	for _, c := range []struct {
 		args []string
 		code int
@@ -73,6 +79,7 @@ func TestTrack(t *testing.T) {
 		{[]string{"track", ".config/globbed/two"}, ExitUsage, `glob entry ".config/globbed/*" covers it`},
 		{[]string{"track", "/elsewhere/file"}, ExitUsage, "not under $HOME"},
 		{[]string{"track", ".config/dir"}, ExitUsage, "directory"},
+		{[]string{"track", ".zshenv"}, ExitUsage, `entry ".alias" already uses files/.zshenv`},
 		{[]string{"track", ".missing"}, ExitUsage, "not a regular file"},
 		{[]string{"track", ".other", "--when", "type:nope"}, ExitError, "nope"},
 		{[]string{"track", ".other", "--enclave", "work"}, ExitError, "not an enclave type"},
@@ -105,5 +112,41 @@ func TestTrack(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(b.Home, ".bashrc")); got != "export B=1\n" {
 		t.Fatalf("host-b .bashrc: %q", got)
+	}
+}
+
+// TestTrackHeldByTheGate: when the commit gate holds the tracked file, the
+// manifest entry does not land without it: nothing is committed.
+func TestTrackHeldByTheGate(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	tree := hookTree()
+	tree["manifest.toml"] = hookManifest + `
+[checks.scan]
+paths = [".gated"]
+command = ["false"]
+`
+	remote := seedRemote(t, root, tree)
+	a := useMachine(t, root, "a")
+	yadmOK(t, "init", remote, "--machine", "host-a", "--no-schedule")
+	yadmOK(t, "apply")
+	head := git(t, a.Source, "rev-parse", "main")
+
+	writeFile(t, filepath.Join(a.Home, ".gated"), "g\n")
+	env, code, _ := yadm(t, "track", ".gated")
+	if code != ExitAttention {
+		t.Fatalf("track held by the gate: exit %d %+v", code, env.Error)
+	}
+	hs := decode[struct {
+		Holds []struct{ Target, Reason string }
+	}](t, env.Data).Holds
+	if len(hs) != 1 || hs[0].Target != ".gated" || hs[0].Reason != "task_untrusted" {
+		t.Fatalf("holds: %+v", hs)
+	}
+	if got := git(t, a.Source, "rev-parse", "main"); got != head {
+		t.Fatalf("a gate-held track committed:\n%s", git(t, a.Source, "show", "--stat", "main"))
+	}
+	if got := git(t, remote, "rev-parse", "main"); got != head {
+		t.Fatal("a gate-held track pushed")
 	}
 }

@@ -287,6 +287,16 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 		}
 	}
 	src := defaultSource(t, enc)
+	for _, en := range snap.Manifest.Entries {
+		if en.Source == src {
+			return Capture{}, fmt.Errorf("%s %s: %w: entry %q already uses %s as its source", verb, t, ErrCovered, en.Target, src)
+		}
+	}
+	// Retag gives a file an owned root already shares its own entry, over
+	// the source the root holds; track starts only what nothing holds.
+	if _, ok := snap.Tree[src]; ok && verb == "track" {
+		return Capture{}, fmt.Errorf("%s %s: %w: %s already exists in the source tree", verb, t, ErrCovered, src)
+	}
 	blob := lv.bytes
 	if enc != "" {
 		if blob, err = snap.cr().SealFile(enc, src, lv.bytes); err != nil {
