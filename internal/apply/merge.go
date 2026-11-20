@@ -50,9 +50,12 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 		}
 	}
 	conflict := func(detail string) (*store.Change, *model.Hold, error) {
-		h := model.Hold{Target: target, Scope: model.Scope(enc), Reason: model.HoldConflict, Since: e.Now(),
-			Detail: detail, Base: c.Base, Ours: c.Ours, Theirs: c.Theirs}
-		h.ID = HoldID(h)
+		var prev []model.Hold
+		if st, err := e.loadState(); err == nil {
+			prev = st.Holds
+		}
+		h := model.KeepSince(prev, model.Hold{Target: target, Scope: model.Scope(enc), Reason: model.HoldConflict,
+			Detail: detail, Base: c.Base, Ours: c.Ours, Theirs: c.Theirs}, e.Now())
 		h.Next = []string{"yadm hold show " + h.ID}
 		return nil, &h, nil
 	}

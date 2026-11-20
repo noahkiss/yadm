@@ -571,18 +571,24 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
 	results, holds := e.runTasks(ctx, snap, ev)
 	res.Tasks = append(res.Tasks, results...)
-	res.Holds = append(res.Holds, holds...)
 	if len(results) > 0 || len(holds) > 0 || ev.FirstApply {
 		if st.Tasks == nil {
 			st.Tasks = map[string]model.TaskResult{}
 		}
 		for _, r := range results {
 			st.Tasks[r.Task] = r
+			clearTaskHolds(st, r.Task)
 		}
 		for _, h := range holds {
+			// Keep the first sighting, so a task held on every apply keeps one id.
+			h = model.KeepSince(st.Holds, h, now)
 			putHold(st, h)
+			res.Holds = append(res.Holds, h)
 		}
-		if ev.FirstApply && !firstApplyHeld(holds) {
+		if len(paths) == 0 {
+			pruneTaskHolds(st, snap)
+		}
+		if ev.FirstApply && !firstApplyHeld(st, snap) {
 			st.FirstApplyDone = true
 		}
 		if err := e.State.Save(st); err != nil {
@@ -724,13 +730,38 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, ev tasks.Event) (
 	return e.Tasks.Run(ctx, ev, sel, req)
 }
 
-// firstApplyHeld reports whether a task hold came back, so first-apply tasks
-// run again on the next apply once they are allowed.
-func firstApplyHeld(holds []model.Hold) bool {
-	for _, h := range holds {
-		if h.Task != "" || h.Reason == model.HoldTaskUntrusted {
+// firstApplyHeld reports whether any task hold is still open in the state,
+// so the first apply is not marked done and first-apply tasks run again on
+// the next apply once they are allowed.
+func firstApplyHeld(st *State, snap *Snapshot) bool {
+	for _, h := range st.Holds {
+		if h.Task == "" || h.Target != "" {
+			continue
+		}
+		if snap.Plan == nil {
+			return true
+		}
+		if _, ok := snap.Plan.Tasks[h.Task]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+// pruneTaskHolds drops task_untrusted holds of tasks this machine's plan no
+// longer has: there is nothing left to allow.
+func pruneTaskHolds(st *State, snap *Snapshot) {
+	if snap.Plan == nil {
+		return
+	}
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		if h.Target == "" && h.Reason == model.HoldTaskUntrusted {
+			if _, ok := snap.Plan.Tasks[h.Task]; !ok {
+				continue
+			}
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
 }

@@ -354,6 +354,7 @@ func (w *world) load(ctx context.Context, rev model.CommitID) (*Snapshot, error)
 		plan.Targets[e.Target] = manifest.Resolved{Target: e.Target, Source: src, Entry: e, Index: i}
 	}
 	plan.Roots = man.Roots
+	plan.Tasks = man.Tasks
 	fl := &fleet.File{Schema: 1, Types: map[model.TypeName]fleet.TypeDef{
 		"work": {}, "personal": {Enclave: true}, "client": {Enclave: true},
 	}}
