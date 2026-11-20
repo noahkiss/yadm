@@ -113,7 +113,7 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 	if err != nil {
 		return nil, err
 	}
-	ExpandRoots(man, plan, paths)
+	ExpandRoots(man, plan, paths, func(r manifest.Root) bool { return e.rootAccepted(st, r) })
 	return &Snapshot{
 		Commit:   rev,
 		Fleet:    fl,
