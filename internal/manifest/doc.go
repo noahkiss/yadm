@@ -14,6 +14,18 @@
 //   - An entry without `source` reads `files/<target>`, or
 //     `sealed/<enclave>/<target>` when it sets `enclave`.
 //   - Glob entries (`target = ".config/tool/**"`) expand against the source tree.
+//     The glob's fixed prefix maps to `files/<prefix>`, `sealed/<enclave>/<prefix>`
+//     or the entry's `source` directory. `**` matches zero or more segments.
+//   - There is no precedence: an explicit entry does not override a glob, and
+//     order does not break ties. Variants need mutually exclusive `when`s.
+//   - Resolve checks every condition and enclave name against the fleet,
+//     including entries that do not apply on this machine.
+//   - A unit attaches to its target only when the target is in the plan.
+//
+// Parse is strict: unknown keys, unknown enum values, unsafe paths, sources
+// outside `files/` or the entry's own `sealed/<enclave>/`, and rule options
+// that do not fit the format are errors. Parse fills the defaults (quiet 2h,
+// task timeout 5m, check timeout 30s).
 //
 // Exported API:
 //
@@ -25,6 +37,15 @@
 //	func Parse(b []byte) (*Manifest, error)
 //	func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vocabulary) (*Plan, error)
 //	type Plan struct{ Targets map[model.Target]Resolved; Roots []Root; Tasks map[string]TaskDef; Checks map[string]CheckDef }
+//	func (m *Manifest) Validate(v cond.Vocabulary) error
+//	func (m *Manifest) Quiet(e Entry) model.Duration
+//	type CollisionError struct{ Collisions []Collision }
+//	func (r Resolved) FileMode(sourceExecutable bool) fs.FileMode
 //	func (p *Plan) Why(t model.Target) (Explanation, error)
+//	func (p *Plan) Protected(t model.Target) bool
+//	func (p *Plan) Root(t model.Target) *Root
+//	func Match(pattern, name string) bool
+//	func ValidPattern(pattern string) error
+//	func IsGlob(s string) bool
 //	var BuiltinProtected []string
 package manifest

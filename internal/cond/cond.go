@@ -13,6 +13,10 @@ type Vocabulary struct {
 	Types      map[string]bool
 	FactKeys   map[string]bool
 	Collectors map[string]bool
+	// Enclaves lists the types declared as enclaves. Conditions never read
+	// it; package manifest uses it to check `enclave` and `seal` names.
+	// Nil means unknown, and that check is skipped.
+	Enclaves map[string]bool
 }
 
 // Expr is a parsed condition.

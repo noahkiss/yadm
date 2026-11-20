@@ -21,7 +21,7 @@
 //
 // Exported API:
 //
-//	type Vocabulary struct{ Types, FactKeys, Collectors map[string]bool }
+//	type Vocabulary struct{ Types, FactKeys, Collectors, Enclaves map[string]bool }
 //	type Expr interface{ Eval(model.Context) bool; String() string }
 //	func Parse(src string, v Vocabulary) (Expr, error)
 //	func Always() Expr
