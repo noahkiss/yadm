@@ -36,10 +36,14 @@ type corpus struct {
 }
 
 // syncOrPull fetches main: sync, or with noApply a fast-forward pull of the
-// source clone that applies nothing.
+// source clone that applies nothing. `yadm git pull` is refused (sync owns
+// main), and sync has no fetch-only mode, so the test pulls with plain git.
 func (c *corpus) syncOrPull(m *Machine) Result {
 	if c.noApply {
-		r := m.Run("git", "pull", "-q", "--ff-only", "origin", "main")
+		r := Result{Args: []string{"git", "pull"}}
+		if _, err := m.w.GitErr(m.Source, nil, "pull", "-q", "--ff-only", "origin", "main"); err != nil {
+			r.Code, r.Stderr = 1, err.Error()
+		}
 		return r
 	}
 	return m.Run("sync")

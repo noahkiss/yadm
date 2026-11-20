@@ -36,7 +36,9 @@
 //     mode of a file with enclave plaintext; a weaker manifest entry or a
 //     wider mode holds the target with model.HoldSealGuard in apply and
 //     capture until AllowProtection. A new keep, drop or volatile entry over
-//     a file yadm never wrote is held with model.HoldNeedsDecision. An owned
+//     a file yadm never wrote is held with model.HoldNeedsDecision, unless
+//     the file, or the regular file inside $HOME a symlink there resolves
+//     to, is byte-identical to the source's own (opened) bytes. An owned
 //     root that is new or changed its enclave takes effect, for capture and
 //     delivery, only after AllowRoot (model.HoldRootUntrusted until then);
 //     files already in it, or copied in by adopt, go into State.Baseline and

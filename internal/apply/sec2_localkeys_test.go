@@ -77,32 +77,63 @@ func TestSec2LocalKeysWeakenedAreHeld(t *testing.T) {
 }
 
 // A new keep/drop/volatile entry over a file yadm never wrote is held for a
-// decision, even when the render equals the live file. Adopt, the user's
-// own switch, takes it over.
+// decision when the render equals the live file only through the merge: the
+// pusher's source is empty and keep, drop or volatile copies the live keys
+// back in. Adopt, the user's own switch, takes it over.
 func TestSec2NewLocalKeysEntryOverUnmanagedFileHeld(t *testing.T) {
 	const tgt model.Target = ".config/app/creds.json"
-	for _, en := range []manifest.Entry{
-		{Target: tgt, Format: manifest.FormatJSON, Keep: []string{"managed"}},
-		{Target: tgt, Format: manifest.FormatJSON, Drop: []string{"auth"}},
-		{Target: tgt, Format: manifest.FormatJSON, Volatile: []string{"auth"}},
+	canary := secrecytest.NewCanary(t, "pre-existing private key")
+	for _, tc := range []struct {
+		en   manifest.Entry
+		live string
+	}{
+		{manifest.Entry{Target: tgt, Format: manifest.FormatJSON, Keep: []string{"managed"}}, "{\n  \"auth\": \"" + canary.String() + "\"\n}\n"},
+		{manifest.Entry{Target: tgt, Format: manifest.FormatJSON, Drop: []string{"auth"}}, "{\"auth\": \"" + canary.String() + "\"}\n"},
+		{manifest.Entry{Target: tgt, Format: manifest.FormatJSON, Volatile: []string{"auth"}}, "{\"auth\": \"" + canary.String() + "\"}\n"},
 	} {
 		w := newWorld(t)
-		live := "{}\n"
-		w.write(tgt, live)
-		c := w.commit(map[model.SourcePath]string{"files/.config/app/creds.json": live}, en)
+		w.eng.Rules = pkgRules{}
+		w.write(tgt, tc.live)
+		c := w.commit(map[model.SourcePath]string{"files/.config/app/creds.json": "{}\n"}, tc.en)
 		r := w.apply(c)
 		if a := actionOf(r, tgt); a.Kind != ActHold || holdFor(r.Holds, tgt, model.HoldNeedsDecision) == nil {
-			t.Fatalf("%+v: not held for a decision: %+v %+v", en, a, r.Holds)
+			t.Fatalf("%+v: not held for a decision: %+v %+v", tc.en, a, r.Holds)
 		}
 		if _, ok := w.state().Targets[tgt]; ok {
-			t.Fatalf("%+v: recorded as managed", en)
+			t.Fatalf("%+v: recorded as managed", tc.en)
+		}
+		if w.read(tgt) != tc.live {
+			t.Fatalf("%+v: held target changed", tc.en)
 		}
 		res, err := w.eng.Adopt(context.Background(), c, AdoptOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if a := actionOf(res, tgt); a.Kind == ActHold {
-			t.Fatalf("%+v: adopt held: %+v", en, a)
+			t.Fatalf("%+v: adopt held: %+v", tc.en, a)
+		}
+	}
+}
+
+// A file byte-identical to its source owes nothing to the keep merge: apply
+// takes it over at a new keep, drop or volatile entry with no hold.
+func TestNewLocalKeysEntryOverIdenticalFileTakenOver(t *testing.T) {
+	const tgt model.Target = ".config/app/settings.json"
+	src := "{\n  \"theme\": \"dark\"\n}\n"
+	for _, en := range []manifest.Entry{
+		{Target: tgt, Format: manifest.FormatJSON, Keep: []string{"session"}},
+		{Target: tgt, Format: manifest.FormatJSON, Drop: []string{"recent"}},
+		{Target: tgt, Format: manifest.FormatJSON, Volatile: []string{"window"}},
+	} {
+		w := newWorld(t)
+		w.eng.Rules = pkgRules{}
+		w.write(tgt, src)
+		r := w.apply(w.commit(map[model.SourcePath]string{"files/.config/app/settings.json": src}, en))
+		if a := actionOf(r, tgt); a.Kind == ActHold || len(r.Holds) != 0 {
+			t.Fatalf("%+v: held: %+v %+v", en, a, r.Holds)
+		}
+		if _, ok := w.state().Targets[tgt]; !ok {
+			t.Fatalf("%+v: not recorded as managed", en)
 		}
 	}
 }
