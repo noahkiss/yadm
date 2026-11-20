@@ -14,7 +14,9 @@ import (
 )
 
 // Create starts a new enclave at epoch 1 with the creator as the only member.
-func Create(enclave model.EnclaveName, by *Identity, recovery Member) (LogEntry, *Keyring, error) {
+// It pins the new entry in pins, the creator's PinStore, and refuses when that
+// store already pins the enclave.
+func Create(enclave model.EnclaveName, by *Identity, recovery Member, pins PinStore) (LogEntry, *Keyring, error) {
 	if err := checkEnclaveName(enclave); err != nil {
 		return LogEntry{}, nil, err
 	}
@@ -23,6 +25,9 @@ func Create(enclave model.EnclaveName, by *Identity, recovery Member) (LogEntry,
 	}
 	if recovery.Machine != RecoveryMachine {
 		return LogEntry{}, nil, fmt.Errorf("%w: recovery member must be named %q", ErrInvalidLog, RecoveryMachine)
+	}
+	if err := checkPinForWrite(pins, enclave, nil); err != nil {
+		return LogEntry{}, nil, err
 	}
 	k := &Keyring{Enclave: enclave, keys: map[model.Epoch][]byte{}}
 	if err := k.addEpoch(); err != nil {
@@ -37,7 +42,7 @@ func Create(enclave model.EnclaveName, by *Identity, recovery Member) (LogEntry,
 		Members:  []Member{by.Member()},
 		Recovery: recovery,
 	}
-	if err := finish(&e, k, by); err != nil {
+	if err := finish(&e, k, by, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	return e, k, nil
@@ -79,8 +84,9 @@ func holds(head LogEntry, id *Identity) bool {
 }
 
 // Add appends an entry that wraps the existing epoch keys to one more member.
-func (k *Keyring) Add(head LogEntry, m Member, by *Identity) (LogEntry, error) {
-	if err := k.check(head, by); err != nil {
+// Like every write, it pins the new entry in pins, the signer's PinStore.
+func (k *Keyring) Add(head LogEntry, m Member, by *Identity, pins PinStore) (LogEntry, error) {
+	if err := k.check(head, by, pins); err != nil {
 		return LogEntry{}, err
 	}
 	if m.Machine == RecoveryMachine {
@@ -90,7 +96,7 @@ func (k *Keyring) Add(head LogEntry, m Member, by *Identity) (LogEntry, error) {
 		return LogEntry{}, fmt.Errorf("%w: %s is already a member", ErrInvalidLog, m.Machine)
 	}
 	e := next(head, OpAdd, m.Machine, head.Epoch, append(append([]Member{}, head.Members...), m))
-	if err := finish(&e, k, by); err != nil {
+	if err := finish(&e, k, by, pins); err != nil {
 		return LogEntry{}, err
 	}
 	return e, nil
@@ -98,8 +104,8 @@ func (k *Keyring) Add(head LogEntry, m Member, by *Identity) (LogEntry, error) {
 
 // Remove appends an entry with a new epoch key wrapped to the remaining
 // members. The removed machine keeps every key up to the old epoch.
-func (k *Keyring) Remove(head LogEntry, m model.MachineID, by *Identity) (LogEntry, *Keyring, error) {
-	if err := k.check(head, by); err != nil {
+func (k *Keyring) Remove(head LogEntry, m model.MachineID, by *Identity, pins PinStore) (LogEntry, *Keyring, error) {
+	if err := k.check(head, by, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	if _, ok := findMember(head.Members, m); !ok {
@@ -114,15 +120,15 @@ func (k *Keyring) Remove(head LogEntry, m model.MachineID, by *Identity) (LogEnt
 		return LogEntry{}, nil, err
 	}
 	e := next(head, OpRemove, m, nk.Current, rest)
-	if err := finish(&e, nk, by); err != nil {
+	if err := finish(&e, nk, by, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	return e, nk, nil
 }
 
 // Rotate appends an entry with a new epoch key and the same members.
-func (k *Keyring) Rotate(head LogEntry, by *Identity) (LogEntry, *Keyring, error) {
-	if err := k.check(head, by); err != nil {
+func (k *Keyring) Rotate(head LogEntry, by *Identity, pins PinStore) (LogEntry, *Keyring, error) {
+	if err := k.check(head, by, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	nk := k.clone()
@@ -130,7 +136,7 @@ func (k *Keyring) Rotate(head LogEntry, by *Identity) (LogEntry, *Keyring, error
 		return LogEntry{}, nil, err
 	}
 	e := next(head, OpRotate, "", nk.Current, append([]Member{}, head.Members...))
-	if err := finish(&e, nk, by); err != nil {
+	if err := finish(&e, nk, by, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	return e, nk, nil
@@ -138,9 +144,12 @@ func (k *Keyring) Rotate(head LogEntry, by *Identity) (LogEntry, *Keyring, error
 
 // Recover appends an entry signed by the recovery identity that sets a new
 // member list and a new epoch. Use it when no member remains.
-func Recover(head LogEntry, recovery *Identity, members []Member) (LogEntry, *Keyring, error) {
+func Recover(head LogEntry, recovery *Identity, members []Member, pins PinStore) (LogEntry, *Keyring, error) {
 	if recovery == nil || recovery.Machine != RecoveryMachine || !recovery.matches(head.Recovery) {
 		return LogEntry{}, nil, fmt.Errorf("%w: not the recovery identity of %s", ErrBadSignature, head.Enclave)
+	}
+	if err := checkPinForWrite(pins, head.Enclave, &head); err != nil {
+		return LogEntry{}, nil, err
 	}
 	k, err := Open(head, recovery)
 	if err != nil {
@@ -150,7 +159,7 @@ func Recover(head LogEntry, recovery *Identity, members []Member) (LogEntry, *Ke
 		return LogEntry{}, nil, err
 	}
 	e := next(head, OpRecover, "", k.Current, append([]Member{}, members...))
-	if err := finish(&e, k, recovery); err != nil {
+	if err := finish(&e, k, recovery, pins); err != nil {
 		return LogEntry{}, nil, err
 	}
 	return e, k, nil
@@ -158,12 +167,42 @@ func Recover(head LogEntry, recovery *Identity, members []Member) (LogEntry, *Ke
 
 // check refuses a write by a signer the verifier would reject, or on a
 // keyring that does not match the head.
-func (k *Keyring) check(head LogEntry, by *Identity) error {
+func (k *Keyring) check(head LogEntry, by *Identity, pins PinStore) error {
 	if k == nil || k.Enclave != head.Enclave || k.Current != head.Epoch {
 		return fmt.Errorf("%w: keyring does not match the head entry", ErrInvalidLog)
 	}
 	if by == nil || !holds(head, by) {
 		return fmt.Errorf("%w: the signer is neither a member nor the recovery identity", ErrBadSignature)
+	}
+	return checkPinForWrite(pins, head.Enclave, &head)
+}
+
+// checkPinForWrite refuses a write the signer's own pin contradicts. A create
+// needs an unpinned enclave. Any other write needs a head at or past the pin;
+// when the head is the pinned entry its hash must match. Writes pin their new
+// entry in finish, so the acting machine never needs a join.
+func checkPinForWrite(pins PinStore, e model.EnclaveName, head *LogEntry) error {
+	if pins == nil {
+		return fmt.Errorf("a PinStore is required to write the key log of %s", e)
+	}
+	p, err := pins.Get(e)
+	if err != nil || p == nil {
+		return err
+	}
+	if head == nil {
+		return fmt.Errorf("%w: %s is already pinned on this machine at seq %d", ErrBrokenChain, e, p.Seq)
+	}
+	if p.Seq > head.Seq {
+		return fmt.Errorf("%w: head seq %d of %s is behind the pin at seq %d", ErrBrokenChain, head.Seq, e, p.Seq)
+	}
+	if p.Seq == head.Seq {
+		fp, err := Fingerprint(*head)
+		if err != nil {
+			return err
+		}
+		if fp != p.Hash {
+			return fmt.Errorf("%w: head of %s differs from the pinned entry", ErrBrokenChain, e)
+		}
 	}
 	return nil
 }
@@ -185,9 +224,9 @@ func next(head LogEntry, op Op, subject model.MachineID, epoch model.Epoch, memb
 	}
 }
 
-// finish wraps the keyring to e's members and the recovery identity, then
-// signs e as by.
-func finish(e *LogEntry, k *Keyring, by *Identity) error {
+// finish wraps the keyring to e's members and the recovery identity, signs e
+// as by, and pins e in pins.
+func finish(e *LogEntry, k *Keyring, by *Identity, pins PinStore) error {
 	if err := checkShapeForWrite(*e); err != nil {
 		return err
 	}
@@ -202,7 +241,11 @@ func finish(e *LogEntry, k *Keyring, by *Identity) error {
 		return err
 	}
 	e.Sig = ed25519.Sign(by.sign, msg)
-	return nil
+	p, err := PinOf(*e)
+	if err != nil {
+		return err
+	}
+	return pins.Set(e.Enclave, p)
 }
 
 func checkShapeForWrite(e LogEntry) error {
@@ -322,7 +365,7 @@ func loadOne(name model.EnclaveName, entries []LogEntry, pins PinStore, id *Iden
 		return EnclaveLoad{Head: head}
 	}
 	if pin == nil {
-		return EnclaveLoad{Head: head, Err: ErrNotPinned}
+		return EnclaveLoad{Head: head, Err: notPinned(head)}
 	}
 	k, err := Open(head, id)
 	if err != nil {
@@ -333,6 +376,16 @@ func loadOne(name model.EnclaveName, entries []LogEntry, pins PinStore, id *Iden
 	}
 	set.Rings[name] = k
 	return EnclaveLoad{Head: head, Member: true}
+}
+
+// notPinned names the enclave and the join step. The fingerprint to pass is
+// the one the adding member's `yadm enclave add` printed, received out of
+// band; the local head's fingerprint is shown only to compare against it.
+func notPinned(head LogEntry) error {
+	fp, _ := Fingerprint(head)
+	return fmt.Errorf("%w: enclave %s: get the fingerprint that `yadm enclave add` printed from the member who added this machine, "+
+		"then run `yadm enclave join %s --expect <fingerprint>` (the local head is seq %d, fingerprint %s; join only if they match)",
+		ErrNotPinned, head.Enclave, head.Enclave, head.Seq, fp)
 }
 
 func advance(pins PinStore, head LogEntry, old *Pin) error {

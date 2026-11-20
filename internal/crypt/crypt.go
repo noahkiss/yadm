@@ -41,7 +41,7 @@ var (
 	ErrNotSealed    = errors.New("input is not a sealed container")
 	ErrAuthFailed   = errors.New("ciphertext failed authentication")
 	ErrInvalidLog   = errors.New("key log entry breaks a structural rule")
-	ErrNotPinned    = errors.New("this machine is listed as a member but has no pin; run yadm enclave join --expect")
+	ErrNotPinned    = errors.New("this machine is listed as a member but has not pinned the enclave's key log")
 )
 
 // Identity is a machine's key pair: an age X25519 identity for unwrapping and
@@ -124,6 +124,22 @@ type PinStore interface {
 func FilePins(stateDir string) PinStore { return filePins{dir: stateDir} }
 
 type filePins struct{ dir string }
+
+// MemPins returns an in-memory PinStore, for tests and for a write whose pin
+// is not kept.
+func MemPins() PinStore { return memPins{} }
+
+type memPins map[model.EnclaveName]Pin
+
+func (m memPins) Get(e model.EnclaveName) (*Pin, error) {
+	p, ok := m[e]
+	if !ok {
+		return nil, nil
+	}
+	return &p, nil
+}
+
+func (m memPins) Set(e model.EnclaveName, p Pin) error { m[e] = p; return nil }
 
 // Keyring holds one enclave's epoch keys on a member machine.
 type Keyring struct {

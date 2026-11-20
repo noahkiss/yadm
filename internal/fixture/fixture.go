@@ -116,13 +116,14 @@ func (f *Fixture) seal() error {
 func (f *Fixture) createEnclave(e model.EnclaveName) error {
 	ms := Members[e]
 	by := f.Identities[ms[0]]
-	head, ring, err := crypt.Create(e, by, f.Recovery.Member())
+	pins := crypt.MemPins() // the creator's pins; tests pin machines with PinAll
+	head, ring, err := crypt.Create(e, by, f.Recovery.Member(), pins)
 	if err != nil {
 		return err
 	}
 	log := []crypt.LogEntry{head}
 	for _, m := range ms[1:] {
-		if head, err = ring.Add(head, f.Identities[m].Member(), by); err != nil {
+		if head, err = ring.Add(head, f.Identities[m].Member(), by, pins); err != nil {
 			return err
 		}
 		log = append(log, head)

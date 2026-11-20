@@ -271,6 +271,14 @@ Verification, on every load:
 
 An entry that fails any check is rejected; the enclave is reported as `refused` and its files are not applied until fixed. A machine that can push but holds no member key therefore cannot substitute a key: it cannot sign.
 
+Pinning is strict; there is no trust on first use:
+
+- A machine opens an enclave's keys only when it holds a pin for that enclave.
+- The machine that writes an entry (create, add, remove, rotate, recover) pins it in the same step.
+- Every other machine gets its first pin only from `yadm enclave join <enclave> --expect <fingerprint>`, with the fingerprint received out of band.
+- A machine listed as a member without a pin is refused. The message names the enclave and the join step.
+- Without this rule, a writer could replace an unpinned log with one that lists the machine. The machine would then seal new files under keys the writer holds.
+
 ### 7.3 Lifecycle
 
 | Step | Who | What happens |

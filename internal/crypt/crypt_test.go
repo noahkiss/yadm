@@ -42,15 +42,15 @@ type world struct {
 func newWorld(t *testing.T) *world {
 	t.Helper()
 	w := &world{a: ident(t, hostA), b: ident(t, hostB), c: ident(t, hostC), outsider: ident(t, evil), rec: ident(t, RecoveryMachine)}
-	e1, k, err := Create("personal", w.a, w.rec.Member())
+	e1, k, err := Create("personal", w.a, w.rec.Member(), MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
-	e2, err := k.Add(e1, w.b.Member(), w.a)
+	e2, err := k.Add(e1, w.b.Member(), w.a, MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
-	e3, err := k.Add(e2, w.c.Member(), w.b) // any member may sign
+	e3, err := k.Add(e2, w.c.Member(), w.b, MemPins()) // any member may sign
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,15 +191,15 @@ func TestEntryCodec(t *testing.T) {
 
 func TestLifecycleVerifies(t *testing.T) {
 	w := newWorld(t)
-	e4, k4, err := w.ring.Rotate(w.head(), w.c)
+	e4, k4, err := w.ring.Rotate(w.head(), w.c, MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
-	e5, k5, err := k4.Remove(e4, hostB, w.a)
+	e5, k5, err := k4.Remove(e4, hostB, w.a, MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
-	e6, k6, err := Recover(e5, w.rec, []Member{w.c.Member()})
+	e6, k6, err := Recover(e5, w.rec, []Member{w.c.Member()}, MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,11 +313,11 @@ func TestForgedEntryRejected(t *testing.T) {
 		}
 	})
 	t.Run("removed member cannot sign", func(t *testing.T) {
-		e4, k4, err := w.ring.Remove(head, hostB, w.a)
+		e4, k4, err := w.ring.Remove(head, hostB, w.a, MemPins())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := k4.Rotate(e4, w.b); !errors.Is(err, ErrBadSignature) {
+		if _, _, err := k4.Rotate(e4, w.b, MemPins()); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("write side: want ErrBadSignature, got %v", err)
 		}
 		p4, _ := Fingerprint(e4)
@@ -329,10 +329,10 @@ func TestForgedEntryRejected(t *testing.T) {
 		}
 	})
 	t.Run("write side refuses a non-member", func(t *testing.T) {
-		if _, err := w.ring.Add(head, w.outsider.Member(), w.outsider); !errors.Is(err, ErrBadSignature) {
+		if _, err := w.ring.Add(head, w.outsider.Member(), w.outsider, MemPins()); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("want ErrBadSignature, got %v", err)
 		}
-		if _, _, err := Recover(head, w.outsider, []Member{w.outsider.Member()}); !errors.Is(err, ErrBadSignature) {
+		if _, _, err := Recover(head, w.outsider, []Member{w.outsider.Member()}, MemPins()); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("recover: want ErrBadSignature, got %v", err)
 		}
 	})
@@ -377,7 +377,7 @@ func TestPinRejectsReplayAndTruncation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		alt, _, err := k.Rotate(w.log[1], w.a)
+		alt, _, err := k.Rotate(w.log[1], w.a, MemPins())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +412,7 @@ func TestPinRejectsReplayAndTruncation(t *testing.T) {
 		}
 		// A later join on a fork that does not contain the pin fails.
 		k, _ := Open(w.log[1], w.a)
-		alt, _, _ := k.Rotate(w.log[1], w.a)
+		alt, _, _ := k.Rotate(w.log[1], w.a, MemPins())
 		fork := []LogEntry{w.log[0], w.log[1], alt}
 		afp, _ := Fingerprint(alt)
 		if _, err := Join(fork, afp, pins); !errors.Is(err, ErrBrokenChain) {
@@ -461,7 +461,7 @@ func TestWrongADFails(t *testing.T) {
 		}
 	})
 	t.Run("other enclave", func(t *testing.T) {
-		_, other, err := Create("work", w.a, w.rec.Member())
+		_, other, err := Create("work", w.a, w.rec.Member(), MemPins())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +480,7 @@ func TestWrongADFails(t *testing.T) {
 		}
 	})
 	t.Run("epoch", func(t *testing.T) {
-		_, k2, err := k.Rotate(w.head(), w.a)
+		_, k2, err := k.Rotate(w.head(), w.a, MemPins())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -575,7 +575,7 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 	}
 	oldBlob, _ := w.ring.SealFile([]byte("before removal"))
 
-	e4, k4, err := w.ring.Remove(w.head(), hostB, w.a)
+	e4, k4, err := w.ring.Remove(w.head(), hostB, w.a, MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 func TestLoadSet(t *testing.T) {
 	wp := newWorld(t)
 	// A second enclave, created by hostA too.
-	c1, ck, err := Create("client", wp.a, wp.rec.Member())
+	c1, ck, err := Create("client", wp.a, wp.rec.Member(), MemPins())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,6 +718,64 @@ func TestLoadSet(t *testing.T) {
 			t.Fatal("pin not advanced")
 		}
 	})
+}
+
+// TestWritesPin proves the acting machine pins every entry it writes, so it
+// never needs a join, and that its pin refuses writes on a stale head.
+func TestWritesPin(t *testing.T) {
+	a, b, rec := ident(t, hostA), ident(t, hostB), ident(t, RecoveryMachine)
+	pins := FilePins(t.TempDir())
+	e1, k, err := Create("personal", a, rec.Member(), pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := pins.Get("personal"); p == nil || *p != *mustPin(t, e1) {
+		t.Fatalf("create did not pin: %+v", p)
+	}
+	if _, _, err := Create("personal", a, rec.Member(), pins); !errors.Is(err, ErrBrokenChain) {
+		t.Fatalf("second create on a pinned enclave: %v", err)
+	}
+	e2, err := k.Add(e1, b.Member(), a, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := pins.Get("personal"); p.Seq != 2 {
+		t.Fatalf("add did not pin: %+v", p)
+	}
+	// The creator loads without a join.
+	set, loads, _ := LoadSet(map[model.EnclaveName][]LogEntry{"personal": {e1, e2}}, pins, a)
+	if loads["personal"].Err != nil || !set.CanOpen("personal") {
+		t.Fatalf("creator load: %+v", loads["personal"])
+	}
+	// A write on a head behind the pin is refused and leaves the pin alone.
+	if _, _, err := k.Rotate(e1, a, pins); !errors.Is(err, ErrBrokenChain) {
+		t.Fatalf("stale head: %v", err)
+	}
+	if p, _ := pins.Get("personal"); p.Seq != 2 {
+		t.Fatalf("refused write moved the pin: %+v", p)
+	}
+	// A different entry at the pinned seq is refused.
+	alt := e2
+	alt.Subject = "m-other"
+	if _, _, err := k.Rotate(alt, a, pins); !errors.Is(err, ErrBrokenChain) {
+		t.Fatalf("forked head: %v", err)
+	}
+	e3, _, err := k.Rotate(e2, a, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := pins.Get("personal"); *p != *mustPin(t, e3) {
+		t.Fatal("rotate did not pin")
+	}
+	if _, _, err := Create("work", a, rec.Member(), nil); err == nil {
+		t.Fatal("write without a PinStore")
+	}
+	// hostB is listed but never pinned: the error names the enclave and the join step.
+	_, loads, _ = LoadSet(map[model.EnclaveName][]LogEntry{"personal": {e1, e2, e3}}, FilePins(t.TempDir()), b)
+	msg := loads["personal"].Err.Error()
+	if !errors.Is(loads["personal"].Err, ErrNotPinned) || !strings.Contains(msg, "yadm enclave join personal --expect") || !strings.Contains(msg, "enclave personal") {
+		t.Fatalf("not actionable: %v", msg)
+	}
 }
 
 func TestFilePins(t *testing.T) {
