@@ -10,11 +10,12 @@
 //   - Context: everything a render or a rule may read for one machine
 //   - Hold, HoldReason: a file the tool refuses to move in either direction
 //   - Status, TaskResult: the record published in a machine's status ref
+//   - Duration, Base64: text forms ("2h", base64) for TOML and JSON fields
 //   - ErrNotImplemented: the sentinel every stub returns
 //
 // Import direction for the module: model is at the bottom; cli is at the top.
 //
-//	model <- cond, extexec, crypt, schedule
+//	model <- cond, extexec, crypt, schedule, textmerge
 //	      <- fleet (cond, extexec), manifest (cond), render (cond)
 //	      <- rules (manifest), store (fleet), tasks (manifest, extexec)
 //	      <- apply <- sync <- importer <- cli

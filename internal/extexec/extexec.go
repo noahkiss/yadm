@@ -68,7 +68,43 @@ type Spec struct {
 // YADM_COMMIT, YADM_JSON=1, and YADM_FACT_<KEY> for each declared fact (key
 // upper-cased, non-alphanumerics as "_").
 func Env(req Request) []string {
-	return nil
+	m := req.Machine
+	types := make([]string, len(m.Types))
+	for i, t := range m.Types {
+		types[i] = string(t)
+	}
+	env := []string{
+		"YADM_KIND=" + string(req.Kind),
+		"YADM_NAME=" + req.Name,
+		"YADM_MACHINE=" + string(m.ID),
+		"YADM_MACHINE_NAME=" + m.Name,
+		"YADM_TYPES=" + strings.Join(types, ","),
+		"YADM_OS=" + m.OS,
+		"YADM_ARCH=" + m.Arch,
+		"YADM_HOME=" + req.Home,
+		"YADM_SOURCE=" + req.Source,
+		"YADM_COMMIT=" + string(req.Commit),
+		"YADM_JSON=1",
+	}
+	keys := make([]string, 0, len(m.Facts))
+	for k := range m.Facts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, "YADM_FACT_"+envKey(k)+"="+m.Facts[k])
+	}
+	return env
+}
+
+func envKey(k string) string {
+	b := []byte(strings.ToUpper(k))
+	for i, c := range b {
+		if !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			b[i] = '_'
+		}
+	}
+	return string(b)
 }
 
 // Result is what the runner observed. Response is nil when stdout was not JSON;

@@ -3,6 +3,7 @@ package crypt
 import (
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 
 	"filippo.io/age"
 	daead "github.com/tink-crypto/tink-go/v2/daead/subtle"
@@ -100,10 +101,29 @@ type LogEntry struct {
 	Subject  model.MachineID   `toml:"subject" json:"subject,omitempty"` // machine added or removed
 	Members  []Member          `toml:"members" json:"members"`
 	Recovery Member            `toml:"recovery" json:"recovery"`
-	Wrapped  []byte            `toml:"wrapped" json:"wrapped"` // age file: all epoch keys 1..Epoch
+	Wrapped  model.Base64      `toml:"wrapped" json:"wrapped"` // age file: all epoch keys 1..Epoch
 	Signer   model.MachineID   `toml:"signer" json:"signer"`
-	Sig      []byte            `toml:"sig" json:"sig"` // Ed25519 over the canonical bytes with Sig empty
+	Sig      model.Base64      `toml:"sig" json:"sig"` // Ed25519 over the canonical bytes with Sig empty
 }
+
+// LogDir returns the source directory of an enclave's key log.
+func LogDir(e model.EnclaveName) model.SourcePath { return model.SourcePath("keys/" + string(e)) }
+
+// LogPath returns the source path of one key-log entry: keys/<enclave>/<seq>.toml,
+// with seq zero-padded to 6 digits so a directory listing sorts in order.
+func LogPath(e model.EnclaveName, seq uint64) model.SourcePath {
+	return model.SourcePath(fmt.Sprintf("keys/%s/%06d.toml", e, seq))
+}
+
+// ParseLogEntry decodes one entry file. It checks syntax only; VerifyLog checks trust.
+func ParseLogEntry(b []byte) (LogEntry, error) { return LogEntry{}, model.ErrNotImplemented }
+
+// MarshalLogEntry encodes an entry file.
+func MarshalLogEntry(e LogEntry) ([]byte, error) { return nil, model.ErrNotImplemented }
+
+// SignedBytes returns the canonical bytes an entry's signature and fingerprint
+// cover: the entry encoded with Sig empty.
+func SignedBytes(e LogEntry) ([]byte, error) { return nil, model.ErrNotImplemented }
 
 // Pin is the key-log head a machine has verified. Stored in the state
 // directory under pins/<enclave>. A new member gets its first pin from
@@ -113,8 +133,23 @@ type Pin struct {
 	Hash string `json:"hash"`
 }
 
+// PinStore keeps this machine's pins, one file per enclave under pins/ in the
+// state directory.
+type PinStore interface {
+	Get(e model.EnclaveName) (*Pin, error) // nil, nil when the enclave is not pinned
+	Set(e model.EnclaveName, p Pin) error
+}
+
+// FilePins returns the file-backed PinStore in stateDir.
+func FilePins(stateDir string) PinStore { return filePins{dir: stateDir} }
+
+type filePins struct{ dir string }
+
+func (filePins) Get(model.EnclaveName) (*Pin, error) { return nil, model.ErrNotImplemented }
+func (filePins) Set(model.EnclaveName, Pin) error    { return model.ErrNotImplemented }
+
 // Fingerprint is the hex SHA-256 of an entry's signed bytes (its Prev link value).
-func Fingerprint(e LogEntry) string { return "" }
+func Fingerprint(e LogEntry) (string, error) { return "", model.ErrNotImplemented }
 
 // VerifyLog checks the chain from the pin (or from seq 1 when pin is nil and
 // the caller accepts trust on first use) to the last entry: Prev links, a
@@ -150,6 +185,17 @@ func (k *Keyring) Remove(head LogEntry, m model.MachineID, by *Identity) (LogEnt
 	return LogEntry{}, nil, model.ErrNotImplemented
 }
 
+// Rotate appends an entry with a new epoch key and the same members.
+func (k *Keyring) Rotate(head LogEntry, by *Identity) (LogEntry, *Keyring, error) {
+	return LogEntry{}, nil, model.ErrNotImplemented
+}
+
+// Recover appends an entry signed by the recovery identity that sets a new
+// member list and a new epoch. Use it when no member remains.
+func Recover(head LogEntry, recovery *Identity, members []Member) (LogEntry, *Keyring, error) {
+	return LogEntry{}, nil, model.ErrNotImplemented
+}
+
 // SealFile seals a whole file under the current epoch. AD is the container
 // header (magic, version, enclave, epoch) plus the purpose; it carries no
 // path, so a rename keeps the ciphertext.
@@ -181,6 +227,21 @@ func (k *Keyring) OpenRegion(label, token string) ([]byte, error) {
 // Set is the keyrings this machine holds. It implements rules.Sealer.
 type Set struct {
 	Rings map[model.EnclaveName]*Keyring
+}
+
+// EnclaveLoad is the outcome of loading one enclave.
+type EnclaveLoad struct {
+	Head   LogEntry
+	Member bool
+	Err    error // verification failure: the enclave is refused and its files are not applied
+}
+
+// LoadSet verifies every enclave's key log against this machine's pins,
+// opens the keyrings this machine is a member of, and advances pins to the
+// verified heads. An enclave whose log fails verification is reported in the
+// map and left out of the Set; other enclaves still load.
+func LoadSet(logs map[model.EnclaveName][]LogEntry, pins PinStore, id *Identity) (*Set, map[model.EnclaveName]EnclaveLoad, error) {
+	return nil, nil, model.ErrNotImplemented
 }
 
 // CanOpen reports whether this machine is a member of the enclave.

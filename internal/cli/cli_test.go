@@ -49,6 +49,12 @@ func TestUsageErrors(t *testing.T) {
 	if code != ExitUsage || env.Error == nil || env.Error.Code != CodeUsage {
 		t.Fatalf("code=%d env=%+v", code, env)
 	}
+	for _, args := range [][]string{{"--json"}, {"fleet", "--json"}, {"enclave", "--json"}} {
+		env, code, _ = run(t, args...)
+		if code != ExitUsage || env.Error == nil || env.Error.Code != CodeUsage || len(env.Next) == 0 {
+			t.Fatalf("%v: code=%d env=%+v", args, code, env)
+		}
+	}
 	env, code, _ = run(t, "apply", "--json", "--no-such-flag")
 	if code != ExitUsage || env.Error == nil || env.Error.Code != CodeUsage {
 		t.Fatalf("code=%d env=%+v", code, env)

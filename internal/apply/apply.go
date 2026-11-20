@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/noahkiss/yadm/internal/crypt"
+	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/render"
@@ -28,7 +29,7 @@ type TargetState struct {
 	ModTime    time.Time        `json:"mtime"`
 	Mode       uint32           `json:"mode"`
 	SealSet    []string         `json:"seal_set,omitempty"`    // key paths and region labels sealed at last apply
-	LastRender string           `json:"last_render,omitempty"` // blob id of the last rendered bytes (templates)
+	RenderHash string           `json:"render_hash,omitempty"` // templates: hex SHA-256 of the last rendered bytes; the bytes are recomputed, never stored
 	ChangedAt  time.Time        `json:"changed_at"`            // first time the current drift was seen
 }
 
@@ -43,6 +44,7 @@ type State struct {
 	Holds          []model.Hold                  `json:"holds"`
 	Observed       map[string]model.ObservedFact `json:"observed,omitempty"`
 	Tasks          map[string]model.TaskResult   `json:"tasks,omitempty"`
+	RenderContext  *model.Context                `json:"render_context,omitempty"` // the Context of the last apply, to recompute last renders
 }
 
 // StateDB loads and saves State atomically.
@@ -140,16 +142,29 @@ type AdoptOptions struct {
 	AllowTasks bool // allow every current task and collector definition
 }
 
-// Deps are the collaborators an Engine needs. cli wires them.
-type Deps struct {
-	Store    store.Store
+// Snapshot is everything resolved at one source commit for this machine.
+// The fleet, manifest and key logs are read from that commit, so a sync that
+// fetches a new manifest loads a new Snapshot.
+type Snapshot struct {
+	Commit   model.CommitID
+	Fleet    *fleet.File
 	Manifest *manifest.Manifest
 	Plan     *manifest.Plan
 	Context  model.Context
 	Keys     *crypt.Set
+	Enclaves map[model.EnclaveName]crypt.EnclaveLoad
 	Render   render.Engine
+}
+
+// Deps are the collaborators an Engine needs. cli wires them.
+type Deps struct {
+	Store    store.Store
+	Self     model.MachineID
+	Identity *crypt.Identity
+	Pins     crypt.PinStore
 	State    StateDB
 	Home     string
+	User     string
 	StateDir string
 	Tasks    *tasks.Runner
 	Now      func() time.Time
@@ -160,6 +175,13 @@ type Engine struct{ Deps }
 
 // New returns an Engine.
 func New(d Deps) *Engine { return &Engine{Deps: d} }
+
+// Load reads fleet.toml, manifest.toml and every key log at rev, verifies
+// the key logs, builds this machine's Context (with observed facts from
+// local state) and resolves the plan.
+func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error) {
+	return nil, model.ErrNotImplemented
+}
 
 // Scan finds drift between targets and the state.
 func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
@@ -204,4 +226,35 @@ type RetagOptions struct {
 // unchanged there; a drifted copy is held).
 func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (Capture, error) {
 	return Capture{}, model.ErrNotImplemented
+}
+
+// MergeSealed resolves a replay conflict on a sealed file this machine can
+// open: it opens the three stages, merges the plaintext with textmerge.Merge3
+// in memory and reseals. A remaining conflict comes back as a Hold with the
+// stage blob ids; no plaintext or marker text is returned in the Change.
+func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error) {
+	return nil, nil, model.ErrNotImplemented
+}
+
+// Reseal reseals every file, value and region of an enclave under its
+// current epoch, after a remove or rotate. The result is one protected commit.
+func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.EnclaveName) (Capture, error) {
+	return Capture{}, model.ErrNotImplemented
+}
+
+// Holds lists current holds from the state.
+func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
+	return nil, model.ErrNotImplemented
+}
+
+// ResolveOptions says how to resolve a hold.
+type ResolveOptions struct {
+	Take string // "source", "target", or a path to a file with the merged content
+}
+
+// ResolveHold resolves one hold by id. Taking the target captures it (through
+// the seal guard); taking the source rewrites the target; a file path is
+// written to the target and then captured.
+func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions) (Result, error) {
+	return Result{}, model.ErrNotImplemented
 }

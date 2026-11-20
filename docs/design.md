@@ -215,6 +215,7 @@ Host private-box
 
 Behaviour:
 
+- Key paths name nested keys separated by dots, with `*` for any one segment: `mcp.servers.*.env.TOKEN`. A literal dot or star inside a key is escaped with a backslash: the JSON key `"files.exclude"` is the path `files\.exclude`. Arrays are indexed by number. A path that names an object or table covers everything below it.
 - Edits are byte-level. A no-op round trip returns identical bytes. A change touches only the bytes of the values it changes.
 - JSON edits use `sjson`. The TOML span editor is this project's code, on go-toml's `unstable` parser. Every edit re-parses its output and fails closed.
 - `sjson.Delete` also removes a comment directly above the key. The rules package decides comment ownership before it deletes.
@@ -286,9 +287,11 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 ### 7.4 Where plaintext may exist
 
 - In a member's `$HOME` (the targets).
-- In memory during render, capture, merge and diff.
+- In memory during render, capture, merge and diff. Three-way merges, diffs and template patching run in-process (`internal/textmerge`); plaintext is never handed to git.
 - On stdout for `yadm diff`, `yadm log -p`, `yadm review` and `yadm hold show`.
-- In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards.
+- In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open.
+
+The state database stores hashes, never rendered bytes. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
 Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref or `cachetextconv = true` setting.
 
@@ -302,7 +305,7 @@ A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(H
 
 ### 8.1 State
 
-`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the last rendered blob for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts and last task results. It never leaves the machine.
+`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content and never leaves the machine.
 
 ### 8.2 Scan
 
@@ -324,7 +327,7 @@ Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
 - **Verbatim file:** the target bytes become the source bytes.
 - **Sealed file:** the target is sealed under the current epoch. Deterministic sealing makes an unchanged file a no-op.
-- **Template:** capture computes the diff between the last render and the target, applies it to the template, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it.
+- **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it.
 - **Intra-file rules:** package rules (section 6), with the seal guard.
 - **Every capture** passes the round-trip check: render(new source) = target. A failure is held as `uncapturable`, never committed.
 
@@ -382,7 +385,7 @@ Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. `yadm revie
 4. Fetch `main` and `refs/yadm/*`.
 5. If local `main` is not an ancestor of `origin/main`, replay each local commit onto `origin/main` with `git merge-tree --write-tree`, in memory:
    - clean: `commit-tree` with the original message and trailers;
-   - conflict on a sealed file this machine can open: decrypt the three stages, `git merge-file`, reseal, write the tree;
+   - conflict on a sealed file this machine can open: open the three stages, merge them in memory (`textmerge.Merge3`), reseal, write the tree; a remaining conflict is held like any other;
    - other conflicts: the clean paths of the commit land; conflicted paths move to the local-only ref `refs/yadm/held/<machine>` and become `conflict` holds with all three stage blobs.
    History stays linear. There is no autostash and no merge commit.
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes).
@@ -562,8 +565,8 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 
 | Input | Output |
 |---|---|
-| `path##cond,cond` alternates | A manifest entry per variant with an equivalent `when`; source under `files/` or `sealed/<enclave>/`. Conditions: default, class/c, os/o, arch/a, hostname/h, user/u, distro/d, template/t. Others fail the import. |
-| Templates in the upstream default syntax | Variables and if/else/endif on class, os, arch, hostname, user and distro become section 5.2 syntax. An unconvertible construct fails the import with path and line. |
+| `path##cond,cond` alternates | A manifest entry per variant with an equivalent `when`; source under `files/` or `sealed/<enclave>/`. Conditions, long and short form: `default`, `class`/`c`, `os`/`o`, `arch`/`a`, `hostname`/`h`, `user`/`u`, `distro`/`d`, `distro_family`/`f`, `template`/`t`, `extension`/`e` (ignored). Values compare case-insensitively upstream, so the importer lowercases `os` and `arch` values. Hostname, user, distro and distro family become declared facts. Anything else fails the import. |
+| Templates (`##template` or `##template.default`) | The built-in processor's variables (`yadm.arch`, `yadm.class`, `yadm.classes`, `yadm.os`, `yadm.hostname`, `yadm.user`, `yadm.distro`, `yadm.distro_family`) become section 5.2 references or facts; `if` with `==`/`!=`, `else` and `endif` become conditions; `include` is inlined when its file exists in the repository. `env.VAR`, other processors (`esh`, `j2`, `j2cli`, `envtpl`) and anything unconvertible fail the import with path and line. |
 | Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. |
 | Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. |
 
@@ -601,6 +604,8 @@ Pinned in `go.mod`; `go 1.25` minimum. Each was fetched and exercised (`internal
 | `github.com/pelletier/go-toml/v2` | v2.4.3 | Parse fleet and manifest; `unstable` parser with comments for the TOML span editor | Only Go TOML parser that exposes a comment-preserving AST. Expression ranges are empty for key-values, so spans come from child nodes. |
 | `github.com/tidwall/sjson` (+ `gjson`) | v1.2.10 | Byte-preserving JSON and JSONC value edits | Keeps comments and spacing on set; delete takes the comment above the key, handled in rules. |
 | `github.com/spf13/cobra` | v1.10.2 | Command tree and flags | Nested commands, persistent `--json`, flag errors mapped to exit 2. |
+
+Three-way merge, unified diff and template patching (`internal/textmerge`) are this project's code, so plaintext stays in process.
 
 Git is the `git` binary (merge-tree `--write-tree` needs a current git), not a library.
 

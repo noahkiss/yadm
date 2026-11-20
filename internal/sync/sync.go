@@ -97,9 +97,18 @@ type PlannedCommit struct {
 }
 
 // PlanCommits splits captured changes into per-scope commits and holds.
-func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold) {
-	return nil, nil
+func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error) {
+	return nil, nil, model.ErrNotImplemented
 }
+
+// FileLeases returns the Leases stored under LeaseDir in stateDir.
+func FileLeases(stateDir string) Leases { return fileLeases{dir: stateDir} }
+
+type fileLeases struct{ dir string }
+
+func (fileLeases) List() ([]Lease, error) { return nil, model.ErrNotImplemented }
+func (fileLeases) Take(Lease) error       { return model.ErrNotImplemented }
+func (fileLeases) Release(string) error   { return model.ErrNotImplemented }
 
 // Deps are the collaborators a Syncer needs.
 type Deps struct {

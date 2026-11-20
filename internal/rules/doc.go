@@ -12,8 +12,12 @@
 //     non-member cannot see. It returns Violations instead of writing when the
 //     result would lose or unseal a sealed part (the seal guard).
 //
-// Key paths are dot-separated with `*` for one segment, for example
-// "mcp.servers.*.env.TOKEN". Region markers, after any comment prefix:
+// Key paths name nested keys, separated by dots, with `*` for any one
+// segment: "mcp.servers.*.env.TOKEN" is mcp → servers → (any) → env → TOKEN.
+// A literal dot or star inside a key is escaped with a backslash: the JSON
+// key "files.exclude" is the path `files\.exclude`. JSON arrays are indexed
+// by number ("list.0"). A path that names a table or object covers everything
+// below it. Region markers, after any comment prefix:
 //
 //	# yadm:seal <enclave> [label]
 //	...plaintext body on member machines...

@@ -2,7 +2,9 @@ package fleet
 
 import (
 	"context"
-	"time"
+	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -46,12 +48,39 @@ type Publish struct {
 	Enclave model.EnclaveName
 }
 
+// UnmarshalText parses "local", "plain" or "sealed:<enclave>".
+func (p *Publish) UnmarshalText(b []byte) error {
+	s := string(b)
+	switch {
+	case s == "" || s == string(PublishLocal):
+		*p = Publish{Mode: PublishLocal}
+	case s == string(PublishPlain):
+		*p = Publish{Mode: PublishPlain}
+	case strings.HasPrefix(s, "sealed:") && len(s) > len("sealed:"):
+		*p = Publish{Mode: PublishSealed, Enclave: model.EnclaveName(strings.TrimPrefix(s, "sealed:"))}
+	default:
+		return fmt.Errorf("publish %q: want local, plain or sealed:<enclave>", s)
+	}
+	return nil
+}
+
+// MarshalText writes the string form.
+func (p Publish) MarshalText() ([]byte, error) {
+	switch p.Mode {
+	case PublishSealed:
+		return []byte("sealed:" + string(p.Enclave)), nil
+	case "":
+		return []byte(PublishLocal), nil
+	}
+	return []byte(p.Mode), nil
+}
+
 // CollectorDef declares one observed-fact collector.
 type CollectorDef struct {
-	Command []string      `toml:"command" json:"command"`
-	Timeout time.Duration `toml:"timeout" json:"timeout_ns"` // default 30s
-	When    string        `toml:"when" json:"when,omitempty"`
-	Publish Publish       `toml:"publish" json:"publish"`
+	Command []string       `toml:"command" json:"command"`
+	Timeout model.Duration `toml:"timeout" json:"timeout"` // default 30s
+	When    string         `toml:"when" json:"when,omitempty"`
+	Publish Publish        `toml:"publish" json:"publish"`
 }
 
 // Parse parses and validates a fleet file: unique names and nicknames, known
@@ -81,7 +110,16 @@ func (f *File) Vocabulary() cond.Vocabulary {
 }
 
 // Enclaves lists the types declared as enclaves, sorted.
-func (f *File) Enclaves() []model.EnclaveName { return nil }
+func (f *File) Enclaves() []model.EnclaveName {
+	var out []model.EnclaveName
+	for t, d := range f.Types {
+		if d.Enclave {
+			out = append(out, model.EnclaveName(t))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
 
 // IdentityFile is the local, untracked identity file, relative to $XDG_CONFIG_HOME/yadm.
 const IdentityFile = "machine.toml"
@@ -125,6 +163,6 @@ type ObservedDiff struct {
 }
 
 // DiffObserved compares a published collector across machines.
-func DiffObserved(statuses map[model.MachineID]model.Status, collector string) ObservedDiff {
-	return ObservedDiff{Collector: collector}
+func DiffObserved(statuses map[model.MachineID]model.Status, collector string) (ObservedDiff, error) {
+	return ObservedDiff{}, model.ErrNotImplemented
 }

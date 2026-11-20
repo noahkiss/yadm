@@ -39,7 +39,7 @@ when = "os:linux"
 [[file]]
 target = ".config/editor/settings.json"
 format = "jsonc"
-keep = ["editor.*", "terminal.font"]
+keep = ["editor.*", "terminal.font", 'files\.exclude']
 drop = ["window.state", "recent"]
 seal = { "sync.token" = "personal" }
 quiet = "0s"

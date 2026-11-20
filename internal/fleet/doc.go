@@ -22,8 +22,8 @@
 //
 //	type File struct{ Schema int; Types map[model.TypeName]TypeDef; Machines map[model.MachineID]model.Machine; Collectors map[string]CollectorDef }
 //	type TypeDef struct{ Enclave, HidePaths bool }
-//	type CollectorDef struct{ Command []string; Timeout time.Duration; When string; Publish Publish }
-//	type Publish struct{ Mode PublishMode; Enclave model.EnclaveName }
+//	type CollectorDef struct{ Command []string; Timeout model.Duration; When string; Publish Publish }
+//	type Publish struct{ Mode PublishMode; Enclave model.EnclaveName }  // TOML: "local" | "plain" | "sealed:<enclave>"
 //	func Parse(b []byte) (*File, error)
 //	func (f *File) Lookup(nameOrNickOrID string) (model.Machine, error)
 //	func (f *File) Vocabulary() cond.Vocabulary
@@ -33,5 +33,5 @@
 //	func Collect(ctx, f *File, mctx model.Context, r extexec.Runner, allowed func(string, CollectorDef) bool) (facts map[string]model.ObservedFact, skipped []string, err error)
 //	type StatusRefs interface{ ReadAll(ctx) (map[model.MachineID]model.Status, error); Publish(ctx, model.Status) error }
 //	func StatusRef(id model.MachineID) string
-//	func DiffObserved(statuses map[model.MachineID]model.Status, collector string) ObservedDiff
+//	func DiffObserved(statuses map[model.MachineID]model.Status, collector string) (ObservedDiff, error)
 package fleet

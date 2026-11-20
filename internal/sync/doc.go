@@ -39,9 +39,11 @@
 //	type Lock interface{ Acquire(ctx context.Context) (release func(), err error) }
 //	func FileLock(stateDir string) Lock
 //	type Policy struct{ Quiet time.Duration; MassChange int; Protected []string }
-//	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, now time.Time) ([]PlannedCommit, []model.Hold)
+//	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error)
 //	type Lease struct{ Holder string; Paths []string; Expires time.Time }
 //	type Leases interface{ List() ([]Lease, error); Take(Lease) error; Release(holder string) error }
+//	func FileLeases(stateDir string) Leases
+//	const LockTimeout
 //	type ReviewItem struct{ Commit store.Commit; Scope model.Scope; Diff string }
 //	func Unreviewed(ctx, st store.Store, keys *crypt.Set, scope model.Scope) ([]ReviewItem, error)
 //	func Ack(ctx, st store.Store, scope model.Scope, upTo model.CommitID) error

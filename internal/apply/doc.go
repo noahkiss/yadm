@@ -12,8 +12,10 @@
 //     backup directory in the state directory for 30 days.
 //   - Capture is accepted only if rendering the new source for this machine
 //     reproduces the target byte for byte (the round-trip check). Otherwise the
-//     file is held as uncapturable. Templates capture by patching the template
-//     with the target's diff against the last render, then re-checking.
+//     file is held as uncapturable. Templates capture with
+//     textmerge.PatchTemplate: the last render is recomputed from the source
+//     blob and the stored render Context (never stored as bytes), its diff to
+//     the target is applied to the template, and the round trip is re-checked.
 //   - A non-member never writes plaintext of an enclave it cannot open: sealed
 //     files are skipped, sealed values and regions are left out of targets and
 //     restored from the source on capture (package rules).
@@ -26,15 +28,21 @@
 // Exported API:
 //
 //	type State struct{ Schema int; Machine model.MachineID; Applied model.CommitID; FirstApplyDone bool; Targets map[model.Target]TargetState; Holds []model.Hold; Observed map[string]model.ObservedFact }
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; SealSet; LastRender }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; RenderHash; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
-//	type Deps struct{ Store; Manifest; Plan; Context; Keys; Render; State; Home; StateDir; Tasks }
-//	type Engine struct{ Deps }
+//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now }
+//	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render }
+//	type Engine struct{ Deps }; func New(Deps) *Engine
+//	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
 //	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error)
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)
 //	func (e *Engine) Apply(ctx, rev model.CommitID, opts ApplyOptions) (Result, error)
 //	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error)
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
+//	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
+//	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
+//	func (e *Engine) Holds(ctx) ([]model.Hold, error)
+//	func (e *Engine) ResolveHold(ctx, id string, opts ResolveOptions) (Result, error)
 package apply

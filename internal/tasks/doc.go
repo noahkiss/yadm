@@ -30,15 +30,16 @@
 //
 // Exported API:
 //
-//	type Event struct{ Commit model.CommitID; Changed []model.Target; FirstApply bool }
-//	func Select(defs map[string]manifest.TaskDef, ev Event) []Selected
+//	type Event struct{ Commit model.CommitID; Changed, Removed []model.Target; Units []manifest.Unit; FirstApply bool }
+//	func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error)
 //	type Selected struct{ Name, Trigger string; Def manifest.TaskDef; Matched []model.Target }
 //	type AllowList interface{ Allowed(kind extexec.Kind, name, hash string) bool; Allow(kind extexec.Kind, name, hash string) error }
-//	func DefinitionHash(def any) string    // tasks and collectors share the allow list
+//	func DefinitionHash(def any) (string, error) // tasks, checks and collectors share the allow list
+//	func FileAllowList(stateDir string) AllowList
 //	type Runner struct{ Exec extexec.Runner; Allow AllowList; Units UnitReloader }
 //	func (r *Runner) Run(ctx, ev Event, sel []Selected, req extexec.Request) ([]model.TaskResult, []model.Hold)
 //	type Gate interface{ Check(ctx, staged []Staged, req extexec.Request) (pass []model.Target, holds []model.Hold, verdicts []Verdict) }
 //	func NewGate(checks map[string]manifest.CheckDef, r extexec.Runner, allow AllowList) Gate
 //	type UnitReloader interface{ Reload(ctx, u manifest.Unit, home string) error }
-//	func SystemReloader() UnitReloader
+//	func SystemReloader(goos string) (UnitReloader, error)
 package tasks

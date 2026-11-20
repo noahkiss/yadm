@@ -2,7 +2,6 @@ package manifest
 
 import (
 	"io/fs"
-	"time"
 
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
@@ -28,7 +27,7 @@ const (
 
 // Defaults apply to every entry that does not override them.
 type Defaults struct {
-	Quiet time.Duration `toml:"quiet" json:"quiet_ns"` // auto-commit quiet period; default 2h
+	Quiet model.Duration `toml:"quiet" json:"quiet"` // auto-commit quiet period; default 2h
 }
 
 // Entry maps one target (or a glob of targets) to its source and rules.
@@ -44,7 +43,7 @@ type Entry struct {
 	Drop     []string                     `toml:"drop" json:"drop,omitempty"`       // key paths never captured
 	Seal     map[string]model.EnclaveName `toml:"seal" json:"seal,omitempty"`       // key path -> enclave
 	Regions  bool                         `toml:"regions" json:"regions,omitempty"` // honour `yadm:seal` region markers
-	Quiet    *time.Duration               `toml:"quiet" json:"quiet_ns,omitempty"`  // override Defaults.Quiet; 0 commits at once
+	Quiet    *model.Duration              `toml:"quiet" json:"quiet,omitempty"`     // override Defaults.Quiet; 0 commits at once
 	Review   bool                         `toml:"review" json:"review,omitempty"`   // never auto-commit; always held for a manual commit
 }
 
@@ -68,12 +67,12 @@ type Root struct {
 // FirstApply is set. The core knows no package manager: a bootstrap step is
 // a task with FirstApply.
 type TaskDef struct {
-	On         []string      `toml:"on" json:"on,omitempty"`               // a matching target was written
-	OnRemove   []string      `toml:"on_remove" json:"on_remove,omitempty"` // a matching target was removed
-	FirstApply bool          `toml:"first_apply" json:"first_apply,omitempty"`
-	When       string        `toml:"when" json:"when,omitempty"`
-	Command    []string      `toml:"command" json:"command"`
-	Timeout    time.Duration `toml:"timeout" json:"timeout_ns"` // default 5m
+	On         []string       `toml:"on" json:"on,omitempty"`               // a matching target was written
+	OnRemove   []string       `toml:"on_remove" json:"on_remove,omitempty"` // a matching target was removed
+	FirstApply bool           `toml:"first_apply" json:"first_apply,omitempty"`
+	When       string         `toml:"when" json:"when,omitempty"`
+	Command    []string       `toml:"command" json:"command"`
+	Timeout    model.Duration `toml:"timeout" json:"timeout"` // default 5m
 }
 
 // CheckDef declares a commit-gate check. Before every commit, manual or
@@ -81,10 +80,10 @@ type TaskDef struct {
 // extexec contract with the staged targets in the request. A failure or a
 // timeout holds the matching files (fail closed); other files still commit.
 type CheckDef struct {
-	Paths   []string      `toml:"paths" json:"paths"` // globs over targets; empty means every target
-	When    string        `toml:"when" json:"when,omitempty"`
-	Command []string      `toml:"command" json:"command"`
-	Timeout time.Duration `toml:"timeout" json:"timeout_ns"` // default 30s
+	Paths   []string       `toml:"paths" json:"paths"` // globs over targets; empty means every target
+	When    string         `toml:"when" json:"when,omitempty"`
+	Command []string       `toml:"command" json:"command"`
+	Timeout model.Duration `toml:"timeout" json:"timeout"` // default 30s
 }
 
 // UnitKind is a service manager.

@@ -21,7 +21,7 @@
 //
 //	type Store interface{ ... }        // see store.go; *Repo implements it
 //	func Open(sourceDir, stateDir string) (*Repo, error)
-//	func Clone(ctx, remote, sourceDir string) (*Repo, error)
+//	func Clone(ctx, remote, sourceDir, stateDir string) (*Repo, error)
 //	type Change struct{ Path model.SourcePath; Blob []byte; Mode uint32; Delete bool }
 //	type Message struct{ Subject, Body string; Trailers []Trailer }
 //	type MergeResult struct{ Tree string; Conflicts []Conflict }

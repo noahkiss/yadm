@@ -49,7 +49,7 @@ func Import(ctx context.Context, opts Options) (Report, error) {
 
 // AltCond is one condition of an alternate file name.
 type AltCond struct {
-	Key   string // canonical long form: default, class, os, arch, hostname, user, distro, template
+	Key   string // long form: default, class, os, arch, hostname, user, distro, distro_family, template, extension
 	Value string
 }
 

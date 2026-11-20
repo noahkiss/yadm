@@ -6,12 +6,14 @@
 //
 //   - Alternate files named `path##cond[,cond...]`: each becomes a manifest
 //     entry with an equivalent `when` condition and a source under
-//     `files/` (or `sealed/<enclave>/`). Supported conditions: default,
-//     class/c, os/o, arch/a, hostname/h, user/u, distro/d, template/t.
+//     `files/` (or `sealed/<enclave>/`). Supported conditions, long and short:
+//     default, class/c, os/o, arch/a, hostname/h, user/u, distro/d,
+//     distro_family/f, template/t, extension/e (ignored). Upstream compares
+//     values case-insensitively, so os and arch values are lowercased.
 //     Anything else fails the import with the path.
-//   - Templates in the upstream default syntax: variable references and
-//     if/else/endif on class, os, arch, hostname, user and distro are rewritten
-//     to the package render syntax; an unconvertible construct fails the
+//   - Templates for the built-in processor only: yadm.* variables, if with
+//     == or !=, else, endif, and include (inlined) become package render
+//     syntax. env.VAR, other processors and anything unconvertible fail the
 //     import with path and line.
 //   - Transcrypt: paths matched by a `filter=crypt` attribute are decrypted with
 //     the password from the environment variable the caller names, and sealed

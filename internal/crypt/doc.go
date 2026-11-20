@@ -28,13 +28,19 @@
 //	func (*Identity) Member() Member
 //	type Member struct{ Machine model.MachineID; Recipient, SignKey string }
 //	type LogEntry struct{ Enclave; Seq; Prev; Epoch; Op; Members; Recovery; Wrapped; Signer; Sig }
+//	func LogDir(e) model.SourcePath; func LogPath(e, seq) model.SourcePath
+//	func ParseLogEntry(b []byte) (LogEntry, error); func MarshalLogEntry(LogEntry) ([]byte, error); func SignedBytes(LogEntry) ([]byte, error)
 //	type Pin struct{ Seq uint64; Hash string }
-//	func Fingerprint(e LogEntry) string
+//	type PinStore interface{ Get(e) (*Pin, error); Set(e, Pin) error }; func FilePins(stateDir string) PinStore
+//	func Fingerprint(e LogEntry) (string, error)
 //	func VerifyLog(entries []LogEntry, pin *Pin) (head LogEntry, err error)
 //	func Create(enclave, by *Identity, recovery Member) (LogEntry, *Keyring, error)
 //	func (*Keyring) Add(head LogEntry, m Member, by *Identity) (LogEntry, error)
 //	func (*Keyring) Remove(head LogEntry, m model.MachineID, by *Identity) (LogEntry, *Keyring, error) // new epoch
+//	func (*Keyring) Rotate(head LogEntry, by *Identity) (LogEntry, *Keyring, error) // new epoch
+//	func Recover(head LogEntry, recovery *Identity, members []Member) (LogEntry, *Keyring, error)
 //	func Open(head LogEntry, id *Identity) (*Keyring, error)
+//	func LoadSet(logs map[model.EnclaveName][]LogEntry, pins PinStore, id *Identity) (*Set, map[model.EnclaveName]EnclaveLoad, error)
 //	type Keyring                        // one enclave's epoch keys
 //	func (*Keyring) SealFile / OpenFile / SealValue / OpenValue / SealRegion / OpenRegion
 //	type Set                            // keyrings this machine holds; implements rules.Sealer

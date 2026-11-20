@@ -35,7 +35,9 @@ type Selected struct {
 
 // Select returns the tasks an event triggers, in name order. defs must
 // already be filtered by `when` (manifest.Plan.Tasks).
-func Select(defs map[string]manifest.TaskDef, ev Event) []Selected { return nil }
+func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error) {
+	return nil, model.ErrNotImplemented
+}
 
 // AllowList is the local record of task and collector definitions this
 // machine agreed to run.
@@ -50,7 +52,16 @@ const AllowFile = "allowed.json"
 
 // DefinitionHash is the hex SHA-256 of a task or collector definition's
 // canonical JSON.
-func DefinitionHash(def any) string { return "" }
+func DefinitionHash(def any) (string, error) { return "", model.ErrNotImplemented }
+
+// FileAllowList returns the AllowList stored in AllowFile in stateDir.
+func FileAllowList(stateDir string) AllowList { return fileAllow{dir: stateDir} }
+
+type fileAllow struct{ dir string }
+
+// Allowed answers false until implemented: nothing runs.
+func (fileAllow) Allowed(extexec.Kind, string, string) bool { return false }
+func (fileAllow) Allow(extexec.Kind, string, string) error  { return model.ErrNotImplemented }
 
 // UnitReloader reloads one service unit.
 type UnitReloader interface {
@@ -58,7 +69,7 @@ type UnitReloader interface {
 }
 
 // SystemReloader returns the launchd/systemd reloader for this OS.
-func SystemReloader() UnitReloader { return nil }
+func SystemReloader(goos string) (UnitReloader, error) { return nil, model.ErrNotImplemented }
 
 // Runner runs selected tasks and unit reloads.
 type Runner struct {

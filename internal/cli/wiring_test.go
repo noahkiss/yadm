@@ -19,6 +19,7 @@ import (
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 	"github.com/noahkiss/yadm/internal/tasks"
+	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
 // TestContractsCompose wires every package through its exported contracts
@@ -67,11 +68,28 @@ func TestContractsCompose(t *testing.T) {
 	_, err = schedule.ForOS("linux")
 	ni("schedule.ForOS", err)
 
-	ae := apply.New(apply.Deps{Store: st, Keys: keys, Render: eng, State: apply.FileStateDB(t.TempDir())})
+	stateDir := t.TempDir()
+	allow := tasks.FileAllowList(stateDir)
+	if allow.Allowed(extexec.KindTask, "x", "h") {
+		t.Error("allow list must deny until implemented")
+	}
+	tr := &tasks.Runner{Exec: runner, Allow: allow}
+	ae := apply.New(apply.Deps{Store: st, Self: "m-test", Pins: crypt.FilePins(stateDir), State: apply.FileStateDB(stateDir), StateDir: stateDir, Tasks: tr})
+	_, err = ae.Load(ctx, "HEAD")
+	ni("apply.Load", err)
 	_, err = ae.Scan(ctx, apply.ScanOptions{})
 	ni("apply.Scan", err)
+	_, _, err = ae.MergeSealed(ctx, &apply.Snapshot{Keys: keys}, store.Conflict{})
+	ni("apply.MergeSealed", err)
+	_, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil)
+	ni("crypt.LoadSet", err)
+	_, _, err = textmerge.Merge3(nil, nil, nil)
+	ni("textmerge.Merge3", err)
+	_, err = tasks.DefinitionHash(manifest.TaskDef{})
+	ni("tasks.DefinitionHash", err)
 
-	s := &sync.Syncer{Deps: sync.Deps{Store: st, Apply: ae, Fleet: fl, Keys: keys, Exec: runner, Gate: gate, Lock: sync.FileLock(t.TempDir())}}
+	s := &sync.Syncer{Deps: sync.Deps{Store: st, Apply: ae, Fleet: fl, Status: statusDB, Keys: keys, Exec: runner, Gate: gate,
+		Lock: sync.FileLock(stateDir), Leases: sync.FileLeases(stateDir)}}
 	_, err = s.Run(ctx, sync.Options{})
 	ni("sync.Run", err)
 

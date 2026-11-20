@@ -17,12 +17,14 @@
 //
 // Exported API:
 //
-//	type Manifest struct{ Schema int; Defaults Defaults; Entries []Entry; Roots []Root; Tasks map[string]TaskDef; Units []Unit; Protected []string }
+//	type Manifest struct{ Schema; Defaults; Entries ([[file]]); Roots ([[root]]); Tasks ([tasks.x]); Checks ([checks.x]); Units ([[unit]]); Protected }
 //	type Entry struct{ Target, Source, When, Enclave, Template, Mode, Format, Keep, Drop, Seal, Regions, Quiet, Review }
-//	type TaskDef struct{ On []string; FirstApply bool; When string; Command []string; Timeout time.Duration }
+//	type TaskDef struct{ On, OnRemove []string; FirstApply bool; When string; Command []string; Timeout model.Duration }
+//	type CheckDef struct{ Paths []string; When string; Command []string; Timeout model.Duration }
 //	type Unit struct{ Target model.Target; Kind UnitKind; When string }
 //	func Parse(b []byte) (*Manifest, error)
 //	func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vocabulary) (*Plan, error)
-//	type Plan struct{ Targets map[model.Target]Resolved }
+//	type Plan struct{ Targets map[model.Target]Resolved; Roots []Root; Tasks map[string]TaskDef; Checks map[string]CheckDef }
 //	func (p *Plan) Why(t model.Target) (Explanation, error)
+//	var BuiltinProtected []string
 package manifest

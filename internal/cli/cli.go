@@ -201,8 +201,20 @@ func (a *app) root() *cobra.Command {
 		parent.AddCommand(c)
 		return c
 	}
+	needSub := func(name string) func(*cobra.Command, []string) error {
+		return a.wrap(name, func(c *cobra.Command, args []string) (result, error) {
+			var subs []string
+			for _, s := range c.Commands() {
+				subs = append(subs, c.CommandPath()+" "+s.Name())
+			}
+			return result{next: subs}, fmt.Errorf("%w: %q needs a subcommand", errUsage, c.CommandPath())
+		})
+	}
+	root.RunE = needSub("")
+	root.Args = cobra.ArbitraryArgs
 	group := func(use, short string) *cobra.Command {
-		c := &cobra.Command{Use: use, Short: short}
+		c := &cobra.Command{Use: use, Short: short, Args: cobra.ArbitraryArgs}
+		c.RunE = needSub(use)
 		root.AddCommand(c)
 		return c
 	}

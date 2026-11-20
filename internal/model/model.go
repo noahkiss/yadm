@@ -41,13 +41,13 @@ type Epoch uint32
 
 // Machine is one registry entry from the fleet file.
 type Machine struct {
-	ID        MachineID         `json:"id"`
-	Name      string            `json:"name"`
-	Nicknames []string          `json:"nicknames,omitempty"`
-	Types     []TypeName        `json:"types"`
-	OS        string            `json:"os"`
-	Arch      string            `json:"arch"`
-	Facts     map[string]string `json:"facts,omitempty"` // declared facts
+	ID        MachineID         `toml:"-" json:"id"` // the fleet table key
+	Name      string            `toml:"name" json:"name"`
+	Nicknames []string          `toml:"nicknames" json:"nicknames,omitempty"`
+	Types     []TypeName        `toml:"types" json:"types"`
+	OS        string            `toml:"os" json:"os"`
+	Arch      string            `toml:"arch" json:"arch"`
+	Facts     map[string]string `toml:"facts" json:"facts,omitempty"` // declared facts
 }
 
 // HasType reports whether the machine declares the type.
