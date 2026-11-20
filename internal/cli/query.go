@@ -165,8 +165,8 @@ var explainSteps = map[string][]string{
 	"defer": {"find the hold", "record it with the reason in the state directory's review queue", "the hold stays; yadm review list shows it"},
 	"adopt": {
 		"verify the identity and that the source resolves for this machine",
-		"record identical targets without writing, write missing ones, hold differing ones (drifted)",
-		"run first-apply tasks if allowed",
+		"materialize directory symlinks into real directories; record identical targets (symlinks and read-only renders become regular files), write missing ones, hold differing ones (drifted)",
+		"run no tasks; --allow-tasks only records allows, and first-apply tasks run on the next apply",
 		"install the sync schedule ({{schedule}}) unless --no-schedule",
 	},
 	"retag":   {"change the manifest entry's when and enclave", "move the source between files/ and sealed/<enclave>/, opening and resealing", "commit once on main (protected, manual only)"},
