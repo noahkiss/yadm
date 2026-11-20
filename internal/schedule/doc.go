@@ -14,4 +14,12 @@
 //	type Spec struct{ Binary string; Interval time.Duration; Label string }
 //	type Status struct{ Installed, Loaded bool; LastRun time.Time; UnitPath string }
 //	func ForOS(goos string) (Scheduler, error)
+//	func New(goos string, o Options) (Scheduler, error) // explicit home, uid and Commander
+//	func LaunchdPlist(s Spec) ([]byte, error)
+//	func SystemdService(s Spec) ([]byte, error)
+//	func SystemdTimer(s Spec) ([]byte, error)
+//
+// A test binary cannot install or remove the real schedule: Install and
+// Uninstall return ErrNotLive unless YADM_SCHEDULE_LIVE=1. Status on launchd
+// leaves LastRun zero; the caller fills it from the sync state.
 package schedule
