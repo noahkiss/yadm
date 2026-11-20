@@ -344,8 +344,9 @@ func (a *app) cmdHoldIgnore(cmd *cobra.Command, args []string) (result, error) {
 	if h.Target == "" {
 		return result{}, usagef("hold %s names no file; only a file can be ignored", args[0])
 	}
-	if err := m.locked(ctx, func() error { return m.eng.Ignore(ctx, h.Target) }); err != nil {
-		if errors.Is(err, apply.ErrManaged) {
+	snap, _ := m.load(ctx) // nil when the source does not load: state alone decides
+	if err := m.locked(ctx, func() error { return m.eng.Ignore(ctx, snap, h.Target) }); err != nil {
+		if errors.Is(err, apply.ErrManaged) || errors.Is(err, apply.ErrNotIgnorable) {
 			return result{}, usagef("%v", err)
 		}
 		return lockedResult(err), err

@@ -51,7 +51,7 @@ func TestBaselineIgnoreAndTrack(t *testing.T) {
 		t.Fatal("a file under the root's ignore glob was held")
 	}
 
-	if err := A.eng.Ignore(ctx, local); err != nil {
+	if err := A.eng.Ignore(ctx, nil, local); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -62,7 +62,7 @@ func TestBaselineIgnoreAndTrack(t *testing.T) {
 			}
 		}
 	}
-	if err := A.eng.Ignore(ctx, ".config/shell/aliases.sh"); err == nil {
+	if err := A.eng.Ignore(ctx, nil, ".config/shell/aliases.sh"); err == nil {
 		t.Error("a managed file was ignored")
 	}
 
@@ -91,5 +91,37 @@ func TestBaselineIgnoreAndTrack(t *testing.T) {
 	}
 	if out := git(t, w.remote, "ls-tree", "-r", "--name-only", "main"); strings.Contains(out, "local.txt") || strings.Contains(out, "blob.bin") {
 		t.Error("an ignored file reached the remote")
+	}
+
+	// Ignore refuses a directory, a missing file and a path outside roots.
+	for _, p := range []model.Target{".config/app/cache", ".config/app/missing.txt", ".config/elsewhere.txt"} {
+		if err := A.eng.Ignore(ctx, nil, p); err == nil {
+			t.Errorf("ignored %s", p)
+		}
+	}
+
+	// A file made under the glob after the root arrived, then a pusher
+	// drops the glob: the files it hid are held, never auto-committed.
+	later := model.Target(".config/app/cache/later.bin")
+	A.write(later, "cache made later\n")
+	A.sync()
+	B.sync()
+	man, err = B.st.ReadPath(ctx, B.main(), "manifest.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := strings.Replace(string(man), "ignore = [\"cache/**\"]\n", "", 1)
+	if open == string(man) {
+		t.Fatal("manifest lacks the ignore glob")
+	}
+	pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(open), Mode: 0o100644}})
+	for i := 0; i < 3; i++ {
+		r = A.sync()
+		if len(r.Committed) != 0 {
+			t.Fatalf("glob removal committed hidden files: %+v", r)
+		}
+	}
+	if out := git(t, w.remote, "ls-tree", "-r", "--name-only", "main"); strings.Contains(out, "blob.bin") || strings.Contains(out, "later.bin") {
+		t.Error("a file the dropped glob hid reached the remote")
 	}
 }

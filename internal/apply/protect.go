@@ -243,7 +243,15 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 		o, had := old[r.Path]
 		if had && o.Enclave == r.Enclave {
 			// The allow covers path and enclave; `when` and the ignore
-			// globs only narrow what is captured, so they follow the plan.
+			// globs follow the plan. A glob the plan drops would expose
+			// files it hid, so those files join the baseline first: they
+			// are held, never captured automatically.
+			if lost := droppedGlobs(o, r); len(lost) > 0 {
+				if !e.baselineIgnored(ctx, st, o, lost) {
+					roots = append(roots, o) // walk unfinished; retry next apply
+					continue
+				}
+			}
 			roots = append(roots, r)
 			continue
 		}
@@ -298,10 +306,45 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 	return holds
 }
 
+// droppedGlobs lists the ignore globs of old that next no longer has.
+func droppedGlobs(old, next manifest.Root) []string {
+	have := map[string]bool{}
+	for _, g := range next.Ignore {
+		have[g] = true
+	}
+	var lost []string
+	for _, g := range old.Ignore {
+		if !have[g] {
+			lost = append(lost, g)
+		}
+	}
+	return lost
+}
+
+// baselineIgnored records in st.Baseline the unmanaged files under root
+// that one of the globs hides. It reports false when the walk did not finish.
+func (e *Engine) baselineIgnored(ctx context.Context, st *State, root manifest.Root, globs []string) bool {
+	news, done := e.walkRoot(ctx, st, root, e.ScanBudget, true)
+	if !done {
+		return false
+	}
+	if st.Baseline == nil {
+		st.Baseline = map[model.Target]time.Time{}
+	}
+	hide := manifest.Root{Path: root.Path, Ignore: globs}
+	now := e.Now()
+	for _, d := range news {
+		if _, ok := st.Baseline[d.Target]; !ok && hide.Ignored(d.Target) {
+			st.Baseline[d.Target] = now
+		}
+	}
+	return true
+}
+
 // baseline records the unmanaged regular files under root in st.Baseline.
 // It reports false when the walk did not finish within the scan budget.
 func (e *Engine) baseline(ctx context.Context, st *State, root manifest.Root) bool {
-	news, done := e.walkRoot(ctx, st, root, e.ScanBudget)
+	news, done := e.walkRoot(ctx, st, root, e.ScanBudget, true)
 	if !done {
 		return false
 	}

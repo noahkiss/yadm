@@ -449,8 +449,8 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	if !managedOrRooted(snap, t) {
-		return Verdict{}, nil
+	if !managedOrRooted(snap, t) || m.eng.Ignored(t) {
+		return Verdict{}, nil // ignored on purpose: only a named commit tracks it
 	}
 	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
@@ -494,6 +494,15 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	_, _ = m.load(ctx)
+	kept := ts[:0:0]
+	for _, t := range ts {
+		if !m.eng.Ignored(t) {
+			kept = append(kept, t)
+		}
+	}
+	if ts = kept; len(ts) == 0 {
+		return Verdict{}, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
 	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{

@@ -833,8 +833,10 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 		return result{}, err
 	}
 	var res apply.Result
+	fetched := false
 	if err := m.locked(ctx, func() error {
 		rev := m.allowRev(ctx)
+		fetched = rev != m.snap.Commit
 		if err := allow(m, rev, t); err != nil {
 			if rev == m.snap.Commit {
 				return err
@@ -843,6 +845,7 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 			if err2 := allow(m, m.snap.Commit, t); err2 != nil {
 				return err
 			}
+			fetched = false
 		}
 		var err error
 		res, err = m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{})
@@ -851,7 +854,11 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 		return lockedResult(err), err
 	}
 	res = normResult(res)
-	return result{data: map[string]any{"allowed": t, "apply": res}, text: "allowed " + string(t)}, attention(res.Holds)
+	out := result{data: map[string]any{"allowed": t, "apply": res}, text: "allowed " + string(t)}
+	if fetched {
+		out.next = []string{"yadm sync"} // takes the refused source now
+	}
+	return out, attention(res.Holds)
 }
 
 func (a *app) cmdBisect(cmd *cobra.Command, args []string) (result, error) {

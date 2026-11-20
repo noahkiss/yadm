@@ -466,6 +466,7 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
    - clean: `commit-tree` with the original message and trailers;
    - conflict on a sealed file this machine can open: open the three stages, merge them in memory (`textmerge.Merge3`), reseal, write the tree; a remaining conflict is held like any other;
    - other conflicts: the clean paths of the commit land; conflicted paths move to the local-only ref `refs/yadm/held/<machine>` and become `conflict` holds with all three stage blobs.
+   Before a conflict is held, a ladder tries to resolve it in memory: a key-level merge for JSON, JSONC and TOML (edits to different keys never conflict; `volatile` keys keep this machine's value; one key changed differently on both sides fails), then the entry's `merge` policy (section 4). A rung that resolves a file records it in a `Yadm-Resolved` trailer.
    History stays linear. There is no autostash and no merge commit.
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes).
 7. Apply.
@@ -475,6 +476,8 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
 A manual or hook commit runs steps 3 to 9 right after its commit, in the same call.
 
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
+
+A fetched manifest that weakens protection is refused the same way, with a `manifest-guard` hold: a target both sources plan loses its enclave, a seal key or regions, or a new or changed owned root covers a path the accepted source protects. The guard compares the last accepted remote with the fetched one, and refuses only what local `main` does not already run. `yadm protection allow <target>` or `yadm root allow <path>` names the refused source while the hold is open; the next sync takes it.
 
 A conflict hold is settled with `yadm hold resolve <id>`: `--take target` (or `--take <file>`, written to the target first) commits this machine's file over the current source and pushes it; `--take source` drops the hold and rewrites the target from the source, backing up the replaced bytes.
 
