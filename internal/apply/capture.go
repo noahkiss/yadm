@@ -14,6 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
+	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
 // Git modes of captured blobs.
@@ -153,7 +154,23 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		}
 		p, err := e.Text.PatchTemplate(prevPlain, last, target)
 		if err != nil {
-			return hold(model.HoldRenderedEdit, "hand edit does not patch into the template: "+err.Error())
+			detail := "hand edit touches rendered expressions or conditional blocks; it does not patch into the template: " + err.Error()
+			cand, ok := []byte(nil), false
+			if enc == "" {
+				cand, ok = e.literalCandidate(snap, r, prevPlain, last, target)
+			}
+			if ok {
+				detail += "; the proposed template patch replaces the edited expressions with literal text, which renders the same on every machine: review it before committing"
+			}
+			_, h, herr := hold(model.HoldRenderedEdit, detail)
+			if h != nil {
+				if ok {
+					*h = proposePatch(*h, r, enc, model.PatchOfTemplate, prevPlain, cand)
+				} else {
+					*h = proposePatch(*h, r, enc, model.PatchOfRender, last, target)
+				}
+			}
+			return nil, h, herr
 		}
 		newPlain = p
 	case !spec.Empty():
@@ -186,7 +203,11 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		if err != nil {
 			detail += ": " + err.Error()
 		}
-		return hold(failReason, detail)
+		_, h, herr := hold(failReason, detail)
+		if h != nil && failReason == model.HoldRenderedEdit {
+			*h = proposePatch(*h, r, enc, model.PatchOfTemplate, prevPlain, newPlain)
+		}
+		return nil, h, herr
 	}
 	if bytes.Equal(newRaw, prevRaw) {
 		// Nothing to commit: the drift is only in parts the source does not own.
@@ -198,11 +219,78 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		clearFileHolds(st, t)
 		return nil, nil, nil
 	}
-	mode := uint32(gitModeFile)
-	if te, ok := snap.Tree[r.Source]; ok && te.Mode == gitModeExec && enc == "" {
-		mode = gitModeExec
+	return &store.Change{Path: r.Source, Blob: newRaw, Mode: sourceMode(snap, r.Source)}, nil, nil
+}
+
+// literalCandidate builds a template that renders to target on this
+// machine: a three-way merge of the template and the target over the last
+// render, with each conflict resolved to the target's lines. Literal edits
+// land beside the template's expressions; an edit on an expression or a
+// conditional block replaces it with literal text. It returns false when
+// the candidate does not render back to the target byte for byte.
+func (e *Engine) literalCandidate(snap *Snapshot, r manifest.Resolved, tmpl, last, target []byte) ([]byte, bool) {
+	merged, regions, err := e.Text.Merge3(last, tmpl, target)
+	if err != nil {
+		return nil, false
 	}
-	return &store.Change{Path: r.Source, Blob: newRaw, Mode: mode}, nil, nil
+	cand, ok := takeTheirs(merged, len(regions))
+	if !ok {
+		return nil, false
+	}
+	got, _, err := e.produceFrom(snap, r, cand, target)
+	if err != nil || !bytes.Equal(got, target) {
+		return nil, false
+	}
+	return cand, true
+}
+
+// takeTheirs resolves every conflict block of a textmerge.Merge3 result to
+// its theirs side. want is the number of conflicts Merge3 reported; a
+// different count of marker blocks means a marker line was ambiguous.
+func takeTheirs(merged []byte, want int) ([]byte, bool) {
+	var out bytes.Buffer
+	state, n := 0, 0 // 0 outside, 1 ours side, 2 theirs side
+	for _, line := range bytes.SplitAfter(merged, []byte("\n")) {
+		bare := strings.TrimRight(string(line), "\r\n")
+		switch {
+		case state == 0 && bare == textmerge.MarkerOurs:
+			state = 1
+		case state == 1 && bare == textmerge.MarkerSep:
+			state = 2
+		case state == 2 && bare == textmerge.MarkerTheirs:
+			state, n = 0, n+1
+		case state == 1:
+		default:
+			out.Write(line)
+		}
+	}
+	if state != 0 || n != want {
+		return nil, false
+	}
+	return out.Bytes(), true
+}
+
+// proposePatch attaches a proposed source patch to a rendered_edit hold, so
+// an agent can finish the capture in one step: edit Source, then commit.
+// An enclave template gets no patch: holds live in the state file, which
+// never holds plaintext.
+func proposePatch(h model.Hold, r manifest.Resolved, enc model.EnclaveName, of string, from, to []byte) model.Hold {
+	h.Source = r.Source
+	if enc != "" {
+		h.Next = append(h.Next, "yadm diff "+string(r.Target))
+		return h
+	}
+	a, b := "a/"+string(r.Source), "b/"+string(r.Source)
+	if of == model.PatchOfRender {
+		a, b = "last-render/"+string(r.Target), "target/"+string(r.Target)
+	}
+	d, err := textmerge.Diff(a, b, from, to)
+	if err != nil || d == "" {
+		return h
+	}
+	h.Patch, h.PatchOf = d, of
+	h.Next = append(h.Next, "edit "+string(r.Source)+" and run yadm commit "+string(r.Target))
+	return h
 }
 
 // prevSource reads the source bytes the target was last applied from.
@@ -249,7 +337,7 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	if err != nil {
 		return nil, nil, err
 	}
-	return &store.Change{Path: model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target)), Blob: blob, Mode: gitModeFile}, nil, nil
+	return &store.Change{Path: model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target)), Blob: blob, Mode: mode}, nil, nil
 }
 
 func rootOf(p *manifest.Plan, t model.Target) (manifest.Root, bool) {

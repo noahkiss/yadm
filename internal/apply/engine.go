@@ -203,18 +203,40 @@ func (e *Engine) readSource(ctx context.Context, snap *Snapshot, p model.SourceP
 	return b, "", err
 }
 
-// modeOf is an entry's target mode: explicit, else 0600 for an enclave file,
-// else 0755 for an executable source, else 0644.
+// modeOf is an entry's target mode. An explicit `mode` wins. Otherwise the
+// mode follows the source, sealed or not: 0755 for an executable source,
+// else 0644. Under a private directory (.ssh, .gnupg) group and other
+// access is removed: 0700 or 0600.
 func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
-	switch {
-	case r.Entry.Mode != 0:
+	if r.Entry.Mode != 0 {
 		return r.Entry.Mode.Perm()
-	case r.Entry.Enclave != "":
-		return 0o600
-	case snap.Tree[r.Source].Mode&0o111 != 0:
-		return 0o755
 	}
-	return 0o644
+	plain := r
+	plain.Entry.Enclave = "" // enclave files follow the source too
+	m := plain.FileMode(snap.Tree[r.Source].Mode&0o111 != 0).Perm()
+	if privateTarget(r.Target) {
+		m &^= 0o077
+	}
+	return m
+}
+
+// privateDirs are top-level directories whose files and subdirectories are
+// kept owner-only when the manifest sets no mode.
+var privateDirs = map[string]bool{".ssh": true, ".gnupg": true}
+
+// privateTarget reports whether a target lies under a private directory.
+func privateTarget(t model.Target) bool {
+	first, _, nested := strings.Cut(string(t), "/")
+	return nested && privateDirs[first]
+}
+
+// sourceMode is the git mode a change to an existing source path keeps: the
+// executable bit follows the path's current tree entry, sealed or not.
+func sourceMode(snap *Snapshot, p model.SourcePath) uint32 {
+	if te, ok := snap.Tree[p]; ok && te.Mode == gitModeExec {
+		return gitModeExec
+	}
+	return gitModeFile
 }
 
 // produce computes the target bytes for one resolved entry. lv is the live
@@ -569,24 +591,39 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	e.pruneBackups(now)
 
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
-	results, holds := e.runTasks(ctx, snap, ev)
+	results, holds := e.runTasks(ctx, snap, st, ev)
 	res.Tasks = append(res.Tasks, results...)
-	res.Holds = append(res.Holds, holds...)
 	if len(results) > 0 || len(holds) > 0 || ev.FirstApply {
 		if st.Tasks == nil {
 			st.Tasks = map[string]model.TaskResult{}
 		}
 		for _, r := range results {
 			st.Tasks[r.Task] = r
+			clearTaskHolds(st, r.Task)
 		}
 		for _, h := range holds {
+			// Keep the first sighting, so a task held on every apply keeps one id.
+			h = model.KeepSince(st.Holds, h, now)
 			putHold(st, h)
+			res.Holds = append(res.Holds, h)
 		}
-		if ev.FirstApply && !firstApplyHeld(holds) {
+		if len(paths) == 0 {
+			e.pruneTaskHolds(st, snap)
+		}
+		if ev.FirstApply && !firstApplyHeld(st, snap) {
 			st.FirstApplyDone = true
 		}
 		if err := e.State.Save(st); err != nil {
 			return res, err
+		}
+	} else if len(paths) == 0 {
+		// No task fired: still drop holds a `task allow` or a manifest
+		// change has settled since the last apply.
+		before := len(st.Holds)
+		if e.pruneTaskHolds(st, snap); len(st.Holds) != before {
+			if err := e.State.Save(st); err != nil {
+				return res, err
+			}
 		}
 	}
 	return res, nil
@@ -694,7 +731,11 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 }
 
 // runTasks selects and runs the tasks an apply triggered.
-func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, ev tasks.Event) ([]model.TaskResult, []model.Hold) {
+//
+// A first-apply task whose last recorded run was a successful first-apply
+// run does not run again while the first apply stays open for another held
+// task; it still runs for its path triggers.
+func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, st *State, ev tasks.Event) ([]model.TaskResult, []model.Hold) {
 	if e.Tasks == nil || snap.Plan == nil {
 		return nil, nil
 	}
@@ -708,6 +749,7 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, ev tasks.Event) (
 	if err != nil {
 		return []model.TaskResult{{Task: "select", Commit: ev.Commit, Started: e.Now(), ExitCode: -1, Error: err.Error()}}, nil
 	}
+	sel = skipDoneFirstApply(sel, st, ev)
 	if len(sel) == 0 && len(ev.Units) == 0 {
 		return nil, nil
 	}
@@ -724,13 +766,75 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, ev tasks.Event) (
 	return e.Tasks.Run(ctx, ev, sel, req)
 }
 
-// firstApplyHeld reports whether a task hold came back, so first-apply tasks
-// run again on the next apply once they are allowed.
-func firstApplyHeld(holds []model.Hold) bool {
-	for _, h := range holds {
-		if h.Task != "" || h.Reason == model.HoldTaskUntrusted {
+// skipDoneFirstApply drops the first-apply trigger of tasks that already
+// ran successfully for it. A task that also matched written or removed
+// targets keeps running for those.
+func skipDoneFirstApply(sel []tasks.Selected, st *State, ev tasks.Event) []tasks.Selected {
+	changed := map[model.Target]bool{}
+	for _, t := range ev.Changed {
+		changed[t] = true
+	}
+	out := sel[:0]
+	for _, s := range sel {
+		prev, ok := st.Tasks[s.Name]
+		if s.Trigger != tasks.TriggerFirstApply || !ok || prev.Trigger != tasks.TriggerFirstApply || prev.ExitCode != 0 || prev.Error != "" {
+			out = append(out, s)
+			continue
+		}
+		if len(s.Matched) == 0 {
+			continue
+		}
+		s.Trigger = tasks.TriggerRemove
+		for _, t := range s.Matched {
+			if changed[t] {
+				s.Trigger = tasks.TriggerPaths
+				break
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// firstApplyHeld reports whether a first-apply task of the plan is still
+// held, so the first apply is not marked done and that task runs on the
+// next apply once it is allowed. Holds of other tasks do not count.
+func firstApplyHeld(st *State, snap *Snapshot) bool {
+	for _, h := range st.Holds {
+		if h.Task == "" || h.Target != "" {
+			continue
+		}
+		if snap.Plan == nil {
+			return true
+		}
+		if def, ok := snap.Plan.Tasks[h.Task]; ok && def.FirstApply {
 			return true
 		}
 	}
 	return false
+}
+
+// pruneTaskHolds drops task_untrusted holds that have nothing left to allow:
+// the plan no longer has the task, or its current definition is allowed now
+// (it runs on its next trigger).
+func (e *Engine) pruneTaskHolds(st *State, snap *Snapshot) {
+	if snap.Plan == nil {
+		return
+	}
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		if h.Target == "" && h.Reason == model.HoldTaskUntrusted {
+			def, ok := snap.Plan.Tasks[h.Task]
+			if !ok {
+				continue
+			}
+			if e.Tasks != nil && e.Tasks.Allow != nil {
+				if hash, err := tasks.DefinitionHash(def); err == nil && e.Tasks.Allow.Allowed(extexec.KindTask, h.Task, hash) {
+					continue
+				}
+			}
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
 }

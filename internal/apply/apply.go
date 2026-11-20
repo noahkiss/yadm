@@ -192,26 +192,11 @@ func SetCrypto(s *crypt.Set) Crypto {
 
 type setCrypto struct{ *crypt.Set }
 
-func (c setCrypto) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
-	r, ok := c.Rings[e]
-	if !ok {
-		return nil, crypt.ErrNotMember
-	}
-	return r.SealFile(pt)
-}
-
-func (c setCrypto) OpenFile(e model.EnclaveName, ct []byte) ([]byte, error) {
-	r, ok := c.Rings[e]
-	if !ok {
-		return nil, crypt.ErrNotMember
-	}
-	return r.OpenFile(ct)
-}
-
 // Rules is the intra-file rules engine. The default is package rules.
 type Rules interface {
 	ToTarget(source, live []byte, spec rules.Spec, s rules.Sealer) ([]byte, error)
 	ToSource(target, prevSource []byte, spec rules.Spec, s rules.Sealer) ([]byte, []rules.Violation, error)
+	Reseal(source []byte, spec rules.Spec, e model.EnclaveName, s rules.Sealer) ([]byte, error)
 }
 
 type pkgRules struct{}
@@ -222,6 +207,10 @@ func (pkgRules) ToTarget(source, live []byte, spec rules.Spec, s rules.Sealer) (
 
 func (pkgRules) ToSource(target, prev []byte, spec rules.Spec, s rules.Sealer) ([]byte, []rules.Violation, error) {
 	return rules.ToSource(target, prev, spec, s)
+}
+
+func (pkgRules) Reseal(src []byte, spec rules.Spec, e model.EnclaveName, s rules.Sealer) ([]byte, error) {
+	return rules.Reseal(src, spec, e, s)
 }
 
 // Text is the in-process merge and template patcher. The default is package textmerge.

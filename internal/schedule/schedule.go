@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -21,16 +22,29 @@ const DefaultInterval = 5 * time.Minute
 // DefaultLabel names the launchd agent and the systemd units.
 const DefaultLabel = "yadm-sync"
 
-// LiveEnv must be "1" for ForOS to install or remove a real schedule. The
-// gate keeps every build and test from touching the owner's service manager
-// until integration lifts it.
+// LiveEnv must be "1" for a test binary to install or remove a real
+// schedule. Production code decides through Options.Live instead.
 const LiveEnv = "YADM_SCHEDULE_LIVE"
+
+// SystemPath is the PATH tail every schedule sets, after the binary's own
+// directory: the Homebrew prefixes (Apple silicon, Intel, Linux), then the
+// system directories. A launchd or systemd job otherwise starts with a
+// minimal PATH that lacks git and the tools tasks call.
+var SystemPath = []string{
+	"/opt/homebrew/bin", "/opt/homebrew/sbin",
+	"/usr/local/bin", "/usr/local/sbin",
+	"/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin",
+	"/usr/bin", "/bin", "/usr/sbin", "/sbin",
+}
 
 // Spec describes the schedule to install.
 type Spec struct {
-	Binary   string
-	Interval time.Duration
-	Label    string
+	Binary   string        // absolute path of yadm; see StableBinary
+	Interval time.Duration // default DefaultInterval
+	Label    string        // default DefaultLabel
+	// Path is the PATH the job runs with. Empty means the binary's
+	// directory followed by SystemPath.
+	Path []string
 }
 
 // Status is what Status reports.
@@ -61,16 +75,24 @@ type Options struct {
 	Label      string    // for Uninstall and Status; default DefaultLabel
 	Commander  Commander // runs launchctl or systemctl
 	// Live allows Install and Uninstall to run the real launchctl or
-	// systemctl. ForOS sets it from YADM_SCHEDULE_LIVE=1.
+	// systemctl. The caller sets it: init and adopt pass true unless given
+	// --no-schedule, and `yadm schedule install|uninstall` pass true.
 	Live bool
 }
 
 // ErrNotLive is returned when Install or Uninstall would change the real
-// schedule without YADM_SCHEDULE_LIVE=1.
-var ErrNotLive = errors.New("schedule: refusing to change the real schedule; set " + LiveEnv + "=1")
+// schedule without Options.Live, or from a test binary without
+// YADM_SCHEDULE_LIVE=1.
+var ErrNotLive = errors.New("schedule: refusing to change the real schedule: use ForOSLive or Options.Live (a test binary also needs " + LiveEnv + "=1)")
 
-// ForOS returns the scheduler for "darwin" (launchd) or "linux" (systemd).
-func ForOS(goos string) (Scheduler, error) {
+// ForOS returns the read-only scheduler for "darwin" (launchd) or "linux"
+// (systemd): Status works, Install and Uninstall return ErrNotLive. Use
+// ForOSLive to change the schedule.
+func ForOS(goos string) (Scheduler, error) { return ForOSLive(goos, false) }
+
+// ForOSLive returns the scheduler for goos with Options.Live set by the
+// caller.
+func ForOSLive(goos string, live bool) (Scheduler, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -80,8 +102,30 @@ func ForOS(goos string) (Scheduler, error) {
 		ConfigHome: os.Getenv("XDG_CONFIG_HOME"),
 		UID:        os.Getuid(),
 		Commander:  execCommander{},
-		Live:       os.Getenv(LiveEnv) == "1",
+		Live:       live,
 	})
+}
+
+// StableBinary maps a binary inside a Homebrew Cellar
+// (<prefix>/Cellar/<formula>/<version>/bin/<name>) to the version-free link
+// <prefix>/bin/<name> when that link names the same file, so a schedule
+// survives an upgrade. Any other path comes back unchanged.
+func StableBinary(p string) string {
+	dir, name := filepath.Split(filepath.Clean(p))
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(dir)), "/")
+	// .../<prefix>/Cellar/<formula>/<version>/bin
+	n := len(parts)
+	if n < 5 || parts[n-1] != "bin" || parts[n-4] != "Cellar" {
+		return p
+	}
+	prefix := filepath.FromSlash(strings.Join(parts[:n-4], "/"))
+	link := filepath.Join(prefix, "bin", name)
+	a, err1 := os.Stat(p)
+	b, err2 := os.Stat(link)
+	if err1 != nil || err2 != nil || !os.SameFile(a, b) {
+		return p
+	}
+	return link
 }
 
 // New returns the scheduler for goos with explicit options. With the real
@@ -115,9 +159,14 @@ func New(goos string, o Options) (Scheduler, error) {
 
 type base struct{ o Options }
 
-// guard refuses to change the real service manager unless Live is set.
+// guard refuses to change the real service manager unless Live is set. A
+// test binary also needs YADM_SCHEDULE_LIVE=1, so no test touches the
+// developer's service manager by accident.
 func (b base) guard() error {
-	if _, real := b.o.Commander.(execCommander); real && !b.o.Live {
+	if _, real := b.o.Commander.(execCommander); !real {
+		return nil
+	}
+	if !b.o.Live || (testing.Testing() && os.Getenv(LiveEnv) != "1") {
 		return ErrNotLive
 	}
 	return nil
@@ -149,8 +198,26 @@ func normalize(s Spec) (Spec, error) {
 	if !labelPattern.MatchString(s.Label) {
 		return s, fmt.Errorf("schedule: label %q: invalid", s.Label)
 	}
+	if len(s.Path) == 0 {
+		s.Path = append([]string{filepath.Dir(s.Binary)}, SystemPath...)
+	}
+	seen := map[string]bool{}
+	var path []string
+	for _, d := range s.Path {
+		if !filepath.IsAbs(d) || strings.ContainsAny(d, ":\n\r\x00") {
+			return s, fmt.Errorf("schedule: PATH entry %q must be an absolute path without ':' or control characters", d)
+		}
+		if !seen[d] {
+			seen[d] = true
+			path = append(path, d)
+		}
+	}
+	s.Path = path
 	return s, nil
 }
+
+// pathValue is the PATH a spec's job runs with.
+func pathValue(s Spec) string { return strings.Join(s.Path, ":") }
 
 // syncArgs is what every schedule runs.
 var syncArgs = []string{"sync", "--auto"}
@@ -182,6 +249,11 @@ func LaunchdPlist(s Spec) ([]byte, error) {
 		b.WriteString("\t\t<string>" + esc(a) + "</string>\n")
 	}
 	b.WriteString(`	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>` + esc(pathValue(s)) + `</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StartInterval</key>
@@ -211,6 +283,13 @@ func systemdQuote(w string) string {
 	return `"` + r.Replace(w) + `"`
 }
 
+// systemdEnv quotes one Environment= assignment: "%" doubles, and a
+// backslash or double quote is escaped inside the double quotes.
+func systemdEnv(k, v string) string {
+	r := strings.NewReplacer(`%`, `%%`, `\`, `\\`, `"`, `\"`)
+	return `"` + r.Replace(k+"="+v) + `"`
+}
+
 // SystemdService returns the oneshot service the timer starts.
 func SystemdService(s Spec) ([]byte, error) {
 	s, err := normalize(s)
@@ -225,6 +304,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+Environment=` + systemdEnv("PATH", pathValue(s)) + `
 ExecStart=` + strings.Join(words, " ") + `
 Nice=10
 IOSchedulingClass=idle

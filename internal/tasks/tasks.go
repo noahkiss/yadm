@@ -185,16 +185,6 @@ func DefinitionHash(def any) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// holdID is the stable hold id: hex SHA-256 of reason, target or task, and since.
-func holdID(h model.Hold) string {
-	key := string(h.Target)
-	if key == "" {
-		key = "task:" + h.Task
-	}
-	sum := sha256.Sum256([]byte(string(h.Reason) + "\x00" + key + "\x00" + h.Since.UTC().Format(time.RFC3339Nano)))
-	return hex.EncodeToString(sum[:])
-}
-
 func newHold(h model.Hold) model.Hold {
 	if h.Since.IsZero() {
 		h.Since = now().UTC()
@@ -202,7 +192,7 @@ func newHold(h model.Hold) model.Hold {
 	if h.Scope == "" {
 		h.Scope = model.ScopeShared
 	}
-	h.ID = holdID(h)
+	h.ID = model.HoldID(h)
 	return h
 }
 

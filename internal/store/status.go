@@ -30,12 +30,8 @@ type statusRefs struct {
 	self model.MachineID
 }
 
-// refLister is the optional listing a Store offers; *Repo implements it.
-type refLister interface {
-	listRefs(ctx context.Context, prefix string) (map[string]model.CommitID, error)
-}
-
-func (r *Repo) listRefs(ctx context.Context, prefix string) (map[string]model.CommitID, error) {
+// ListRefs implements Store.
+func (r *Repo) ListRefs(ctx context.Context, prefix string) (map[string]model.CommitID, error) {
 	out, err := r.git(ctx, "for-each-ref", "--format=%(objectname) %(refname)", prefix)
 	if err != nil {
 		return nil, err
@@ -54,13 +50,9 @@ func (r *Repo) listRefs(ctx context.Context, prefix string) (map[string]model.Co
 // machine, the fetched copy for every other machine. When both exist, the
 // newer one in the fast-forward chain wins.
 func (sr statusRefs) ReadAll(ctx context.Context) (map[model.MachineID]model.Status, error) {
-	rl, ok := sr.s.(refLister)
-	if !ok {
-		return nil, fmt.Errorf("status refs: store cannot list refs")
-	}
 	heads := map[model.MachineID]model.CommitID{}
 	for _, prefix := range []string{statusRemotePrefix, statusLocalPrefix} {
-		refs, err := rl.listRefs(ctx, prefix)
+		refs, err := sr.s.ListRefs(ctx, prefix)
 		if err != nil {
 			return nil, err
 		}

@@ -52,6 +52,37 @@ func TestParseFixture(t *testing.T) {
 	if f.Vocabulary().Collectors["packages"] != true || !f.Vocabulary().FactKeys["proxy"] {
 		t.Error("vocabulary incomplete")
 	}
+	if v := f.Vocabulary(); !reflect.DeepEqual(v.Enclaves, map[string]bool{"personal": true, "client": true}) {
+		t.Errorf("vocabulary enclaves = %v", v.Enclaves)
+	}
+}
+
+// Collector conditions run through package cond: compound expressions and
+// facts work, and an unknown name fails.
+func TestCollectorWhenUsesCond(t *testing.T) {
+	f := fixtureFleet(t)
+	v := f.Vocabulary()
+	var _ cond.Vocabulary = v
+	host := func(id model.MachineID) model.Context { return model.Context{Machine: f.Machines[id]} }
+	for _, c := range []struct {
+		when string
+		id   model.MachineID
+		want bool
+	}{
+		{"", fixture.HostB, true},
+		{"type:work & os:linux", fixture.HostC, true},
+		{"type:work & os:linux", fixture.HostB, false},
+		{"!type:client & fact:proxy", fixture.HostB, true},
+		{"machine:laptop-a | type:client", fixture.HostA, true},
+	} {
+		got, err := matchWhen(c.when, v, host(c.id))
+		if err != nil || got != c.want {
+			t.Errorf("%q on %s = %v, %v; want %v", c.when, c.id, got, err, c.want)
+		}
+	}
+	if _, err := matchWhen("type:nosuch", v, host(fixture.HostA)); err == nil {
+		t.Error("unknown type accepted")
+	}
 }
 
 const base = `schema = 1
@@ -180,24 +211,6 @@ func (r *fakeRunner) Run(_ context.Context, s extexec.Spec, q extexec.Request) (
 	return r.res[q.Name], r.err[q.Name]
 }
 
-// stubWhen evaluates "type:<t>" and "os:<o>" while package cond is a stub.
-func stubWhen(t *testing.T) {
-	t.Helper()
-	old := matchWhen
-	matchWhen = func(when string, _ cond.Vocabulary, mctx model.Context) (bool, error) {
-		switch {
-		case when == "":
-			return true, nil
-		case strings.HasPrefix(when, "type:"):
-			return mctx.Machine.HasType(model.TypeName(strings.TrimPrefix(when, "type:"))), nil
-		case strings.HasPrefix(when, "os:"):
-			return mctx.Machine.OS == strings.TrimPrefix(when, "os:"), nil
-		}
-		return false, errors.New("bad condition")
-	}
-	t.Cleanup(func() { matchWhen = old })
-}
-
 func collectFleet(t *testing.T) *File {
 	f, err := Parse([]byte(base + `[machines.m-2]
 name = "host-b"
@@ -226,7 +239,6 @@ command = ["u-tool"]
 }
 
 func TestCollect(t *testing.T) {
-	stubWhen(t)
 	f := collectFleet(t)
 	r := &fakeRunner{
 		res: map[string]extexec.Result{
@@ -287,7 +299,6 @@ func TestCollect(t *testing.T) {
 }
 
 func TestCollectCancelled(t *testing.T) {
-	stubWhen(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, err := Collect(ctx, collectFleet(t), model.Context{}, &fakeRunner{}, func(string, CollectorDef) bool { return true })
@@ -298,7 +309,6 @@ func TestCollectCancelled(t *testing.T) {
 
 // End to end through the real runner: line output is normalized.
 func TestCollectRealRunner(t *testing.T) {
-	stubWhen(t)
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "tool")
 	os.WriteFile(tool, []byte("#!/bin/sh\nprintf 'b\\n a\\n\\nb\\n'\n"), 0o755)

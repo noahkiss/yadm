@@ -2,8 +2,6 @@ package apply
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -20,16 +18,9 @@ var fileHoldReasons = map[model.HoldReason]bool{
 	model.HoldRenderedEdit: true,
 }
 
-// HoldID returns the stable id of a hold: hex SHA-256 of reason, target or
-// task, and since.
-func HoldID(h model.Hold) string {
-	subject := string(h.Target)
-	if subject == "" {
-		subject = "task:" + h.Task
-	}
-	s := sha256.Sum256([]byte(string(h.Reason) + "\x00" + subject + "\x00" + h.Since.UTC().Format(time.RFC3339Nano)))
-	return hex.EncodeToString(s[:])
-}
+// HoldID returns the stable id of a hold. It is model.HoldID, kept here for
+// callers of this package.
+func HoldID(h model.Hold) string { return model.HoldID(h) }
 
 // age renders how long ago t was, rounded for people.
 func age(now, t time.Time) string {
@@ -50,31 +41,16 @@ func age(now, t time.Time) string {
 // fileHold builds a hold on a target. since is kept from an existing hold of
 // the same reason, so the id and the reported age stay stable.
 func fileHold(st *State, now time.Time, t model.Target, scope model.Scope, reason model.HoldReason, since time.Time, detail string) model.Hold {
-	for _, h := range st.Holds {
-		if h.Target == t && h.Reason == reason {
-			since = h.Since
-			break
-		}
-	}
-	if since.IsZero() {
-		since = now
-	}
-	h := model.Hold{
-		Target: t,
-		Scope:  scope,
-		Reason: reason,
-		Since:  since,
-		Detail: fmt.Sprintf("%s; since %s (%s ago)", detail, since.UTC().Format(time.RFC3339), age(now, since)),
-	}
-	h.ID = HoldID(h)
+	h := model.KeepSince(st.Holds, model.Hold{Target: t, Scope: scope, Reason: reason, Since: since}, now)
+	h.Detail = fmt.Sprintf("%s; since %s (%s ago)", detail, h.Since.UTC().Format(time.RFC3339), age(now, h.Since))
 	h.Next = []string{"yadm hold show " + h.ID, "yadm hold resolve " + h.ID + " --take target", "yadm hold resolve " + h.ID + " --take source"}
 	return h
 }
 
-// putHold inserts or replaces the hold with the same target and reason.
+// putHold inserts or replaces the hold with the same target, task and reason.
 func putHold(st *State, h model.Hold) {
 	for i, x := range st.Holds {
-		if x.Target == h.Target && x.Task == h.Task && x.Reason == h.Reason {
+		if model.SameHold(x, h) {
 			st.Holds[i] = h
 			return
 		}
@@ -87,6 +63,18 @@ func clearFileHolds(st *State, t model.Target) {
 	out := st.Holds[:0]
 	for _, h := range st.Holds {
 		if h.Target == t && fileHoldReasons[h.Reason] {
+			continue
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
+}
+
+// clearTaskHolds removes the task_untrusted hold of a task that has now run.
+func clearTaskHolds(st *State, task string) {
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		if h.Target == "" && h.Task == task && h.Reason == model.HoldTaskUntrusted {
 			continue
 		}
 		out = append(out, h)

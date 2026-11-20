@@ -50,9 +50,12 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 		}
 	}
 	conflict := func(detail string) (*store.Change, *model.Hold, error) {
-		h := model.Hold{Target: target, Scope: model.Scope(enc), Reason: model.HoldConflict, Since: e.Now(),
-			Detail: detail, Base: c.Base, Ours: c.Ours, Theirs: c.Theirs}
-		h.ID = HoldID(h)
+		var prev []model.Hold
+		if st, err := e.loadState(); err == nil {
+			prev = st.Holds
+		}
+		h := model.KeepSince(prev, model.Hold{Target: target, Scope: model.Scope(enc), Reason: model.HoldConflict,
+			Detail: detail, Base: c.Base, Ours: c.Ours, Theirs: c.Theirs}, e.Now())
 		h.Next = []string{"yadm hold show " + h.ID}
 		return nil, &h, nil
 	}
@@ -92,7 +95,7 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 	if err != nil {
 		return nil, nil, fmt.Errorf("merge %s: seal: %w", c.Path, err)
 	}
-	return &store.Change{Path: c.Path, Blob: sealed, Mode: gitModeFile}, nil, nil
+	return &store.Change{Path: c.Path, Blob: sealed, Mode: sourceMode(snap, c.Path)}, nil, nil
 }
 
 // Reseal reseals every file, value and region of an enclave under its
@@ -121,7 +124,7 @@ func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.Encla
 	}
 	sort.Slice(paths, func(i, j int) bool { return paths[i] < paths[j] })
 	add := func(p model.SourcePath, t model.Target, b []byte) {
-		out.Changes = append(out.Changes, store.Change{Path: p, Blob: b, Mode: gitModeFile})
+		out.Changes = append(out.Changes, store.Change{Path: p, Blob: b, Mode: sourceMode(snap, p)})
 		out.Paths = append(out.Paths, t)
 		out.Scopes[t] = scope
 	}
@@ -182,14 +185,7 @@ func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.Encla
 		if err != nil {
 			return out, err
 		}
-		plain, err := e.Rules.ToTarget(raw, nil, spec, sealer)
-		if err != nil {
-			return out, fmt.Errorf("reseal %s: %w", p, err)
-		}
-		fresh, viol, err := e.Rules.ToSource(plain, raw, spec, sealer)
-		if len(viol) > 0 {
-			return out, fmt.Errorf("reseal %s: seal guard: %v", p, viol)
-		}
+		fresh, err := e.Rules.Reseal(raw, spec, enclave, sealer)
 		if err != nil {
 			return out, fmt.Errorf("reseal %s: %w", p, err)
 		}

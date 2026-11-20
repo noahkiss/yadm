@@ -205,6 +205,26 @@ func (s *Set) OpenRegion(e model.EnclaveName, label, token string) ([]byte, erro
 	return r.OpenRegion(label, token)
 }
 
+// SealFile seals a whole file for an enclave under its current epoch. It
+// lets a *Set serve as the importer's Sealer.
+func (s *Set) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error) {
+	r, ok := s.ring(e)
+	if !ok {
+		return nil, ErrNotMember
+	}
+	return r.SealFile(plaintext)
+}
+
+// OpenFile opens a whole-file container of an enclave, sealed under any
+// epoch this machine holds.
+func (s *Set) OpenFile(e model.EnclaveName, container []byte) ([]byte, error) {
+	r, ok := s.ring(e)
+	if !ok {
+		return nil, ErrNotMember
+	}
+	return r.OpenFile(container)
+}
+
 func (s *Set) ring(e model.EnclaveName) (*Keyring, bool) {
 	if s == nil {
 		return nil, false

@@ -1,6 +1,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"time"
@@ -114,6 +116,56 @@ type Hold struct {
 	Ours   string   `json:"ours,omitempty"`
 	Theirs string   `json:"theirs,omitempty"`
 	Next   []string `json:"next,omitempty"` // suggested commands, such as "yadm hold resolve <id> --take source"
+	// Rendered-edit detail: the template source and a proposed unified diff
+	// for it. PatchOf says what the diff is against: "template" (a patch of
+	// Source that failed only the round trip) or "render" (the hand edit
+	// against the last render, for an agent to map onto Source). Never set
+	// for an enclave file, so no plaintext enters the state.
+	Source  SourcePath `json:"source,omitempty"`
+	Patch   string     `json:"patch,omitempty"`
+	PatchOf string     `json:"patch_of,omitempty"`
+}
+
+// Values of Hold.PatchOf.
+const (
+	PatchOfTemplate = "template"
+	PatchOfRender   = "render"
+)
+
+// HoldID returns the stable id of a hold: the hex SHA-256 of its reason, its
+// target (or "task:" and its task name) and Since in UTC. Every package that
+// makes a hold uses it, so one hold has one id everywhere.
+func HoldID(h Hold) string {
+	subject := string(h.Target)
+	if subject == "" {
+		subject = "task:" + h.Task
+	}
+	s := sha256.Sum256([]byte(string(h.Reason) + "\x00" + subject + "\x00" + h.Since.UTC().Format(time.RFC3339Nano)))
+	return hex.EncodeToString(s[:])
+}
+
+// SameHold reports whether two holds are about the same thing: the same
+// target, task and reason.
+func SameHold(a, b Hold) bool {
+	return a.Target == b.Target && a.Task == b.Task && a.Reason == b.Reason
+}
+
+// KeepSince returns h with Since taken from the first sighting: the matching
+// hold in prev (see SameHold), if one exists. It then recomputes the ID, so a
+// hold raised again on every run keeps one id and its true age. A hold with
+// a zero Since and no match gets now.
+func KeepSince(prev []Hold, h Hold, now time.Time) Hold {
+	for _, p := range prev {
+		if SameHold(p, h) && !p.Since.IsZero() {
+			h.Since = p.Since
+			break
+		}
+	}
+	if h.Since.IsZero() {
+		h.Since = now
+	}
+	h.ID = HoldID(h)
+	return h
 }
 
 // TaskResult records one run of an on-change task.

@@ -74,8 +74,11 @@ var ErrRoundTrip = errors.New("rules: captured source does not reproduce the tar
 // valuePrefix starts a sealed value token (crypt.ValuePrefix).
 const valuePrefix = "yadm:1:"
 
-// minLeakLen is the shortest plaintext the leak check looks for. Shorter
-// values match too much unrelated text to be a useful signal.
+// minLeakLen is the shortest plaintext the leak check looks for as a bare
+// substring. A shorter sealed value is looked for only as a whole quoted
+// string ("abc" or 'abc'), which unrelated text rarely matches. A shorter
+// region line is not looked for at all: lines such as "}" or "fi" occur
+// everywhere, so the check would hold files for nothing.
 const minLeakLen = 8
 
 type sealRule struct {
@@ -558,7 +561,7 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 		}
 		for _, body := range rp {
 			for _, line := range splitLines(body) {
-				plains = append(plains, leakProbe{path: "region", text: strings.TrimSpace(string(line))})
+				plains = append(plains, leakProbe{path: "region", text: strings.TrimSpace(string(line)), region: true})
 			}
 		}
 	}
@@ -614,8 +617,9 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 }
 
 type leakProbe struct {
-	path string
-	text string
+	path   string
+	text   string
+	region bool // a line of a region body
 }
 
 // sealValues seals each value at a seal path, checks that none was lost,
@@ -696,16 +700,34 @@ func (c *compiled) sealValues(b, prev []byte, prevRoot *node, s Sealer) ([]byte,
 }
 
 // leaks reports plaintexts that appear in out but not in prev.
+//
+// Region lines are checked only against an earlier source: on a first
+// capture (prev nil) nothing was sealed before, so a body line that also
+// stands outside the region was never secret, and flagging it would hold
+// the file on its first capture.
 func leaks(out, prev []byte, probes []leakProbe) []Violation {
 	var vio []Violation
 	seen := map[string]bool{}
 	for _, p := range probes {
-		if len(p.text) < minLeakLen || seen[p.path] {
+		if p.text == "" || seen[p.path] || (p.region && prev == nil) {
 			continue
 		}
-		forms := []string{p.text}
+		short := len(p.text) < minLeakLen
+		if short && p.region {
+			continue
+		}
+		var forms []string
 		for _, q := range [][]byte{jsonFormat{}.quote(p.text), tomlFormat{}.quote(p.text)} {
-			forms = append(forms, string(q[1:len(q)-1]))
+			if short {
+				forms = append(forms, string(q)) // the whole quoted string only
+			} else {
+				forms = append(forms, string(q[1:len(q)-1]))
+			}
+		}
+		if short {
+			forms = append(forms, "'"+p.text+"'")
+		} else {
+			forms = append(forms, p.text)
 		}
 		for _, form := range forms {
 			if bytes.Contains(out, []byte(form)) && !bytes.Contains(prev, []byte(form)) {

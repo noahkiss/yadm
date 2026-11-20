@@ -35,6 +35,13 @@
 // app-owned key, which takes its comments with it. An insert lands after the
 // previous sibling, below the comment lines that sat between them.
 //
+// The leak check (SealedValueLeaked) looks for each sealed plaintext outside
+// its seal path. A value of 8 bytes or more is looked for anywhere; a shorter
+// one only as a whole quoted string. Region lines shorter than 8 bytes are
+// not looked for, and region lines are checked only against an earlier
+// source, so a first capture is never held for a line that also stands
+// outside its region.
+//
 // Only string values can be sealed, and a drop or seal path may not name an
 // array element (ErrArrayElement). A sealed string whose spelling cannot be
 // rebuilt from its value (JSON escapes, invalid UTF-8, TOML multi-line
@@ -49,6 +56,7 @@
 //	type Sealer interface{ CanOpen; SealValue; OpenValue; SealRegion; OpenRegion }  // crypt.Set implements it
 //	func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error)
 //	func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violation, error)
+//	func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]byte, error) // after remove or rotate
 //	type Violation struct{ Path string; Kind ViolationKind; Detail string }
 //	const SealedKeyRemoved, SealedValueLeaked, RegionMarkerLost, ParseFailed, SealedNotString, SealNotMember, RegionNotMember ViolationKind
 //	var ErrRoundTrip, ErrArrayElement error

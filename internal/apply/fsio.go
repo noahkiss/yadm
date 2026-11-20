@@ -110,13 +110,22 @@ func hashOf(b []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// dirMode is the mode for directories apply creates on the way to dst:
+// 0700 under a private directory (.ssh, .gnupg), else 0755.
+func (e *Engine) dirMode(dst string) fs.FileMode {
+	if rel, err := filepath.Rel(e.Home, dst); err == nil && privateTarget(model.Target(filepath.ToSlash(rel))) {
+		return 0o700
+	}
+	return 0o755
+}
+
 // writeAtomic writes b to dst through a temp file in the same directory and a
 // rename, so a reader or a crash sees either the old bytes or the new ones.
 // The temp file is created 0600 and gets its final mode before the rename.
 // guard, if set, runs just before the rename and aborts it with its error.
 func (e *Engine) writeAtomic(dst string, b []byte, mode fs.FileMode, guard func() error) error {
 	dir, base := filepath.Split(dst)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, e.dirMode(dst)); err != nil {
 		return err
 	}
 	cleanStaleTemps(dir, base)

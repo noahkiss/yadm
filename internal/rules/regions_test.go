@@ -105,6 +105,32 @@ func TestRegionGuard(t *testing.T) {
 	}
 }
 
+// keep and regions together: a region inside a kept object is sealed in the
+// source, opens on a member and stays empty on a non-member.
+func TestRegionsWithKeep(t *testing.T) {
+	c := secrecytest.NewCanary(t, "personal")
+	spec := Spec{Format: settingsSpec.Format, Keep: []string{"editor"}, Regions: true}
+	live := []byte("{\n  \"editor\": {\n    \"fontSize\": 13,\n    // yadm:seal personal extra\n    \"token\": \"" + c.String() + "\",\n    // yadm:end\n    \"tabSize\": 2\n  },\n  \"app\": 1\n}\n")
+	s := member(personal)
+	src := mustSource(t, live, nil, spec, s)
+	assertNoCanary(t, c, "source", src)
+	if bytes.Contains(src, []byte(`"app"`)) || !bytes.Contains(src, []byte("// yadm:sealed 1 1 ")) {
+		t.Fatalf("source:\n%s", src)
+	}
+	back, err := ToTarget(src, live, spec, s)
+	if err != nil || !bytes.Equal(back, live) {
+		t.Fatalf("member round trip: %v\n%s", err, back)
+	}
+	other, err := ToTarget(src, nil, spec, member())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoCanary(t, c, "non-member target", other)
+	if !bytes.Contains(other, []byte("// yadm:seal personal extra\n    // yadm:end")) {
+		t.Fatalf("non-member target:\n%s", other)
+	}
+}
+
 func TestRegionsWithJSONC(t *testing.T) {
 	c := secrecytest.NewCanary(t, "personal")
 	spec := settingsSpec

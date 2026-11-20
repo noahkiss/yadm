@@ -21,7 +21,13 @@
 //     restored from the source on capture (package rules).
 //   - A hand edit to a rendered target is drift like any other. Capture patches
 //     the template; when that fails the target is held (model.HoldRenderedEdit)
-//     and status reports it. Apply never re-renders over it.
+//     and status reports it. Apply never re-renders over it. The hold names
+//     the template (Hold.Source) and carries a proposed unified diff
+//     (Hold.Patch, Hold.PatchOf): a template patch that renders back to the
+//     target here (the edited expressions become literal text), else the
+//     edit against the last render. An agent reviews it and commits in one
+//     step. An enclave template gets no patch: holds live in
+//     the state file, which never holds plaintext.
 //   - Every command starts with Scan; scanning is a stat pass that hashes only
 //     on a stat mismatch, plus a full hash pass at most once a day.
 //
@@ -34,7 +40,7 @@
 //	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile; OpenFile }; func SetCrypto(*crypt.Set) Crypto
-//	type Rules interface{ ToTarget; ToSource }       // default: package rules
+//	type Rules interface{ ToTarget; ToSource; Reseal } // default: package rules
 //	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)

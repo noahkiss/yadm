@@ -212,6 +212,26 @@ func (fakeRules) ToSource(target, prev []byte, spec rules.Spec, s rules.Sealer) 
 	return join(out), viol, nil
 }
 
+func (fakeRules) Reseal(src []byte, spec rules.Spec, e model.EnclaveName, s rules.Sealer) ([]byte, error) {
+	var out []string
+	for _, l := range lines(src) {
+		k, v, ok := splitKV(l)
+		if enc, sealed := spec.Seal[k]; ok && sealed && enc == e {
+			p, err := s.OpenValue(e, k, v)
+			if err != nil {
+				return nil, err
+			}
+			tok, err := s.SealValue(e, k, p)
+			if err != nil {
+				return nil, err
+			}
+			l = k + "=" + tok
+		}
+		out = append(out, l)
+	}
+	return join(out), nil
+}
+
 // fakeRender substitutes {{ machine.name }} only.
 type fakeRender struct{}
 
@@ -354,6 +374,7 @@ func (w *world) load(ctx context.Context, rev model.CommitID) (*Snapshot, error)
 		plan.Targets[e.Target] = manifest.Resolved{Target: e.Target, Source: src, Entry: e, Index: i}
 	}
 	plan.Roots = man.Roots
+	plan.Tasks = man.Tasks
 	fl := &fleet.File{Schema: 1, Types: map[model.TypeName]fleet.TypeDef{
 		"work": {}, "personal": {Enclave: true}, "client": {Enclave: true},
 	}}
