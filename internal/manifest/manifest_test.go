@@ -118,7 +118,7 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Defaults.Quiet.D() != DefaultQuiet || m.Checks["c"].Timeout.D() != DefaultCheckTimeout {
+	if m.Defaults.Quiet.D() != 2*time.Minute || m.Checks["c"].Timeout.D() != DefaultCheckTimeout {
 		t.Errorf("defaults not filled: %+v %+v", m.Defaults, m.Checks["c"])
 	}
 	m, err = Parse([]byte("schema = 1\n[defaults]\nquiet = \"0s\"\n"))
@@ -167,6 +167,7 @@ func TestParseErrors(t *testing.T) {
 		{"negative quiet", head + "[[file]]\ntarget = \"a\"\nquiet = \"-1s\"\n", "negative quiet"},
 		{"bad duration", head + "[defaults]\nquiet = \"soon\"\n", FileName},
 		{"unit kind", head + "[[file]]\ntarget = \"a\"\n[[unit]]\ntarget = \"a\"\nkind = \"initd\"\n", "unknown unit kind"},
+		{"unit reload", head + "[[file]]\ntarget = \"a\"\n[[unit]]\ntarget = \"a\"\nkind = \"launchd\"\nreload = \"sometimes\"\n", "unknown unit reload"},
 		{"unit orphan", head + "[[unit]]\ntarget = \"a\"\nkind = \"launchd\"\n", "no [[file]] entry"},
 		{"unit glob", head + "[[file]]\ntarget = \"a/**\"\n[[unit]]\ntarget = \"a/*\"\nkind = \"launchd\"\n", "not a glob"},
 		{"root glob", head + "[[root]]\npath = \".config/*\"\n", "not a glob"},
@@ -175,11 +176,39 @@ func TestParseErrors(t *testing.T) {
 		{"task bad on", head + "[tasks.x]\non = [\"[\"]\ncommand = [\"a\"]\n", "syntax error"},
 		{"check no command", head + "[checks.x]\npaths = [\"**\"]\n", "command is empty"},
 		{"protected abs", head + "protected = [\"/x\"]\n", "must be relative"},
+		{"unknown merge", head + "[[file]]\ntarget = \"a\"\nmerge = \"mine\"\n", `unknown merge policy "mine"`},
+		{"volatile whole file", head + "[[file]]\ntarget = \"a\"\nvolatile = [\"x\"]\n", "volatile needs format"},
+		{"volatile empty", head + "[[file]]\ntarget = \"a\"\nformat = \"json\"\nvolatile = [\"\"]\n", "volatile: empty key path"},
+		{"root bad ignore", head + "[[root]]\npath = \"a\"\nignore = [\"[\"]\n", "syntax error"},
 	}
 	for _, tc := range cases {
 		_, err := Parse([]byte(tc.src))
 		if err == nil || !strings.Contains(err.Error(), tc.msg) {
 			t.Errorf("%s: got %v, want error containing %q", tc.name, err, tc.msg)
+		}
+	}
+}
+
+func TestParseMergeVolatileIgnore(t *testing.T) {
+	src := "schema = 1\n" +
+		"[[file]]\ntarget = \"a.json\"\nformat = \"jsonc\"\nmerge = \"structural\"\nvolatile = [\"model\", \"ui.*.width\"]\n" +
+		"[[file]]\ntarget = \"b.toml\"\nmerge = \"toml-keys\"\nvolatile = [\"x\"]\n" +
+		"[[file]]\ntarget = \"c.txt\"\nmerge = \"union\"\n" +
+		"[[root]]\npath = \".config/tool\"\nignore = [\"cache/**\", \"*.log\"]\n"
+	m, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Entries[0].Merge != MergeStructural || len(m.Entries[0].Volatile) != 2 || m.Entries[2].Merge != MergeUnion {
+		t.Errorf("merge/volatile: %+v", m.Entries)
+	}
+	r := m.Roots[0]
+	for tgt, want := range map[model.Target]bool{
+		".config/tool/cache/x/y": true, ".config/tool/run.log": true,
+		".config/tool/conf": false, ".config/other/run.log": false,
+	} {
+		if r.Ignored(tgt) != want {
+			t.Errorf("Ignored(%s) = %v", tgt, !want)
 		}
 	}
 }

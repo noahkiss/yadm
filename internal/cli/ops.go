@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -274,7 +275,7 @@ func (a *app) cmdHoldShow(cmd *cobra.Command, args []string) (result, error) {
 			return s
 		}
 		if crypt.IsSealedFile(b) {
-			if snap == nil || enc == "" || snap.Crypto == nil || !(refusingSealer{snap}).ok(enc) {
+			if snap == nil || enc == "" || snap.Crypto == nil || !snap.CanOpen(enc) {
 				s.Sealed = true
 				return s
 			}
@@ -321,6 +322,38 @@ func isBinary(b []byte) bool {
 		}
 	}
 	return false
+}
+
+// cmdHoldIgnore records the file of a hold as intentionally untracked on
+// this machine. It applies to unmanaged files in owned roots (the
+// baseline files that predate a root, and new files a hook held).
+func (a *app) cmdHoldIgnore(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	m, err := open(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	hs, err := m.eng.Holds(ctx)
+	if err != nil {
+		return result{}, err
+	}
+	h, err := findHold(hs, args[0])
+	if err != nil {
+		return result{}, err
+	}
+	if h.Target == "" {
+		return result{}, usagef("hold %s names no file; only a file can be ignored", args[0])
+	}
+	snap, _ := m.load(ctx) // nil when the source does not load: state alone decides
+	if err := m.locked(ctx, func() error { return m.eng.Ignore(ctx, snap, h.Target) }); err != nil {
+		if errors.Is(err, apply.ErrManaged) || errors.Is(err, apply.ErrNotIgnorable) {
+			return result{}, usagef("%v", err)
+		}
+		return lockedResult(err), err
+	}
+	return result{data: map[string]any{"ignored": h.Target, "hold": h.ID},
+		next: []string{"yadm commit " + string(h.Target)},
+		text: "ignored " + string(h.Target) + " on this machine; `yadm commit " + string(h.Target) + "` tracks it again"}, nil
 }
 
 func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) {

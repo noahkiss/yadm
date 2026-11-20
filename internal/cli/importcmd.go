@@ -32,15 +32,13 @@ func newImportSealer(by *crypt.Identity, recovery crypt.Member) *importSealer {
 	return &importSealer{by: by, recovery: recovery, rings: map[model.EnclaveName]*crypt.Keyring{}, entries: map[model.EnclaveName]crypt.LogEntry{}}
 }
 
-// SealFile implements importer.Sealer. Sealed files now bind their source
-// path, which the importer's Sealer does not pass yet, so an import that
-// seals refuses until it does (a path-less container would not open).
-func (s *importSealer) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error) {
-	return nil, fmt.Errorf("import: sealing for %s needs the source path; the importer's Sealer must pass it: %w", e, model.ErrNotImplemented)
+// SealFile implements importer.Sealer.
+func (s *importSealer) SealFile(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
+	return s.SealFileAt(e, path, plaintext)
 }
 
-// SealFileAt seals plaintext for e, bound to its source path. It is the
-// Sealer the importer will call once it passes paths.
+// SealFileAt seals plaintext for e, bound to its source path. On the first
+// file of e it creates the enclave's key log.
 func (s *importSealer) SealFileAt(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
 	ring, ok := s.rings[e]
 	if !ok {
@@ -95,30 +93,46 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 			opts.ClassEnclaves[k] = model.EnclaveName(v)
 		}
 	}
+	opts.CryptFilters, _ = f.GetStringArray("crypt-filter")
+	if ff, _ := f.GetString("filters"); ff != "" {
+		filters, err := importer.ReadFilters(ff)
+		if err != nil {
+			return result{}, usagef("--filters: %v", err)
+		}
+		opts.Filters = filters
+	}
 	if opts.Output == "" && !opts.DryRun {
 		return result{}, usagef("--output <dir> is required (or --dry-run)")
 	}
 	if opts.Branch == "" {
 		opts.Branch = "main"
 	}
+	opts.Machine, _ = f.GetString("machine")
 	var sealer *importSealer
-	if opts.PasswordEnv != "" {
+	var state string
+	if opts.PasswordEnv != "" || opts.Machine != "" {
 		p, err := DefaultPaths()
 		if err != nil {
 			return result{}, err
 		}
+		state = p.State
 		id, err := crypt.LoadIdentity(p.State)
 		if err != nil {
 			return result{next: []string{"yadm init <remote> --machine <name>"}},
-				fmt.Errorf("sealing encrypted files needs this machine's identity: %w", err)
+				fmt.Errorf("--machine and sealing encrypted files need this machine's identity: %w", err)
 		}
-		out, _ := filepath.Abs(opts.Output)
-		rec, _, err := recoveryMember(cmd, out, p.State, p.Source)
-		if err != nil {
-			return result{}, err
+		if opts.Machine != "" {
+			opts.Self = id.Machine
 		}
-		sealer = newImportSealer(id, rec)
-		opts.Sealer = sealer
+		if opts.PasswordEnv != "" {
+			out, _ := filepath.Abs(opts.Output)
+			rec, _, err := recoveryMember(cmd, out, p.State, p.Source)
+			if err != nil {
+				return result{}, err
+			}
+			sealer = newImportSealer(id, rec)
+			opts.Sealer = sealer
+		}
 	}
 	rep, err := importer.Import(ctx, opts)
 	d := importData{Report: rep}
@@ -146,8 +160,26 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 			return result{data: d}, err
 		}
 		d.Commit, d.KeyLogs = id, fps
-		for e, fp := range fps {
-			next = append(next, fmt.Sprintf("once this machine uses the new repository: yadm enclave join %s --expect %s", e, fp))
+		// The key logs are committed: pin them for this machine, which
+		// signed them, so it needs no `enclave join --expect`. An existing
+		// different pin is a trust anchor for another log and is kept.
+		pins := crypt.FilePins(state)
+		for e, entry := range sealer.entries {
+			pin, err := crypt.PinOf(entry)
+			if err != nil {
+				return result{data: d}, err
+			}
+			old, err := pins.Get(e)
+			if err != nil {
+				return result{data: d}, err
+			}
+			if old != nil && *old != pin {
+				next = append(next, fmt.Sprintf("this machine already pins another %s key log; after switching to the new repository: yadm enclave join %s --expect %s", e, e, fps[e]))
+				continue
+			}
+			if err := pins.Set(e, pin); err != nil {
+				return result{data: d}, err
+			}
 		}
 		sort.Strings(next)
 	}

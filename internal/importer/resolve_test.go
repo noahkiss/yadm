@@ -48,7 +48,7 @@ func (s *fakeSealer) aead(e model.EnclaveName) cipher.AEAD {
 	return g
 }
 
-func (s *fakeSealer) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
+func (s *fakeSealer) SealFile(e model.EnclaveName, _ model.SourcePath, pt []byte) ([]byte, error) {
 	s.calls++
 	g := s.aead(e)
 	nonce := make([]byte, g.NonceSize())

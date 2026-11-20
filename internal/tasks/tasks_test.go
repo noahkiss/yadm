@@ -387,9 +387,10 @@ func (f *fakeCommander) Run(_ context.Context, argv []string) ([]byte, error) {
 
 func TestReloaders(t *testing.T) {
 	ctx := context.Background()
-	home := "/tmp/home-a"
+	home := t.TempDir()
 	plist := manifest.Unit{Target: "Library/LaunchAgents/example.helper.plist", Kind: manifest.UnitLaunchd}
 	svc := manifest.Unit{Target: ".config/systemd/user/example.service", Kind: manifest.UnitSystemd}
+	writePlist(t, home, string(plist.Target), "example.helper", "")
 
 	c := &fakeCommander{fail: map[string]error{"bootout " + home + "/" + string(plist.Target): errors.New("not loaded")}}
 	r, err := NewReloader("darwin", c, 501)

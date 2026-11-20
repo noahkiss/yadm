@@ -57,13 +57,15 @@
 //
 // Exported API:
 //
-//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool; Source model.SourcePath }
+//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool; Source model.SourcePath; Volatile []string }
 //	func SpecOf(e manifest.Entry) Spec; func SpecFor(r manifest.Resolved) Spec // SpecFor sets Source
 //	var ErrNoSource error // sealing or opening with an empty Spec.Source
 //	type Sealer interface{ CanOpen; SealValue; OpenValue; SealRegion; OpenRegion }  // crypt.Set implements it
 //	func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error)
 //	func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violation, error)
 //	func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]byte, error) // after remove or rotate
+//	func Merge3(format string, volatile []string, base, ours, theirs []byte) (merged []byte, ok bool, err error) // key-level 3-way merge from ours; volatile keys stay ours; ok=false holds
+//	type Structural struct{} // its Merge3 method satisfies sync.Structural
 //	type Violation struct{ Path string; Kind ViolationKind; Detail string }
 //	const SealedKeyRemoved, SealedValueLeaked, RegionMarkerLost, ParseFailed, SealedNotString, SealNotMember, RegionNotMember ViolationKind
 //	var ErrRoundTrip, ErrArrayElement error

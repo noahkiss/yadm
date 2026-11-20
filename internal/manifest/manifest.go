@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"io/fs"
+	"strings"
 
 	"github.com/noahkiss/yadm/internal/model"
 )
@@ -26,7 +27,7 @@ const (
 
 // Defaults apply to every entry that does not override them.
 type Defaults struct {
-	Quiet model.Duration `toml:"quiet" json:"quiet"` // auto-commit quiet period; default 2h
+	Quiet model.Duration `toml:"quiet" json:"quiet"` // auto-commit quiet period; default 2m
 }
 
 // Entry maps one target (or a glob of targets) to its source and rules.
@@ -38,13 +39,31 @@ type Entry struct {
 	Template bool                         `toml:"template" json:"template,omitempty"` // render with package render
 	Mode     fs.FileMode                  `toml:"mode" json:"mode,omitempty"`         // 0 means 0644 (0755 if the source is executable), sealed or not
 	Format   Format                       `toml:"format" json:"format,omitempty"`
-	Keep     []string                     `toml:"keep" json:"keep,omitempty"`       // key paths the repo owns; others belong to the app
-	Drop     []string                     `toml:"drop" json:"drop,omitempty"`       // key paths never captured
-	Seal     map[string]model.EnclaveName `toml:"seal" json:"seal,omitempty"`       // key path -> enclave
-	Regions  bool                         `toml:"regions" json:"regions,omitempty"` // honour `yadm:seal` region markers
-	Quiet    *model.Duration              `toml:"quiet" json:"quiet,omitempty"`     // override Defaults.Quiet; 0 commits at once
-	Review   bool                         `toml:"review" json:"review,omitempty"`   // never auto-commit; always held for a manual commit
+	Keep     []string                     `toml:"keep" json:"keep,omitempty"`         // key paths the repo owns; others belong to the app
+	Drop     []string                     `toml:"drop" json:"drop,omitempty"`         // key paths never captured
+	Seal     map[string]model.EnclaveName `toml:"seal" json:"seal,omitempty"`         // key path -> enclave
+	Regions  bool                         `toml:"regions" json:"regions,omitempty"`   // honour `yadm:seal` region markers
+	Quiet    *model.Duration              `toml:"quiet" json:"quiet,omitempty"`       // override Defaults.Quiet; 0 commits at once
+	Review   bool                         `toml:"review" json:"review,omitempty"`     // never auto-commit; always held for a manual commit
+	Merge    MergePolicy                  `toml:"merge" json:"merge,omitempty"`       // how a sync conflict resolves; "" means text
+	Volatile []string                     `toml:"volatile" json:"volatile,omitempty"` // key paths that stay machine-local in a merge
 }
+
+// MergePolicy says how a sync conflict on an entry's targets resolves.
+type MergePolicy string
+
+// Merge policies (design section 10).
+const (
+	MergeText       MergePolicy = "text"       // key-level merge for json, jsonc and toml, else a line merge
+	MergeUnion      MergePolicy = "union"      // line sets: union of additions, minus removals
+	MergeAddOnly    MergePolicy = "add-only"   // lines only ever added; a modify or delete holds
+	MergeOurs       MergePolicy = "ours"       // take this machine's side
+	MergeTheirs     MergePolicy = "theirs"     // take the remote side
+	MergeGenerated  MergePolicy = "generated"  // a tool writes it: never auto-committed; conflicts take the remote side
+	MergeJSONKeys   MergePolicy = "json-keys"  // key-level merge as JSON; a failure holds
+	MergeTOMLKeys   MergePolicy = "toml-keys"  // key-level merge as TOML; a failure holds
+	MergeStructural MergePolicy = "structural" // key-level merge in the entry's format; a failure holds
+)
 
 // Scope returns the entry's commit and review scope.
 func (e Entry) Scope() model.Scope {
@@ -59,6 +78,22 @@ type Root struct {
 	Path    model.Target      `toml:"path" json:"path"`
 	When    string            `toml:"when" json:"when,omitempty"`
 	Enclave model.EnclaveName `toml:"enclave" json:"enclave,omitempty"` // new files here are captured sealed
+	Ignore  []string          `toml:"ignore" json:"ignore,omitempty"`   // globs, relative to Path, of files left untracked on purpose
+}
+
+// Ignored reports whether t, a path inside the root, matches one of its
+// ignore globs. An ignored file is never reported as new.
+func (r Root) Ignored(t model.Target) bool {
+	rel, ok := strings.CutPrefix(string(t), string(r.Path)+"/")
+	if !ok {
+		return false
+	}
+	for _, g := range r.Ignore {
+		if Match(g, rel) {
+			return true
+		}
+	}
+	return false
 }
 
 // TaskDef declares an on-change task. It triggers when an apply changes a
@@ -100,7 +135,20 @@ type Unit struct {
 	Target model.Target `toml:"target" json:"target"`
 	Kind   UnitKind     `toml:"kind" json:"kind"`
 	When   string       `toml:"when" json:"when,omitempty"`
+	Reload UnitReload   `toml:"reload" json:"reload,omitempty"` // "" means auto
 }
+
+// UnitReload says whether the built-in unit task reloads a unit.
+type UnitReload string
+
+// Unit reload modes.
+const (
+	// ReloadAuto reloads on a byte change. The launchd reloader still
+	// skips a KeepAlive job and the job running the reload.
+	ReloadAuto UnitReload = "auto"
+	// ReloadNever never reloads; the new bytes take effect at the next login.
+	ReloadNever UnitReload = "never"
+)
 
 // Manifest is the parsed manifest file.
 type Manifest struct {

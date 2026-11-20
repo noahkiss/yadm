@@ -28,7 +28,7 @@ type commitOut struct {
 // fails closed when the allow list or runner is missing.
 func (s *Syncer) gateFor(snap *apply.Snapshot) tasks.Gate {
 	if s.Gate != nil {
-		return s.Gate
+		return PerTarget(s.Gate)
 	}
 	if snap == nil || snap.Plan == nil || len(snap.Plan.Checks) == 0 {
 		return nil
@@ -37,7 +37,78 @@ func (s *Syncer) gateFor(snap *apply.Snapshot) tasks.Gate {
 	if s.Apply.Tasks != nil {
 		allow = s.Apply.Tasks.Allow
 	}
-	return tasks.NewGateIn(snap.Plan.Checks, s.Exec, allow, s.Apply.StateDir)
+	return PerTarget(tasks.NewGateIn(snap.Plan.Checks, s.Exec, allow, s.Apply.StateDir))
+}
+
+// MaxGateSplit bounds how many failing targets PerTarget re-checks one by
+// one; beyond it the batch verdict stands (fail closed).
+const MaxGateSplit = 50
+
+// PerTarget makes a gate give per-file verdicts. A check runs once on every
+// file it matches; when it fails and so holds more than one file, each of
+// those files is checked again on its own, and only the files that fail on
+// their own stay held. One bad file never holds every file a broad check
+// matched. Holds for an untrusted check are not split: they hold every
+// match until the check is allowed.
+func PerTarget(g tasks.Gate) tasks.Gate {
+	if g == nil {
+		return nil
+	}
+	if _, ok := g.(perTarget); ok {
+		return g
+	}
+	return perTarget{g}
+}
+
+type perTarget struct{ inner tasks.Gate }
+
+func (p perTarget) Check(ctx context.Context, staged []tasks.Staged, req extexec.Request) ([]model.Target, []model.Hold, []tasks.Verdict) {
+	pass, holds, verdicts := p.inner.Check(ctx, staged, req)
+	var split []model.Target
+	for _, h := range holds {
+		if h.Reason == model.HoldCheckFailed {
+			split = append(split, h.Target)
+		}
+	}
+	if len(staged) < 2 || len(split) < 2 || len(split) > MaxGateSplit {
+		return pass, holds, verdicts
+	}
+	byTarget := map[model.Target][]tasks.Staged{}
+	for _, s := range staged {
+		byTarget[s.Target] = append(byTarget[s.Target], s)
+	}
+	redo := map[model.Target]bool{}
+	for _, t := range split {
+		redo[t] = true
+	}
+	outHolds := holds[:0:0]
+	for _, h := range holds {
+		if !redo[h.Target] {
+			outHolds = append(outHolds, h)
+		}
+	}
+	outVerdicts := make([]tasks.Verdict, 0, len(verdicts))
+	for _, v := range verdicts {
+		if !redo[v.Target] {
+			outVerdicts = append(outVerdicts, v)
+		}
+	}
+	for _, t := range split {
+		if err := ctx.Err(); err != nil {
+			// Out of time: keep the batch verdict for the rest.
+			for _, h := range holds {
+				if h.Target == t {
+					outHolds = append(outHolds, h)
+				}
+			}
+			continue
+		}
+		p1, h1, v1 := p.inner.Check(ctx, byTarget[t], req)
+		pass = append(pass, p1...)
+		outHolds = append(outHolds, h1...)
+		outVerdicts = append(outVerdicts, v1...)
+	}
+	return pass, outHolds, outVerdicts
 }
 
 // commit gates and commits planned changes onto local main, one commit per

@@ -226,12 +226,23 @@ func (s *Syncer) checkRemote(ctx context.Context, base, local, remote model.Comm
 		return &refusal{task: HoldTaskKeyLog, kind: AlertKeyLogRewrite,
 			detail: "key-log entries are append-only; the fetched source was not applied: " + strings.Join(v, "; ")}, nil
 	}
-	if s.Guard != nil && local != "" && to != nil {
-		from, err := s.load(ctx, local)
-		if err != nil {
-			return nil, err
+	if s.Guard != nil && local != "" && to != nil && remote != base {
+		// The guard judges what the fetch changed: the accepted remote
+		// (base) against the fetched one. A weakening this machine already
+		// runs (its own pushed commit, or one it allowed) is not refused,
+		// so the guard must also refuse against local main. Comparing with
+		// local alone would refuse an unpushed local strengthening (a
+		// retag into an enclave) as the remote "weakening" it.
+		ok, detail, err := s.guardFrom(ctx, base, to)
+		if err != nil && local != base {
+			// The accepted source does not load (a bad commit was
+			// accepted before the guard existed): judge from local.
+			ok, detail, err = s.guardFrom(ctx, local, to)
+		} else if err == nil && !ok && local != base {
+			var okLocal bool
+			okLocal, _, err = s.guardFrom(ctx, local, to)
+			ok = okLocal
 		}
-		ok, detail, err := s.Guard.Allow(ctx, from, to)
 		if err != nil {
 			return nil, err
 		}
@@ -241,6 +252,15 @@ func (s *Syncer) checkRemote(ctx context.Context, base, local, remote model.Comm
 		}
 	}
 	return nil, nil
+}
+
+// guardFrom runs the RemoteGuard from the source at rev to the fetched one.
+func (s *Syncer) guardFrom(ctx context.Context, rev model.CommitID, to *apply.Snapshot) (bool, string, error) {
+	from, err := s.load(ctx, rev)
+	if err != nil {
+		return false, "", err
+	}
+	return s.Guard.Allow(ctx, from, to)
 }
 
 // setRefusal records or clears the holds of refused fetches. It reports

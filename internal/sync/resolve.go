@@ -19,9 +19,9 @@ import (
 // is not wanted. It is read per target through Policy.MergeFor.
 type MergePolicy string
 
-// Merge policies. The manifest is expected to set them per entry (contract
-// request: manifest.Entry.Merge and Entry.Volatile); Policy.MergeFor and
-// Policy.VolatileFor read them.
+// Merge policies. The manifest sets them per entry (manifest.Entry.Merge
+// and Entry.Volatile, same names); Policy.MergeFor and Policy.VolatileFor
+// read them.
 const (
 	MergeText       MergePolicy = "text"       // default: key-level merge for json, jsonc and toml, else a line merge
 	MergeStructural MergePolicy = "structural" // key-level merge in the target's format only; a failure holds

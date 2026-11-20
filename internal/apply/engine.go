@@ -295,6 +295,38 @@ func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolve
 	return d, nil
 }
 
+// ErrNotPlanned is returned by Render for a target the snapshot's plan
+// does not produce on this machine.
+var ErrNotPlanned = errors.New("not managed on this machine")
+
+// CanOpen reports whether this machine may open enc in this snapshot: it
+// holds the key and the enclave's key log was not refused.
+func (s *Snapshot) CanOpen(enc model.EnclaveName) bool { return s.canOpen(enc) }
+
+// Render returns the bytes apply would write to target t at snap, with the
+// live target lv for keep and drop rules to merge into: open the sealed
+// file, render the template, apply intra-file rules. It is the one render
+// pipeline; diff and hook summaries use it. It writes nothing. A sealed
+// entry this machine cannot open fails with crypt.ErrNotMember.
+func (e *Engine) Render(ctx context.Context, snap *Snapshot, t model.Target, lv []byte) ([]byte, error) {
+	if snap == nil || snap.Plan == nil {
+		return nil, errors.New("render: no snapshot")
+	}
+	r, ok := snap.Plan.Targets[t]
+	if !ok {
+		return nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
+	}
+	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
+		return nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
+	}
+	raw, _, err := e.readSource(ctx, snap, r.Source)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", r.Source, err)
+	}
+	out, _, err := e.produceFrom(snap, r, raw, lv)
+	return out, err
+}
+
 // produceFrom runs the apply pipeline on raw source bytes: open the sealed
 // container, render the template, apply intra-file rules. It returns the
 // target bytes and, for templates, the hash of the render.
@@ -459,6 +491,9 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	}
 	s.live = lv
 	if lv.exists && !lv.info.Mode().IsRegular() {
+		if adopt && !have && lv.info.Mode()&fs.ModeSymlink != 0 {
+			return e.materializeLink(ctx, snap, r, s, ts, hold)
+		}
 		return hold("target is not a regular file (symlink or directory); not replaced")
 	}
 	var lb []byte
@@ -491,6 +526,10 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 				s.Kind = ActAdopt
 			}
 		case have && uint32(liveMode) == ts.Mode:
+			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
+		case adopt && !have && liveMode&0o222 == 0:
+			// A read-only render another tool left (0444): adopt takes
+			// it over at the source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
 		default:
 			return hold(fmt.Sprintf("bytes match but mode is %#o, want %#o", liveMode, d.mode))
@@ -536,7 +575,21 @@ func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOption
 			return Result{}, err
 		}
 	}
-	return e.run(ctx, rev, nil, opts.DryRun, true)
+	snap, err := e.snapshot(ctx, rev)
+	if err != nil {
+		return Result{}, err
+	}
+	links, err := e.materializeDirLinks(snap, opts.DryRun)
+	if err != nil {
+		return Result{}, err
+	}
+	res, err := e.run(ctx, rev, nil, opts.DryRun, true)
+	var acts []Action
+	for _, p := range links {
+		acts = append(acts, Action{Target: p, Kind: ActWrite, Scope: model.ScopeShared, Reason: "materialize directory symlink"})
+	}
+	res.Actions = append(acts, res.Actions...)
+	return res, err
 }
 
 // allowAll records every task definition of the plan and every collector
@@ -644,6 +697,12 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		return res, execErr
 	}
 	e.pruneBackups(now, snap.Enclaves)
+	if adopt {
+		// Adopt only takes over what is on disk: no path task, unit reload
+		// or first-apply task runs. First-apply tasks run on the first
+		// apply after it (FirstApplyDone stays false).
+		return res, nil
+	}
 
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
 	results, holds := e.runTasks(ctx, snap, st, ev)
@@ -791,6 +850,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 	st.Targets[s.Target] = ts
 	delete(st.Seen, s.Target)
 	delete(st.Baseline, s.Target)
+	delete(st.Ignored, s.Target)
 	clearFileHolds(st, s.Target)
 	return nil
 }

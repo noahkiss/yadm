@@ -60,6 +60,11 @@
 //	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
+//	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
+//	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
+//	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write
+//	func (s *Snapshot) CanOpen(e model.EnclaveName) bool
+//	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed
 //	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error)
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)
 //	func (e *Engine) Apply(ctx, rev model.CommitID, opts ApplyOptions) (Result, error)

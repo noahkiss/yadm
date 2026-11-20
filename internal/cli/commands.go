@@ -20,7 +20,6 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
-	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
@@ -102,6 +101,7 @@ func (a *app) register(root *cobra.Command) {
 	exact(leaf(hd, "show <id>", "Show one hold with its three sides", a.cmdHoldShow), 1)
 	rs := exact(leaf(hd, "resolve <id>", "Resolve a hold", a.cmdHoldResolve), 1)
 	rs.Flags().String("take", "", "source, target, or a path to merged content")
+	exact(leaf(hd, "ignore <id>", "Leave a new file in an owned root untracked on purpose", a.cmdHoldIgnore), 1)
 	hs := leaf(root, "holds", "List holds (same as hold list)", a.cmdHoldList(""))
 	hs.Flags().String("reason", "", "only holds with this reason")
 	leaf(root, "conflicts", "List conflict holds (same as hold list --reason conflict)", a.cmdHoldList(model.HoldConflict))
@@ -129,6 +129,9 @@ func (a *app) register(root *cobra.Command) {
 	im.Flags().String("password-env", "", "env var holding the transcrypt password")
 	im.Flags().StringToString("class-enclave", nil, "legacy class=enclave")
 	im.Flags().String("default-enclave", "", "enclave for encrypted files with no class")
+	im.Flags().String("filters", "", "TOML file mapping legacy strip filters to keep, drop and volatile rules")
+	im.Flags().String("machine", "", "machines-table row that is this machine; it keeps this machine's id")
+	im.Flags().StringArray("crypt-filter", nil, "extra gitattributes filter name that marks transcrypt files (repeatable)")
 	im.Flags().String("output", "", "directory for the converted repository")
 	im.Flags().String("branch", "", "branch name in the output (default main)")
 	im.Flags().Bool("dry-run", false, "convert in memory and report; write nothing")
@@ -561,8 +564,7 @@ func (a *app) cmdDiff(cmd *cobra.Command, args []string) (result, error) {
 func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 	fd := fileDiff{Target: t}
 	snap := m.snap
-	r, ok := snap.Plan.Targets[t]
-	if !ok {
+	if _, ok := snap.Plan.Targets[t]; !ok {
 		fd.Skipped = "not managed on this machine"
 		return fd
 	}
@@ -571,7 +573,7 @@ func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 		fd.Skipped = err.Error()
 		return fd
 	}
-	want, err := renderFor(ctx, m.repo, snap, r, live)
+	want, err := m.eng.Render(ctx, snap, t, live)
 	if err != nil {
 		fd.Skipped = err.Error()
 		return fd
@@ -583,81 +585,6 @@ func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 	}
 	fd.Diff = d
 	return fd
-}
-
-// renderFor produces the target bytes of one resolved entry, the way apply
-// does: open a sealed file, render a template, apply intra-file rules.
-func renderFor(ctx context.Context, st store.Store, snap *apply.Snapshot, r manifest.Resolved, live []byte) ([]byte, error) {
-	open := func(e model.EnclaveName) bool {
-		if l, ok := snap.Enclaves[e]; ok && l.Err != nil {
-			return false
-		}
-		return snap.Crypto != nil && snap.Crypto.CanOpen(e)
-	}
-	te, ok := snap.Tree[r.Source]
-	if !ok {
-		return nil, fmt.Errorf("%s: not in the source tree", r.Source)
-	}
-	raw, err := st.ReadBlob(ctx, te.Blob)
-	if err != nil {
-		return nil, err
-	}
-	if enc := r.Entry.Enclave; enc != "" {
-		if !open(enc) {
-			return nil, fmt.Errorf("sealed for %s; this machine cannot open it", enc)
-		}
-		if raw, err = snap.Crypto.OpenFile(enc, r.Source, raw); err != nil {
-			return nil, err
-		}
-	}
-	if r.Entry.Template {
-		if raw, err = snap.Render.Render(string(r.Source), raw, snap.Context); err != nil {
-			return nil, err
-		}
-	}
-	if spec := rules.SpecFor(r); !spec.Empty() {
-		var s rules.Sealer = refusingSealer{snap}
-		if raw, err = rules.ToTarget(raw, live, spec, s); err != nil {
-			return nil, err
-		}
-	}
-	return raw, nil
-}
-
-// refusingSealer opens only enclaves this machine is a member of and whose
-// key log verified.
-type refusingSealer struct{ snap *apply.Snapshot }
-
-func (r refusingSealer) ok(e model.EnclaveName) bool {
-	if l, found := r.snap.Enclaves[e]; found && l.Err != nil {
-		return false
-	}
-	return r.snap.Crypto != nil && r.snap.Crypto.CanOpen(e)
-}
-func (r refusingSealer) CanOpen(e model.EnclaveName) bool { return r.ok(e) }
-func (r refusingSealer) SealValue(e model.EnclaveName, k string, p []byte) (string, error) {
-	if !r.ok(e) {
-		return "", crypt.ErrNotMember
-	}
-	return r.snap.Crypto.SealValue(e, k, p)
-}
-func (r refusingSealer) OpenValue(e model.EnclaveName, k, t string) ([]byte, error) {
-	if !r.ok(e) {
-		return nil, crypt.ErrNotMember
-	}
-	return r.snap.Crypto.OpenValue(e, k, t)
-}
-func (r refusingSealer) SealRegion(e model.EnclaveName, l string, b []byte) (string, error) {
-	if !r.ok(e) {
-		return "", crypt.ErrNotMember
-	}
-	return r.snap.Crypto.SealRegion(e, l, b)
-}
-func (r refusingSealer) OpenRegion(e model.EnclaveName, l, t string) ([]byte, error) {
-	if !r.ok(e) {
-		return nil, crypt.ErrNotMember
-	}
-	return r.snap.Crypto.OpenRegion(e, l, t)
 }
 
 func reportData(r sync.Report) sync.Report {
@@ -864,20 +791,39 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 }
 
 func (a *app) cmdProtectionAllow(cmd *cobra.Command, args []string) (result, error) {
-	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
-		return m.eng.AllowProtection(cmd.Context(), m.snap.Commit, t)
+	return a.allowOne(cmd, args[0], func(m *machineEnv, rev model.CommitID, t model.Target) error {
+		return m.eng.AllowProtection(cmd.Context(), rev, t)
 	})
 }
 
 func (a *app) cmdRootAllow(cmd *cobra.Command, args []string) (result, error) {
-	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
-		return m.eng.AllowRoot(cmd.Context(), m.snap.Commit, t)
+	return a.allowOne(cmd, args[0], func(m *machineEnv, rev model.CommitID, t model.Target) error {
+		return m.eng.AllowRoot(cmd.Context(), rev, t)
 	})
 }
 
+// allowRev is the source an allow reads. While a fetched source is refused
+// (a manifest-guard hold), the allow names that fetched source, so the next
+// sync takes it; otherwise local main.
+func (m *machineEnv) allowRev(ctx context.Context) model.CommitID {
+	hs, err := m.eng.Holds(ctx)
+	if err != nil {
+		return m.snap.Commit
+	}
+	for _, h := range hs {
+		if h.Target == "" && h.Task == sync.HoldTaskGuard {
+			if r, err := m.repo.ResolveRef(ctx, store.RemoteMain); err == nil && r != "" {
+				return r
+			}
+		}
+	}
+	return m.snap.Commit
+}
+
 // allowOne records one local allow under the lock, then applies so the
-// allowed target or root takes effect now.
-func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, model.Target) error) (result, error) {
+// allowed target or root takes effect now. While a fetched source is
+// refused, the allow names that source; the next sync then takes it.
+func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, model.CommitID, model.Target) error) (result, error) {
 	ctx := cmd.Context()
 	m, err := openLoaded(ctx)
 	if err != nil {
@@ -888,9 +834,19 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 		return result{}, err
 	}
 	var res apply.Result
+	fetched := false
 	if err := m.locked(ctx, func() error {
-		if err := allow(m, t); err != nil {
-			return err
+		rev := m.allowRev(ctx)
+		fetched = rev != m.snap.Commit
+		if err := allow(m, rev, t); err != nil {
+			if rev == m.snap.Commit {
+				return err
+			}
+			// Not in the fetched source: it may be one local main weakens.
+			if err2 := allow(m, m.snap.Commit, t); err2 != nil {
+				return err
+			}
+			fetched = false
 		}
 		var err error
 		res, err = m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{})
@@ -899,7 +855,11 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 		return lockedResult(err), err
 	}
 	res = normResult(res)
-	return result{data: map[string]any{"allowed": t, "apply": res}, text: "allowed " + string(t)}, attention(res.Holds)
+	out := result{data: map[string]any{"allowed": t, "apply": res}, text: "allowed " + string(t)}
+	if fetched {
+		out.next = []string{"yadm sync"} // takes the refused source now
+	}
+	return out, attention(res.Holds)
 }
 
 func (a *app) cmdBisect(cmd *cobra.Command, args []string) (result, error) {

@@ -1,8 +1,12 @@
 package tasks
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -43,10 +47,16 @@ func SystemReloader(goos string) (UnitReloader, error) {
 //     then `systemctl --user restart <unit name>`.
 //
 // A unit of the other kind is an error, not a silent skip.
+//
+// A unit with reload = "never" is never reloaded. The launchd reloader also
+// skips a job whose plist sets KeepAlive (a reload would restart a job that
+// must stay up), the job that runs this reload (its label is
+// $XPC_SERVICE_NAME), and a plist it cannot read as XML. Each skip returns a
+// *SkipError: the runner records it as a result detail, not a failure.
 func NewReloader(goos string, c Commander, uid int) (UnitReloader, error) {
 	switch goos {
 	case "darwin":
-		return launchdReloader{c: c, uid: uid}, nil
+		return launchdReloader{c: c, uid: uid, getenv: os.Getenv}, nil
 	case "linux":
 		return systemdReloader{c: c}, nil
 	}
@@ -65,9 +75,24 @@ func unitPath(u manifest.Unit, home string) (string, error) {
 	return filepath.Join(home, filepath.FromSlash(path.Clean(t))), nil
 }
 
+// SkipError reports a unit the reloader left alone on purpose.
+type SkipError struct{ Reason string }
+
+func (e *SkipError) Error() string { return "reload skipped: " + e.Reason }
+
+// IsSkip reports whether err is a deliberate skip, and its reason.
+func IsSkip(err error) (string, bool) {
+	var s *SkipError
+	if errors.As(err, &s) {
+		return s.Reason, true
+	}
+	return "", false
+}
+
 type launchdReloader struct {
-	c   Commander
-	uid int
+	c      Commander
+	uid    int
+	getenv func(string) string
 }
 
 func (l launchdReloader) Reload(ctx context.Context, u manifest.Unit, home string) error {
@@ -77,6 +102,23 @@ func (l launchdReloader) Reload(ctx context.Context, u manifest.Unit, home strin
 	p, err := unitPath(u, home)
 	if err != nil {
 		return err
+	}
+	if u.Reload == manifest.ReloadNever {
+		return &SkipError{Reason: `reload = "never"`}
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return &SkipError{Reason: "cannot read the plist: " + err.Error()}
+	}
+	info, err := readPlist(b)
+	if err != nil {
+		return &SkipError{Reason: "plist is not readable XML: " + err.Error()}
+	}
+	if info.keepAlive {
+		return &SkipError{Reason: "KeepAlive job; it is not restarted, the new plist takes effect at its next load"}
+	}
+	if l.getenv != nil && info.label != "" && l.getenv("XPC_SERVICE_NAME") == info.label {
+		return &SkipError{Reason: "the job runs this reload"}
 	}
 	domain := "gui/" + strconv.Itoa(l.uid)
 	_, _ = l.c.Run(ctx, []string{"launchctl", "bootout", domain, p})
@@ -94,6 +136,9 @@ func (s systemdReloader) Reload(ctx context.Context, u manifest.Unit, home strin
 	}
 	if _, err := unitPath(u, home); err != nil {
 		return err
+	}
+	if u.Reload == manifest.ReloadNever {
+		return &SkipError{Reason: `reload = "never"`}
 	}
 	name := path.Base(string(u.Target))
 	if out, err := s.c.Run(ctx, []string{"systemctl", "--user", "daemon-reload"}); err != nil {
@@ -116,4 +161,76 @@ func (ExecCommander) Run(ctx context.Context, argv []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, unitTimeout)
 	defer cancel()
 	return exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
+}
+
+// plistInfo is what the launchd reloader reads from a plist.
+type plistInfo struct {
+	label     string
+	keepAlive bool // KeepAlive is true or a dictionary of conditions
+}
+
+// readPlist reads Label and KeepAlive from the top-level dict of an XML
+// property list. A binary plist is an error.
+func readPlist(b []byte) (plistInfo, error) {
+	var info plistInfo
+	if bytes.HasPrefix(b, []byte("bplist")) {
+		return info, errors.New("binary plist")
+	}
+	d := xml.NewDecoder(bytes.NewReader(b))
+	d.Strict = true
+	depth := 0     // element depth; the top-level dict is at depth 2 (plist > dict)
+	key := ""      // the last top-level <key>
+	inKey := false // reading a top-level <key>
+	inLabel := false
+	sawDict := false
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return info, err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			if depth == 2 {
+				if t.Name.Local != "dict" {
+					return info, fmt.Errorf("top-level element is <%s>, want <dict>", t.Name.Local)
+				}
+				sawDict = true
+			}
+			if depth == 3 {
+				switch t.Name.Local {
+				case "key":
+					inKey, key = true, ""
+				case "true", "dict":
+					if key == "KeepAlive" {
+						info.keepAlive = true
+					}
+				case "string":
+					inLabel = key == "Label"
+				}
+			}
+		case xml.EndElement:
+			if depth == 3 {
+				if t.Name.Local != "key" {
+					key = ""
+				}
+				inKey, inLabel = false, false
+			}
+			depth--
+		case xml.CharData:
+			if inKey {
+				key += string(t)
+			} else if inLabel {
+				info.label += string(t)
+			}
+		}
+	}
+	if !sawDict {
+		return info, errors.New("no top-level dict")
+	}
+	info.label = strings.TrimSpace(info.label)
+	return info, nil
 }

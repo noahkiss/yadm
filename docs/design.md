@@ -125,6 +125,8 @@ keep = ["editor.*", "terminal.font"]
 drop = ["window.state", "recent"]
 seal = { "sync.token" = "personal" }
 quiet = "0s"
+merge = "structural"              # how a sync conflict resolves (section 10)
+volatile = ["window.zoom"]        # machine-local keys: a merge keeps this machine's value
 
 [[file]]
 target = ".ssh/config"
@@ -134,9 +136,11 @@ mode = 0o600
 [[unit]]
 target = "Library/LaunchAgents/example.helper.plist"
 kind = "launchd"
+reload = "auto"                   # or "never"; auto skips KeepAlive jobs
 
 [[root]]
 path = ".config/shell"            # new files here are reported
+ignore = ["cache/**", "*.log"]    # globs under path that are never reported
 
 [tasks.package-bundle]
 on = [".config/packages/list"]
@@ -157,6 +161,8 @@ Resolution for one machine:
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
+- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
+- A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
 `yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it.
 
@@ -202,6 +208,7 @@ The keep, drop and seal engines are core. The key lists for each app are user co
 |---|---|---|---|---|
 | `keep` | JSON, JSONC, TOML | Only the listed keys | Repo keys merged into the live file; app keys untouched | Same |
 | `drop` | JSON, JSONC, TOML | Never the listed keys | Live values untouched | Same |
+| `volatile` | JSON, JSONC, TOML | The value it held before; a local change is never captured, and a key the source lacks stays out | Live value untouched; a missing key is seeded from the source | Same |
 | `seal` | JSON, JSONC, TOML | A value token `yadm:1:<enclave>:<epoch>:<base64url>` | Plaintext value | Key absent |
 | `regions` | Any text with line comments | One line `# yadm:sealed 1 <epoch> <base64>` between markers | Plaintext body between markers | Markers with nothing between |
 
@@ -369,7 +376,7 @@ Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
 ### 8.5 Retag
 
-`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only.
+`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
 
 ## 9. Commits
 
@@ -379,7 +386,7 @@ Every commit operation builds its own fresh index file in the state directory, s
 
 ### 9.2 Commit gate
 
-Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit.
+Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
 Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
 
@@ -442,7 +449,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 
 A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the lock; if a sync holds it, the path stays recorded and `stop` or the timer commits it.
 
-A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
+A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to, and the options to share it, track it for those types with `yadm retag`, ignore it with `yadm hold ignore`, or defer it), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
 
 "Decisions this session caused" are the open holds on the session's recorded paths (or on the owned roots that contain them), except plain drift and deferred ones. A subagent's stop considers only its own paths. `yadm defer <hold-id> --reason <why>` moves one to the review queue: the hold stays and the file stays uncommitted, but the session may end. Session records live under `hooks/` in the state directory as append-only lines (path, agent, tool), so parallel hooks never lose an update.
 
@@ -460,6 +467,7 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
    - clean: `commit-tree` with the original message and trailers;
    - conflict on a sealed file this machine can open: open the three stages, merge them in memory (`textmerge.Merge3`), reseal, write the tree; a remaining conflict is held like any other;
    - other conflicts: the clean paths of the commit land; conflicted paths move to the local-only ref `refs/yadm/held/<machine>` and become `conflict` holds with all three stage blobs.
+   Before a conflict is held, a ladder tries to resolve it in memory: a key-level merge for JSON, JSONC and TOML (edits to different keys never conflict; `volatile` keys keep this machine's value; one key changed differently on both sides fails), then the entry's `merge` policy (section 4). A rung that resolves a file records it in a `Yadm-Resolved` trailer.
    History stays linear. There is no autostash and no merge commit.
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes).
 7. Apply.
@@ -469,6 +477,10 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
 A manual or hook commit runs steps 3 to 9 right after its commit, in the same call.
 
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
+
+A fetched manifest that weakens protection is refused the same way, with a `manifest-guard` hold: a target both sources plan loses its enclave, a seal key or regions, or a new or changed owned root covers a path the accepted source protects. The guard compares the last accepted remote with the fetched one, and refuses only what local `main` does not already run. `yadm protection allow <target>` or `yadm root allow <path>` names the refused source while the hold is open; the next sync takes it.
+
+A hold on a managed target settles by itself when a complete scan finds the target back at what this machine last wrote or captured: its drift, failed capture or failed check no longer applies. Conflict holds and weakened-protection holds stay until resolved or allowed.
 
 A conflict hold is settled with `yadm hold resolve <id>`: `--take target` (or `--take <file>`, written to the target first) commits this machine's file over the current source and pushes it; `--take source` drops the hold and rewrites the target from the source, backing up the replaced bytes.
 
@@ -523,7 +535,7 @@ timeout    = "10m"
 - Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`).
 - A task runs once per apply, after all writes, with the matched targets in its request.
 - A failed task is recorded in state and the status ref, reported through notify, and never stops other tasks or the sync.
-- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it.
+- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it. With `reload = "never"` a unit is never reloaded. On `auto`, the launchd reloader also skips a job whose plist sets `KeepAlive`, the job that runs the reload (`$XPC_SERVICE_NAME`), and a plist it cannot read as XML. A skip is recorded in the task result detail, not as a failure.
 - A held task keeps the first apply open only when it is a `first_apply` task. A first-apply task that already succeeded does not run again while another one waits to be allowed. Once a held definition is allowed, the next apply drops its hold.
 
 ### 12.2 No package manager in core
@@ -640,7 +652,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` | Section 9.6 | `{items[{commit, scope, diff}], deferred[]}` |
-| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` | Holds; a take that captures commits and pushes | hold objects |
+| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` / `ignore <id>` | Holds; a take that captures commits and pushes; `ignore` leaves an unmanaged file in an owned root untracked on this machine | hold objects |
 | `hook post-edit` / `stop` / `session-start` | Section 9.7; harness JSON on stdin | a verdict (`docs/hooks.md`) |
 | `defer <hold-id> --reason <why>` | Move a decision to the review queue | the deferred record |
 | `lease take` / `release` / `list` | Leases | leases |
@@ -654,27 +666,31 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 
 ### 15.1 Import
 
-`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
+`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…] [--filters <toml>] [--crypt-filter <name>…] [--machine <name>]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
 
 | Input | Output |
 |---|---|
 | `path##cond,cond` alternates | A manifest entry per variant with an equivalent `when`; source under `files/` or `sealed/<enclave>/`. Conditions, long and short form: `default`, `class`/`c`, `os`/`o`, `arch`/`a`, `hostname`/`h`, `user`/`u`, `distro`/`d`, `distro_family`/`f`, `template`/`t`, `extension`/`e` (ignored). Values compare case-insensitively upstream, so the importer lowercases `os` and `arch` values. Hostname, user, distro and distro family become declared facts. Anything else fails the import. |
 | Templates (`##template` or `##template.default`) | The built-in processor's variables (`yadm.arch`, `yadm.class`, `yadm.classes`, `yadm.os`, `yadm.hostname`, `yadm.user`, `yadm.distro`, `yadm.distro_family`) become section 5.2 references or facts; `if` with `==`/`!=`, `else` and `endif` become conditions; `include` is inlined when its file exists in the repository. `env.HOME` becomes `{{ home }}`. Any other `env.VAR`, other processors (`esh`, `j2`, `j2cli`, `envtpl`) and anything unconvertible fail the import with path and line. |
-| Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. |
-| Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. |
+| Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. A filter of another name counts as transcrypt when the legacy repository's own local config (a bare repository works; the config is read, never run or written) shows a smudge, clean or textconv command that runs transcrypt, or when `--crypt-filter <name>` names it, since a clone lacks that config. A file stored as ciphertext under any other filter fails the import. |
+| Tracked symlinks | Entries that reuse the source of what the link points at, under both conditions. A link that names a path inside a directory alternate (`dir##class.x/file`) reuses the files converted from it, under that alternate's condition. |
+| Paths with any other `filter=<name>` (a strip filter) | The `--filters` file maps each filter, per target or target glob, to the entry's `format`, `keep`, `drop`, `volatile` and `merge`. A strip filter that also ran transcrypt sets `crypt = true`; its files are decrypted and sealed too. A path whose filter has no mapping, or no rule for its target, fails the import, so a filter is never lost silently. |
+| Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. Each machine gets a random id, except the row `--machine` names, which gets the importing machine's own id; a `--machine` that names no row fails the import. |
 
 The output is one commit whose parent is the legacy head, with a `Legacy-Head:` trailer, so history stays reachable through `git log`. That also keeps the legacy ciphertext and old path names reachable. Any problem means no commit. The importer never pushes.
+
+Sealing creates each enclave's key log, signed by the importing machine, on top of that commit. Once it is committed, the importing machine pins it in its state directory, so it needs no `enclave join --expect`; the report still prints each fingerprint for the other machines. An existing different pin for that enclave is kept, and the report says to join after switching repositories. A failed import pins nothing.
 
 ### 15.2 Adopt
 
 `yadm adopt [--dry-run] [--allow-tasks] [--no-schedule]` switches one machine to this tool:
 
 1. Verify the identity and that the source clone resolves for this machine.
-2. For each target: identical bytes are recorded in state without writing (`adopt`); a missing target is written; a differing target is held (`drifted`) for the user to resolve. Nothing is overwritten.
-3. Run first-apply tasks (if allowed).
+2. Materialize links another tool left: a directory symlink above a target that points into `$HOME` becomes a real directory holding a copy of what it pointed to.
+3. For each target: identical bytes are recorded in state without writing (`adopt`); a missing target is written; a differing target is held (`drifted`) for the user to resolve. Nothing is overwritten. A target that is a symlink to a file with the rendered bytes becomes a regular file with those bytes, and a read-only file with the rendered bytes (a 0444 render) takes the entry's mode. A symlink with other content is held.
 4. Install the schedule.
 
-Adopt leaves any other dotfiles tool installed and untouched, so the user can roll back.
+Adopt runs no task: no path task, unit reload or first-apply task. `--allow-tasks` only records the allows; first-apply tasks run on the first apply after adopt. Adopt never changes or removes what a link pointed to, and leaves any other dotfiles tool installed, so the user can roll back.
 
 ## 16. Threat model
 

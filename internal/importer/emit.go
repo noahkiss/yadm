@@ -68,6 +68,34 @@ func (w *tomlWriter) str(key, val string) {
 	w.b.WriteString(key + " = " + q + "\n")
 }
 
+// strs writes a string array; an empty list writes nothing.
+func (w *tomlWriter) strs(key string, vals []string) {
+	if len(vals) == 0 {
+		return
+	}
+	qs := make([]string, len(vals))
+	for i, v := range vals {
+		q, err := tomlString(v)
+		if err != nil && w.err == nil {
+			w.err = err
+		}
+		qs[i] = q
+	}
+	w.b.WriteString(key + " = [" + strings.Join(qs, ", ") + "]\n")
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (w *tomlWriter) key(k string) string {
 	q, err := tomlKey(k)
 	if err != nil && w.err == nil {
@@ -99,6 +127,15 @@ func encodeManifest(entries []manifest.Entry) ([]byte, error) {
 		if e.Mode != 0 {
 			w.raw(fmt.Sprintf("mode = 0o%o\n", uint32(e.Mode)))
 		}
+		if e.Format != "" {
+			w.str("format", string(e.Format))
+		}
+		w.strs("keep", e.Keep)
+		w.strs("drop", e.Drop)
+		w.strs("volatile", e.Volatile)
+		if e.Merge != "" {
+			w.str("merge", string(e.Merge))
+		}
 	}
 	if w.err != nil {
 		return nil, w.err
@@ -116,7 +153,8 @@ func encodeManifest(entries []manifest.Entry) ([]byte, error) {
 		if g.Source == "" {
 			g.Source = defaultSource(g)
 		}
-		if g.Target != x.Target || g.Source != x.Source || g.When != x.When || g.Enclave != x.Enclave || g.Template != x.Template || g.Mode != x.Mode {
+		if g.Target != x.Target || g.Source != x.Source || g.When != x.When || g.Enclave != x.Enclave || g.Template != x.Template || g.Mode != x.Mode ||
+			g.Format != x.Format || g.Merge != x.Merge || !sameStrings(g.Keep, x.Keep) || !sameStrings(g.Drop, x.Drop) || !sameStrings(g.Volatile, x.Volatile) {
 			return nil, fmt.Errorf("generated manifest entry %d does not round-trip", i)
 		}
 	}

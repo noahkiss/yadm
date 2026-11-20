@@ -23,8 +23,10 @@ import (
 // and machines that lose the target remove it on their next apply (if it is
 // unchanged there; a drifted copy is held).
 //
-// Retag works on the source head and needs exactly one manifest entry with
-// this literal target; variants and globs are refused.
+// Retag works on the source head and needs at most one manifest entry with
+// this literal target; variants are refused. With no entry, it tracks an
+// unmanaged file in $HOME: a new entry for the types and its live bytes
+// (track). A file a glob entry covers is refused.
 func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (Capture, error) {
 	if len(opts.Types) == 0 {
 		return Capture{}, errors.New("retag: at least one type is required")
@@ -49,22 +51,13 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 			idx = i
 		}
 	}
+	if err := checkRetagTypes(snap, opts); err != nil {
+		return Capture{}, err
+	}
 	if idx < 0 {
-		return Capture{}, fmt.Errorf("retag %s: no manifest entry names it", t)
+		return e.track(ctx, head, snap, t, opts)
 	}
 	entry := snap.Manifest.Entries[idx]
-	if snap.Fleet != nil {
-		for _, ty := range opts.Types {
-			if _, ok := snap.Fleet.Types[ty]; !ok {
-				return Capture{}, fmt.Errorf("retag: unknown type %q", ty)
-			}
-		}
-		if opts.Enclave != "" {
-			if d, ok := snap.Fleet.Types[model.TypeName(opts.Enclave)]; !ok || !d.Enclave {
-				return Capture{}, fmt.Errorf("retag: %q is not an enclave type", opts.Enclave)
-			}
-		}
-	}
 	oldEnc, newEnc := entry.Enclave, opts.Enclave
 	for _, enc := range []model.EnclaveName{oldEnc, newEnc} {
 		if enc != "" && !snap.canOpen(enc) {
@@ -160,6 +153,106 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 		Paths:   []model.Target{t},
 		Scopes:  map[model.Target]model.Scope{t: scope},
 	}, nil
+}
+
+func checkRetagTypes(snap *Snapshot, opts RetagOptions) error {
+	if snap.Fleet == nil {
+		return nil
+	}
+	for _, ty := range opts.Types {
+		if _, ok := snap.Fleet.Types[ty]; !ok {
+			return fmt.Errorf("retag: unknown type %q", ty)
+		}
+	}
+	if opts.Enclave != "" {
+		if d, ok := snap.Fleet.Types[model.TypeName(opts.Enclave)]; !ok || !d.Enclave {
+			return fmt.Errorf("retag: %q is not an enclave type", opts.Enclave)
+		}
+	}
+	return nil
+}
+
+// track is Retag for a file no manifest entry names: an unmanaged regular
+// file in $HOME. It appends a [[file]] entry with the types' `when` (and
+// the enclave) and captures the live bytes into its source, in one change.
+// A file a glob entry already produces is refused: edit the manifest.
+func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, opts RetagOptions) (Capture, error) {
+	for _, en := range snap.Manifest.Entries {
+		if manifest.IsGlob(string(en.Target)) && manifest.Match(string(en.Target), string(t)) {
+			return Capture{}, fmt.Errorf("retag %s: glob entry %q covers it; edit the manifest", t, en.Target)
+		}
+	}
+	enc := opts.Enclave
+	if enc != "" && !snap.canOpen(enc) {
+		return Capture{}, fmt.Errorf("retag %s: %w: %s", t, crypt.ErrNotMember, enc)
+	}
+	abs, err := e.abs(t)
+	if err != nil {
+		return Capture{}, err
+	}
+	lv, err := e.readTarget(ctx, abs)
+	if err != nil {
+		return Capture{}, err
+	}
+	if !lv.exists || !lv.info.Mode().IsRegular() {
+		return Capture{}, fmt.Errorf("retag %s: no manifest entry names it, and it is not a regular file in $HOME to track", t)
+	}
+	var conds []string
+	for _, ty := range opts.Types {
+		conds = append(conds, "type:"+string(ty))
+	}
+	when := strings.Join(conds, " | ")
+	mb, err := e.Store.ReadPath(ctx, head, manifest.FileName)
+	if err != nil {
+		return Capture{}, err
+	}
+	var add strings.Builder
+	if len(mb) > 0 && mb[len(mb)-1] != '\n' {
+		add.WriteString("\n")
+	}
+	fmt.Fprintf(&add, "\n[[file]]\ntarget = %s\nwhen = %s\n", tomlString(string(t)), tomlString(when))
+	if enc != "" {
+		fmt.Fprintf(&add, "enclave = %s\n", tomlString(string(enc)))
+	}
+	nm := append(append([]byte{}, mb...), add.String()...)
+	check, err := manifest.Parse(nm)
+	if err != nil {
+		return Capture{}, fmt.Errorf("retag %s: edited manifest does not parse: %w", t, err)
+	}
+	last := check.Entries[len(check.Entries)-1]
+	if last.Target != t || last.When != when || last.Enclave != enc {
+		return Capture{}, fmt.Errorf("retag %s: edited manifest does not say what was asked", t)
+	}
+	src := defaultSource(t, enc)
+	blob := lv.bytes
+	if enc != "" {
+		if blob, err = snap.cr().SealFile(enc, src, lv.bytes); err != nil {
+			return Capture{}, fmt.Errorf("retag %s: seal: %w", t, err)
+		}
+	}
+	mode := uint32(gitModeFile)
+	if lv.info.Mode().Perm()&0o111 != 0 {
+		mode = gitModeExec
+	}
+	scope := model.ScopeShared
+	if enc != "" {
+		scope = model.Scope(enc)
+	}
+	return Capture{
+		Changes: []store.Change{{Path: manifest.FileName, Blob: nm, Mode: gitModeFile}, {Path: src, Blob: blob, Mode: mode}},
+		Paths:   []model.Target{t},
+		Scopes:  map[model.Target]model.Scope{t: scope},
+	}, nil
+}
+
+// tomlString quotes s as a TOML basic string.
+func tomlString(s string) string {
+	b, err := toml.Marshal(map[string]string{"v": s})
+	if err != nil {
+		return fmt.Sprintf("%q", s)
+	}
+	_, v, _ := strings.Cut(strings.TrimSpace(string(b)), "= ")
+	return v
 }
 
 func defaultSource(t model.Target, enc model.EnclaveName) model.SourcePath {

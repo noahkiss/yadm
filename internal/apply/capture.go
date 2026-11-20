@@ -147,8 +147,8 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	switch {
 	case r.Entry.Template:
 		failReason = model.HoldRenderedEdit
-		if !spec.Empty() {
-			return hold(model.HoldUncapturable, "template with intra-file rules; edit the template")
+		if len(spec.Seal) > 0 || spec.Regions {
+			return hold(model.HoldUncapturable, "template with sealed values or regions; edit the template")
 		}
 		if st.RenderContext == nil || snap.Render == nil {
 			return hold(model.HoldRenderedEdit, "no stored render context to recompute the last render")
@@ -157,12 +157,33 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		if err != nil || hashOf(last) != ts.RenderHash {
 			return hold(model.HoldRenderedEdit, "cannot recompute the last render")
 		}
-		p, err := e.Text.PatchTemplate(prevPlain, last, target)
+		// With keep or drop, the template renders only the owned part of
+		// the file. Map the target through the rules onto the last render
+		// first: an edit to app-owned keys leaves it unchanged (nothing to
+		// commit), and an edit to a kept key patches the template as a
+		// plain hand edit of that render would.
+		want := target
+		if !spec.Empty() {
+			owned, viol, err := e.Rules.ToSource(target, last, spec, snap.sealer())
+			if err != nil || len(viol) > 0 {
+				detail := "keep/drop on a template: the target does not map onto the template's keys"
+				if err != nil {
+					detail += ": " + err.Error()
+				}
+				return hold(model.HoldRenderedEdit, detail+"; edit the template")
+			}
+			if bytes.Equal(owned, last) {
+				newPlain = prevPlain
+				break
+			}
+			want = owned
+		}
+		p, err := e.Text.PatchTemplate(prevPlain, last, want)
 		if err != nil {
 			detail := "hand edit touches rendered expressions or conditional blocks; it does not patch into the template: " + err.Error()
 			cand, ok := []byte(nil), false
 			if enc == "" {
-				cand, ok = e.literalCandidate(snap, r, prevPlain, last, target)
+				cand, ok = e.literalCandidate(snap, r, prevPlain, last, want, target)
 			}
 			if ok {
 				detail += "; the proposed template patch replaces the edited expressions with literal text, which renders the same on every machine: review it before committing"
@@ -172,7 +193,7 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 				if ok {
 					*h = proposePatch(*h, r, enc, model.PatchOfTemplate, prevPlain, cand)
 				} else {
-					*h = proposePatch(*h, r, enc, model.PatchOfRender, last, target)
+					*h = proposePatch(*h, r, enc, model.PatchOfRender, last, want)
 				}
 			}
 			return nil, h, herr
@@ -227,14 +248,15 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	return &store.Change{Path: r.Source, Blob: newRaw, Mode: sourceMode(snap, r.Source)}, nil, nil
 }
 
-// literalCandidate builds a template that renders to target on this
+// literalCandidate builds a template that renders to want (the target, or
+// its owned part under keep or drop) on this
 // machine: a three-way merge of the template and the target over the last
 // render, with each conflict resolved to the target's lines. Literal edits
 // land beside the template's expressions; an edit on an expression or a
 // conditional block replaces it with literal text. It returns false when
 // the candidate does not render back to the target byte for byte.
-func (e *Engine) literalCandidate(snap *Snapshot, r manifest.Resolved, tmpl, last, target []byte) ([]byte, bool) {
-	merged, regions, err := e.Text.Merge3(last, tmpl, target)
+func (e *Engine) literalCandidate(snap *Snapshot, r manifest.Resolved, tmpl, last, want, target []byte) ([]byte, bool) {
+	merged, regions, err := e.Text.Merge3(last, tmpl, want)
 	if err != nil {
 		return nil, false
 	}

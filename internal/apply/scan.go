@@ -217,7 +217,7 @@ func (e *Engine) scanRoots(ctx context.Context, st *State, deadline time.Time) (
 			ok = false
 			break
 		}
-		news, done := e.walkRoot(ctx, st, root, left)
+		news, done := e.walkRoot(ctx, st, root, left, false)
 		for _, d := range news {
 			if n, seen := depth[d.Target]; !seen || len(root.Path) > n {
 				best[d.Target], depth[d.Target] = d, len(root.Path)
@@ -237,7 +237,7 @@ func (e *Engine) scanRoots(ctx context.Context, st *State, deadline time.Time) (
 
 // walkRoot walks one root in a goroutine and returns what it found when the
 // walk ends or the time runs out, whichever comes first.
-func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, limit time.Duration) ([]Drift, bool) {
+func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, limit time.Duration, all bool) ([]Drift, bool) {
 	abs, err := e.abs(root.Path)
 	if err != nil {
 		return nil, true
@@ -257,6 +257,11 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	baseline := make(map[model.Target]bool, len(st.Baseline))
 	for t := range st.Baseline {
 		baseline[t] = true
+	}
+	// Ignored files (hold ignore, or the root's ignore globs) are never new.
+	ignored := make(map[model.Target]bool, len(st.Ignored))
+	for t := range st.Ignored {
+		ignored[t] = true
 	}
 	var (
 		mu    sync.Mutex
@@ -283,7 +288,7 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 				return nil
 			}
 			t := model.Target(filepath.ToSlash(rel))
-			if managed[t] {
+			if managed[t] || !all && (ignored[t] || root.Ignored(t)) {
 				return nil
 			}
 			mu.Lock()

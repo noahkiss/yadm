@@ -178,6 +178,7 @@ type TaskResult struct {
 	Duration time.Duration `json:"duration_ns"`
 	ExitCode int           `json:"exit_code"`
 	Error    string        `json:"error,omitempty"`
+	Detail   string        `json:"detail,omitempty"` // a deliberate skip, such as a unit reload left alone
 }
 
 // StatusSchema is the version of the Status record.

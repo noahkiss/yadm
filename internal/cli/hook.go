@@ -449,8 +449,8 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	if !managedOrRooted(snap, t) {
-		return Verdict{}, nil
+	if !managedOrRooted(snap, t) || m.eng.Ignored(t) {
+		return Verdict{}, nil // ignored on purpose: only a named commit tracks it
 	}
 	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
@@ -494,6 +494,15 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	_, _ = m.load(ctx)
+	kept := ts[:0:0]
+	for _, t := range ts {
+		if !m.eng.Ignored(t) {
+			kept = append(kept, t)
+		}
+	}
+	if ts = kept; len(ts) == 0 {
+		return Verdict{}, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
 	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
@@ -693,12 +702,26 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 		p.Neighbours, p.Suggested = neighbours(snap, h.Target)
 		p.Proposed = "commit it if every machine the root reaches should get it"
 		if len(p.Suggested) > 0 {
-			p.Proposed += "; its neighbours go to types " + joinTypes(p.Suggested) + ", so if it belongs only there, defer and give it a manifest entry with that `when`"
+			p.Proposed += "; its neighbours go to types " + joinTypes(p.Suggested) + ", so if it belongs only there, track it for those types"
+		}
+		if strings.Contains(h.Detail, "before its owned root") {
+			p.Proposed = "it was here before the root was allowed: track it, or ignore it if it is machine-local"
 		}
 		p.Options = []Option{
 			{Label: "share it", Consequence: "commits and pushes " + string(h.Target) + reachText(p.Reaches), Command: "yadm commit " + string(h.Target)},
-			deferOption(h.ID),
 		}
+		if len(p.Suggested) > 0 {
+			types := make([]string, len(p.Suggested))
+			for i, t := range p.Suggested {
+				types[i] = string(t)
+			}
+			p.Options = append(p.Options, Option{Label: "track it for its neighbours' types",
+				Consequence: "adds a manifest entry with when type:" + strings.Join(types, " | type:") + " and commits the file; only those machines get it",
+				Command:     "yadm retag " + string(h.Target) + " " + strings.Join(types, ",") + enclaveFlag(p.Reaches)})
+		}
+		p.Options = append(p.Options,
+			Option{Label: "ignore it", Consequence: "leaves the file untracked on this machine; it stops showing (yadm commit <path> tracks it later)", Command: "yadm hold ignore " + h.ID},
+			deferOption(h.ID))
 	case h.Reason == model.HoldProtected:
 		p.Proposed = "commit it by name if the change is intended"
 		p.Options = []Option{
@@ -746,6 +769,14 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 		p.What = string(h.Reason)
 	}
 	return p
+}
+
+// enclaveFlag keeps a file of an enclave root sealed when it is tracked.
+func enclaveFlag(r *Reach) string {
+	if r == nil || r.Enclave == "" {
+		return ""
+	}
+	return " --enclave " + string(r.Enclave)
 }
 
 // reach evaluates a `when` against every fleet machine.

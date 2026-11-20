@@ -12,10 +12,12 @@ import (
 )
 
 // Sealer seals one whole file for an enclave. The importer calls it once per
-// encrypted legacy file, with the decrypted plaintext, and stores only what
-// it returns. A crypt.Keyring per enclave provides it; tests fake it.
+// encrypted legacy file, with the decrypted plaintext and the file's sealed
+// source path (`sealed/<enclave>/<target>`), which the container binds, and
+// stores only what it returns. A crypt.Keyring per enclave provides it; tests
+// fake it.
 type Sealer interface {
-	SealFile(enclave model.EnclaveName, plaintext []byte) ([]byte, error)
+	SealFile(enclave model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error)
 }
 
 // Options configures one import.
@@ -27,12 +29,22 @@ type Options struct {
 	PasswordEnv    string                       // env var holding the transcrypt password
 	ClassEnclaves  map[string]model.EnclaveName // legacy class -> enclave for its encrypted files
 	DefaultEnclave model.EnclaveName            // enclave for encrypted files with no mapped class
-	// CryptFilters names the gitattributes filters that mark transcrypt files.
-	// Empty means "crypt" plus every filter in the legacy repository's own
-	// config whose smudge command runs transcrypt.
+	// CryptFilters names extra gitattributes filters that mark transcrypt
+	// files. The importer always knows "crypt" and every filter in the legacy
+	// repository's own local config (read, never run) whose smudge, clean or
+	// textconv command runs transcrypt. A clone lacks that config, so a
+	// custom filter name is declared here (`--crypt-filter`).
 	CryptFilters []string
-	Sealer       Sealer // seals encrypted files; required when any exist
-	DryRun       bool
+	// Filters maps the other gitattributes filters (strip filters) to
+	// intra-file rules. A path marked with an unmapped filter fails the import.
+	Filters map[string]Filter
+	// Machine names the machines-table row that is the importing machine.
+	// That row gets Self as its fleet id instead of a random one. A name that
+	// matches no row fails the import.
+	Machine string
+	Self    model.MachineID
+	Sealer  Sealer // seals encrypted files; required when any exist
+	DryRun  bool
 }
 
 // Mapping records one converted path.
@@ -145,13 +157,14 @@ func convert(ctx context.Context, opts Options) (*converted, error) {
 	if err != nil {
 		return nil, err
 	}
-	filters := map[string]bool{}
-	if len(opts.CryptFilters) > 0 {
-		for _, f := range opts.CryptFilters {
-			filters[f] = true
+	filters := cryptFilters(ctx, legacyDir)
+	for _, f := range opts.CryptFilters {
+		filters[f] = true
+	}
+	for name, f := range opts.Filters {
+		if f.Crypt {
+			filters[name] = true
 		}
-	} else {
-		filters = cryptFilters(ctx, legacyDir)
 	}
 	p := &planner{opts: opts, repo: repo, filters: filters, files: map[model.SourcePath]outFile{}}
 	var machines []machineRow

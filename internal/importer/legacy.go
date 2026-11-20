@@ -158,11 +158,13 @@ func (r *legacyRepo) readBlobs(ctx context.Context) error {
 	return nil
 }
 
-// cryptFilters returns the filter names whose smudge command runs transcrypt,
-// read from the legacy repository's own config, plus "crypt".
+// cryptFilters returns "crypt" plus every filter name whose smudge, clean or
+// textconv command runs transcrypt, read from the legacy repository's own
+// local config. dir may be a bare repository. It only reads config: it
+// writes nothing and runs no filter.
 func cryptFilters(ctx context.Context, dir string) map[string]bool {
 	out := map[string]bool{"crypt": true}
-	b, err := runGit(ctx, dir, nil, "config", "--local", "--get-regexp", `^filter\..*\.smudge$`)
+	b, err := runGit(ctx, dir, nil, "config", "--local", "--get-regexp", `^filter\..*\.(smudge|clean|textconv)$`)
 	if err != nil {
 		return out
 	}
@@ -171,8 +173,10 @@ func cryptFilters(ctx context.Context, dir string) map[string]bool {
 		if !ok || !strings.Contains(val, "transcrypt") {
 			continue
 		}
-		name := strings.TrimSuffix(strings.TrimPrefix(key, "filter."), ".smudge")
-		out[name] = true
+		name := strings.TrimPrefix(key, "filter.")
+		if i := strings.LastIndexByte(name, '.'); i > 0 {
+			out[name[:i]] = true
+		}
 	}
 	return out
 }
