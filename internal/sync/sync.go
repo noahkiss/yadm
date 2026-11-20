@@ -296,6 +296,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		maxRetries = DefaultMaxRetries
 	}
 	seen := map[model.CommitID]bool{}
+	var publishedTip model.CommitID
 	published := false
 	for attempt := 0; ; attempt++ {
 		base := s.accepted()
@@ -331,11 +332,11 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 
 		// 8. Status record.
 		changed := tip != start || len(rep.Committed) > 0 || len(rep.Alerts) > 0
-		if !published || tip != rep.Applied {
+		if !published || tip != publishedTip {
 			if err := s.publish(ctx, tip, changed || published, len(pending(cp.Paths, committed, nil))); err != nil {
 				return rep, fmt.Errorf("status: %w", err)
 			}
-			published = true
+			published, publishedTip = true, tip
 		}
 		rep.Applied = tip
 
@@ -488,6 +489,9 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 	if err := s.clearSourceDirty(); err != nil {
 		return false, err
 	}
+	if err := s.guardConflicts(); err != nil {
+		return false, err
+	}
 	res, err := s.Apply.Apply(ctx, tip, apply.ApplyOptions{})
 	if err != nil {
 		return false, fmt.Errorf("apply: %w", err)
@@ -503,6 +507,31 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 		}
 	}
 	return false, nil
+}
+
+// guardConflicts clears the last-written hash of every target with an open
+// conflict hold, so apply holds this machine's side instead of overwriting
+// it. Capture may have refreshed the hash since the hold was raised.
+func (s *Syncer) guardConflicts() error {
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, h := range st.Holds {
+		if h.Reason != model.HoldConflict || h.Target == "" {
+			continue
+		}
+		if ts, ok := st.Targets[h.Target]; ok && ts.Written != "" {
+			ts.Written = ""
+			st.Targets[h.Target] = ts
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.Apply.State.Save(st)
 }
 
 func (s *Syncer) clearSourceDirty() error {

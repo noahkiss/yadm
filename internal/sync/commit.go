@@ -124,6 +124,17 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			}
 			base := baseBlob(st, appliedTree, t, ch.Path)
 			cur := headTree[ch.Path].Blob
+			if base == cur && !ch.Delete && cur != "" {
+				// Already in the source (a root file no entry manages yet): no commit.
+				id, err := s.blobID(ctx, ch.Blob)
+				if err != nil {
+					return out, err
+				}
+				if id == cur {
+					out.committed[t] = true
+					continue
+				}
+			}
 			if base == cur {
 				changes = append(changes, ch)
 				landed = append(landed, t)
@@ -335,6 +346,13 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	}
 	rep.Committed = out.ids
 	rep.Resolutions = out.resolutions
+	var took []model.Target
+	for t := range out.committed {
+		took = append(took, t)
+	}
+	if err := s.forgetPreExisting(took); err != nil {
+		return rep, err
+	}
 	if a, err := s.Store.ResolveRef(ctx, store.RefMain); err == nil && len(out.ids) > 0 && !out.dirty {
 		rep.Applied = a
 	}

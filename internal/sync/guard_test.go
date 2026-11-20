@@ -194,6 +194,15 @@ func TestPreExistingFileUnderNewRootNotCommitted(t *testing.T) {
 	if out := git(t, w.remote, "ls-tree", "-r", "--name-only", "main"); strings.Contains(out, "old.txt") {
 		t.Error("pre-existing file reached the remote")
 	}
+	// An edit after the root arrived does not make it new.
+	A.write(old, "pre-existing, edited\n")
+	r = A.sync()
+	if len(r.Committed) != 0 {
+		t.Fatalf("edited pre-existing file committed: %+v", r)
+	}
+	if out := git(t, w.remote, "ls-tree", "-r", "--name-only", "main"); strings.Contains(out, "old.txt") {
+		t.Error("edited pre-existing file reached the remote")
+	}
 	// Named, it commits manually.
 	rc, err := A.s.Commit(ctx, CommitOptions{Paths: []model.Target{old}})
 	if err != nil || len(rc.Committed) != 1 {

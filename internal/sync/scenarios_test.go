@@ -64,6 +64,17 @@ func TestConflictHeldPerFileOthersSync(t *testing.T) {
 	if got := B.read(aliases); !strings.Contains(got, "ls -B") {
 		t.Errorf("B's side overwritten on resync: %q", got)
 	}
+	// A touch plus the daily full-hash pass re-hash the file; the local side
+	// still stays on disk.
+	w.clock.offset += 25 * time.Hour
+	now := time.Now()
+	os.Chtimes(B.path(aliases), now, now)
+	if r3 := B.sync(); len(r3.Committed) != 0 {
+		t.Errorf("held file recommitted after a re-hash: %+v", r3)
+	}
+	if got := B.read(aliases); !strings.Contains(got, "ls -B") {
+		t.Errorf("B's side overwritten after a re-hash: %q", got)
+	}
 	if got := w.remoteFile("files/.config/shell/aliases.sh"); !strings.Contains(got, "ls -A") {
 		t.Errorf("remote aliases changed: %q", got)
 	}
@@ -109,6 +120,16 @@ func TestPushRaceLosesNothing(t *testing.T) {
 	r := B.sync()
 	if r.Retries != 1 || !r.Pushed {
 		t.Fatalf("B: retries %d pushed %v", r.Retries, r.Pushed)
+	}
+	sts, err := store.StatusRefs(B.st, b).ReadAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sts[b].Applied; got != B.main() {
+		t.Errorf("published status names %s, main is %s", got, B.main())
+	}
+	if got := git(t, w.remote, "rev-parse", "refs/yadm/status/"+string(b)); got != git(t, B.repo.Dir(), "rev-parse", "refs/yadm/status/"+string(b)) {
+		t.Error("the pushed status ref is not the latest record")
 	}
 	if !strings.Contains(w.remoteFile("files/.config/shell/aliases.sh"), "tool-a") ||
 		!strings.Contains(w.remoteFile("files/.config/packages/list"), "tool-b") {
@@ -401,5 +422,72 @@ func TestNonMemberEnclaveCommitAlerts(t *testing.T) {
 	}
 	if kh := sts[a].KeyHeads["personal"]; kh.Seq == 0 || kh.Hash == "" {
 		t.Errorf("status key heads %+v", sts[a].KeyHeads)
+	}
+}
+
+func TestSealedUnionMergeKeepsCiphertextInGit(t *testing.T) {
+	// A sealed file under a non-default policy goes through the resolver's
+	// own open, merge and reseal path, not apply.MergeSealed.
+	a, b, c := fixture.HostA, fixture.HostB, fixture.HostC
+	w := newWorld(t, func(f *fixture.Fixture) {
+		addMember(t, f, "personal", fixture.HostB, "nicknames = [\"desk-b\"]\ntypes = [\"work\"]", "nicknames = [\"desk-b\"]\ntypes = [\"work\", \"personal\"]")
+	}, a, b, c)
+	notes := model.Target(".config/notes/private.md")
+	for _, m := range w.machines {
+		m.s.Policy.MergeFor = func(t model.Target) MergePolicy {
+			if t == notes {
+				return MergeUnion
+			}
+			return ""
+		}
+	}
+	w.syncAll(a, b, c)
+	A, B, C := w.machines[a], w.machines[b], w.machines[c]
+	orig := A.read(notes)
+	editA := secrecytest.NewCanary(t, "union-a")
+	editB := secrecytest.NewCanary(t, "union-b")
+	// Both append at the same place: a line merge would conflict.
+	A.write(notes, orig+"A "+editA.String()+"\n")
+	B.write(notes, orig+"B "+editB.String()+"\n")
+	A.sync()
+	r := B.sync()
+	if len(holdsOf(r, model.HoldConflict)) != 0 || !hasTrailerResolved(r, RungUnion) {
+		t.Fatalf("sealed union: %+v", r)
+	}
+	A.sync()
+	C.sync()
+	for _, m := range []*machine{A, B} {
+		got := m.read(notes)
+		if !strings.Contains(got, editA.String()) || !strings.Contains(got, editB.String()) {
+			t.Errorf("%s: %q", m.id, got)
+		}
+	}
+	personal := []secrecytest.Canary{w.f.Canaries["personal"], editA, editB}
+	secrecytest.AssertRepoClean(t, w.remote, personal...)
+	for _, m := range []*machine{A, B, C} {
+		secrecytest.AssertRepoClean(t, m.repo.Dir(), personal...)
+	}
+	secrecytest.AssertTreeClean(t, C.home, personal...)
+	secrecytest.AssertTreeClean(t, C.state, personal...)
+	if blob := git(t, w.remote, "show", "main:sealed/personal/.config/notes/private.md"); !crypt.IsSealedFile([]byte(blob)) {
+		t.Error("sealed path holds plaintext in git")
+	}
+}
+
+func TestUnreadableDriftNeverCommits(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	a := fixture.HostA
+	w := newWorld(t, nil, a)
+	A := w.machines[a]
+	A.sync()
+	before := w.remoteMain()
+	A.write(aliases, "alias unreadable=\"x\"\n")
+	os.Chmod(A.path(aliases), 0)
+	defer os.Chmod(A.path(aliases), 0o644)
+	r := A.sync()
+	if len(r.Committed) != 0 || w.remoteMain() != before {
+		t.Fatalf("unreadable drift committed: %+v", r)
 	}
 }
