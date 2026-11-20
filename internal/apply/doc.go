@@ -48,7 +48,7 @@
 //
 //	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs }
 //	func (e *Engine) Generated(ctx) ([]model.Target, error) // files on disk matching a task's outputs
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; RenderHash; ChangedAt }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
 //	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
