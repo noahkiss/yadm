@@ -2,6 +2,7 @@ package fixture
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,6 +198,19 @@ func TestBuild(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// A member with pins loads its enclave through LoadSet; without pins it gets ErrNotPinned.
+	state := t.TempDir()
+	if err := f.PinAll(state); err != nil {
+		t.Fatal(err)
+	}
+	set, loads, err := crypt.LoadSet(f.Logs, crypt.FilePins(state), f.Identities[HostA])
+	if err != nil || !set.CanOpen("personal") || set.CanOpen("client") || loads["personal"].Err != nil {
+		t.Fatalf("LoadSet as member: %v %+v", err, loads)
+	}
+	_, loads, _ = crypt.LoadSet(f.Logs, crypt.FilePins(t.TempDir()), f.Identities[HostA])
+	if !errors.Is(loads["personal"].Err, crypt.ErrNotPinned) {
+		t.Fatalf("unpinned: %v", loads["personal"].Err)
 	}
 	sealed, err := os.ReadFile(filepath.Join(f.Root, "sealed", "personal", ".config", "notes", "private.md"))
 	if err != nil || !crypt.IsSealedFile(sealed) {

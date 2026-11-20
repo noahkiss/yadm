@@ -223,6 +223,23 @@ func writeFile(p string, b []byte) error {
 	return os.WriteFile(p, b, 0o644)
 }
 
+// PinAll writes a pin at each enclave's head into stateDir, as a machine has
+// after create, add or `enclave join --expect`. crypt.LoadSet opens no
+// keyring for an unpinned enclave.
+func (f *Fixture) PinAll(stateDir string) error {
+	pins := crypt.FilePins(stateDir)
+	for e, log := range f.Logs {
+		p, err := crypt.PinOf(log[len(log)-1])
+		if err != nil {
+			return err
+		}
+		if err := pins.Set(e, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Plaintext returns an input with @@CANARY@@ replaced by the enclave's canary.
 func (f *Fixture) Plaintext(e model.EnclaveName, b []byte) []byte {
 	return bytes.ReplaceAll(b, []byte("@@CANARY@@"), f.Canaries[e].Bytes())
