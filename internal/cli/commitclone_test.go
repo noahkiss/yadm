@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -40,6 +41,51 @@ func TestCommitAfterCloneCommitKeepsIndex(t *testing.T) {
 	env = yadmOK(t, "sync")
 	if hs := decode[holdsOnly](t, env.Data).Holds; len(hs) != 0 {
 		t.Fatalf("sync after commit holds: %+v", hs)
+	}
+}
+
+// TestSyncRecoversStaleIndex: a clone an older release left with HEAD
+// ahead of its index (the index at the recorded worktree head) heals on
+// the next sync. With the record gone, sync holds source_dirty, and its
+// advice makes the next sync clean.
+func TestSyncRecoversStaleIndex(t *testing.T) {
+	for _, name := range []string{"recorded", "unrecorded"} {
+		t.Run(name, func(t *testing.T) {
+			hermetic(t)
+			root := t.TempDir()
+			remote := seedRemote(t, root, hookTree())
+			a := hookMachine(t, root, remote, "a", "host-a")
+			old := git(t, a.Source, "rev-parse", "HEAD")
+			writeFile(t, filepath.Join(a.Source, "files/.config/tool/config"), "color = raw\n")
+			git(t, a.Source, "commit", "-q", "-am", "raw")
+			git(t, a.Source, "read-tree", old)
+			git(t, a.Source, "checkout-index", "-a", "-f")
+			if st := git(t, a.Source, "status", "--porcelain"); st != "M  files/.config/tool/config" {
+				t.Fatalf("setup: %q", st)
+			}
+			if name == "unrecorded" {
+				if err := os.Remove(filepath.Join(a.State, "worktree-head")); err != nil {
+					t.Fatal(err)
+				}
+				hs := decode[holdsOnly](t, yadmOK(t, "sync").Data).Holds
+				if len(hs) != 1 || hs[0].Reason != model.HoldSourceDirty {
+					t.Fatalf("sync: %+v", hs)
+				}
+				fix := hs[0].Next[len(hs[0].Next)-1]
+				if _, stderr, code := yadmRaw(t, strings.Fields(fix)[1:]...); code != 0 {
+					t.Fatalf("%s: %d %s", fix, code, stderr)
+				}
+			}
+			if hs := decode[holdsOnly](t, yadmOK(t, "sync").Data).Holds; len(hs) != 0 {
+				t.Fatalf("sync holds: %+v", hs)
+			}
+			if st := git(t, a.Source, "status", "--porcelain"); st != "" {
+				t.Fatalf("source clone after sync: %q", st)
+			}
+			if got := readFile(t, filepath.Join(a.Home, ".config/tool/config")); got != "color = raw\n" {
+				t.Fatalf("target: %q", got)
+			}
+		})
 	}
 }
 
