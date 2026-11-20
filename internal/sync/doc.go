@@ -107,6 +107,9 @@
 //	func Unreviewed(ctx, st store.Store, keys *crypt.Set, scope model.Scope) ([]ReviewItem, error)
 //	func Ack(ctx, st store.Store, scope model.Scope, upTo model.CommitID) error
 //	func SeedReviewed(ctx, st store.Store) error; const AlertReviewedSkip
+//	const AcceptedFile = "remote-accepted"; func ReadAccepted(stateDir string) (model.CommitID, bool)
+//	func SeedAccepted(stateDir string, start model.CommitID) error // never replaces a record
+//	func SeedStart(ctx, st store.Store, stateDir string, holds []model.Hold, preFetch model.CommitID) (model.CommitID, error)
 //	const RefReviewNotes = "refs/yadm/notes/review"; const NoteSchema = 1; var ErrNoteNeedsSeal
 //	type NoteOptions struct{ Commit; Why; PathsOnly; Seal; Machine; Now }
 //	type Note struct{ Commit; Machine; Time; Why; PathsOnly; Sealed; Enclave; Opened }; func (Note) Text() string

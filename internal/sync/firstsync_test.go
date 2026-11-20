@@ -43,8 +43,9 @@ func forgeKeyLog(t *testing.T, w *world, B *machine, evil string) model.CommitID
 	})
 }
 
-// tick runs one sync of kind i%3: a timer sync, a quick sync, or a manual
-// commit that pushes. Every kind fetches through the same guard.
+// tick runs one sync of kind i%3: a timer sync, a quick sync (which may
+// stop at its cheap check when nothing moved), or a manual commit that
+// pushes. Every kind that fetches judges the source through the same guard.
 func tick(t *testing.T, m *machine, i int) Report {
 	t.Helper()
 	m.w.clock.offset += 3 * time.Hour
@@ -136,6 +137,41 @@ func TestFirstSyncGuardsAgainstPreFetchRemote(t *testing.T) {
 	secrecytest.AssertTreeClean(t, A.home, evil)
 	secrecytest.AssertRepoClean(t, w.remote, edit)
 	secrecytest.AssertRepoClean(t, A.repo.Dir(), edit)
+	// B is not a member of personal: the edit never reaches it.
+	B.sync()
+	secrecytest.AssertTreeClean(t, B.home, edit)
+	secrecytest.AssertTreeClean(t, B.state, edit)
+	secrecytest.AssertRepoClean(t, B.repo.Dir(), edit)
+}
+
+// The fetch records the start before it moves origin/main: a run whose
+// fetch succeeded but that then stopped (the sync lock was held) leaves the
+// pre-fetch start, not the forged commit, for the next sync.
+func TestFetchRecordsStartBeforeMovingOriginMain(t *testing.T) {
+	a, b := fixture.HostA, fixture.HostB
+	w := newWorld(t, nil, a, b)
+	w.syncAll(b)
+	A, B := w.machines[a], w.machines[b]
+	forged := forgeKeyLog(t, w, B, "x")
+	release, err := FileLockTimeout(A.state, time.Second).Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	A.s.Lock = FileLockTimeout(A.state, 100*time.Millisecond)
+	if _, err := A.s.Run(context.Background(), Options{Auto: true, Push: true}); err == nil {
+		t.Fatal("run with the sync lock held did not fail")
+	}
+	release()
+	origin, err := A.st.ResolveRef(context.Background(), store.RemoteMain)
+	if err != nil || origin != forged {
+		t.Fatalf("the fetch did not run: origin %s %v", origin, err)
+	}
+	if A.s.accepted() == forged || A.s.accepted() == "" {
+		t.Fatalf("record %q after the stopped run", A.s.accepted())
+	}
+	if r := A.sync(); holdTask(r, HoldTaskKeyLog) == nil || strings.Contains(A.read(aliases), "evil") {
+		t.Fatalf("next sync took the forged source: holds %+v", r.Holds)
+	}
 }
 
 // A machine that refused a first sync before the accepted record existed
@@ -151,6 +187,27 @@ func TestRefusalWithoutRecordStartsFromLocalMain(t *testing.T) {
 	if r := A.sync(); holdTask(r, HoldTaskKeyLog) == nil {
 		t.Fatalf("first sync: holds %+v", r.Holds)
 	}
+	if err := os.Remove(filepath.Join(A.state, AcceptedFile)); err != nil {
+		t.Fatal(err)
+	}
+	// A notes push seeds through SeedStart with origin/main, the forged
+	// commit: the open hold makes it record local main.
+	ctx := context.Background()
+	origin, err := A.st.ResolveRef(ctx, store.RemoteMain)
+	if err != nil || origin != forged {
+		t.Fatalf("origin %s %v", origin, err)
+	}
+	holds, err := A.eng.Holds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SeedStart(ctx, A.st, A.state, holds, origin); err != nil {
+		t.Fatal(err)
+	}
+	if id := A.s.accepted(); id != A.main() {
+		t.Fatalf("seeded %q, want local main %s", id, A.main())
+	}
+	// A sync with no record takes the same rule.
 	if err := os.Remove(filepath.Join(A.state, AcceptedFile)); err != nil {
 		t.Fatal(err)
 	}

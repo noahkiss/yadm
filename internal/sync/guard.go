@@ -383,27 +383,40 @@ func (s *Syncer) startBase(ctx context.Context, preFetch model.CommitID) (model.
 	if id, ok := s.acceptedRecord(); ok {
 		return id, nil
 	}
-	start := preFetch
 	st, err := s.Apply.State.Load()
 	if err != nil {
 		return "", err
 	}
-	for _, h := range st.Holds {
+	start, err := SeedStart(ctx, s.Store, s.Apply.StateDir, st.Holds, preFetch)
+	if err != nil {
+		return "", err
+	}
+	if id, ok := s.acceptedRecord(); ok {
+		return id, nil
+	}
+	return start, nil
+}
+
+// SeedStart records the start of a machine with no AcceptedFile record
+// before a fetch moves origin/main: preFetch (origin/main now), or local
+// main when holds include an open key-log or manifest-guard hold. It
+// returns the start it chose. Every fetch path calls it first.
+func SeedStart(ctx context.Context, st store.Store, stateDir string, holds []model.Hold, preFetch model.CommitID) (model.CommitID, error) {
+	if id, ok := ReadAccepted(stateDir); ok {
+		return id, nil
+	}
+	start := preFetch
+	for _, h := range holds {
 		if refusalHold(h) {
-			if start, err = s.Store.ResolveRef(ctx, store.RefMain); err != nil {
+			var err error
+			if start, err = st.ResolveRef(ctx, store.RefMain); err != nil {
 				return "", err
 			}
 			break
 		}
 	}
-	if s.Apply.StateDir == "" {
-		return start, nil
-	}
-	if err := SeedAccepted(s.Apply.StateDir, start); err != nil {
+	if err := SeedAccepted(stateDir, start); err != nil {
 		return "", fmt.Errorf("record the accepted remote: %w", err)
-	}
-	if id, ok := s.acceptedRecord(); ok {
-		return id, nil
 	}
 	return start, nil
 }
