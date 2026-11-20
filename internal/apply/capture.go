@@ -81,15 +81,20 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	t := d.Target
 	ts, have := st.Targets[t]
 	r, inPlan := snap.Plan.Targets[t]
-	if !have || !inPlan {
+	if !inPlan {
 		return nil, nil, nil // left the plan: apply deletes or holds it
 	}
 	scope := r.Entry.Scope()
+	if !have {
+		// Never written here (an adopt or apply hold): capture against the
+		// source at the snapshot.
+		ts = TargetState{Source: r.Source, Scope: scope, SourceBlob: snap.Tree[r.Source].Blob}
+	}
 	hold := func(reason model.HoldReason, detail string) (*store.Change, *model.Hold, error) {
 		h := fileHold(st, now, t, scope, reason, ts.ChangedAt, detail)
 		return nil, &h, nil
 	}
-	if r.Source != ts.Source {
+	if have && r.Source != ts.Source {
 		return hold(model.HoldUncapturable, fmt.Sprintf("source moved from %s to %s since last apply", ts.Source, r.Source))
 	}
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
@@ -357,13 +362,19 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		} else if r, ok := snap.Plan.Targets[t]; ok {
 			mode = modeOf(snap, r)
 		}
-		if err := e.writeAtomic(abs, b, mode); err != nil {
+		if err := e.writeAtomic(abs, b, mode, nil); err != nil {
 			return Result{}, err
 		}
 	}
 
 	// Take the target: capture it as it is now.
 	ts := st.Targets[t]
+	if _, inPlan := snap.Plan.Targets[t]; !inPlan {
+		// A modified orphan: keep the file as it is and stop managing it.
+		delete(st.Targets, t)
+		clearFileHolds(st, t)
+		return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActSkip, Scope: h.Scope, Reason: "hold resolved: take target; no longer managed"}}}, e.State.Save(st)
+	}
 	kind := DriftModified
 	if lv, err := e.readTarget(ctx, abs); err == nil && !lv.exists {
 		kind = DriftDeleted
@@ -373,9 +384,23 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		return Result{}, err
 	}
 	res := Result{Commit: snap.Commit, Holds: c.Holds}
-	if len(c.Holds) == 0 {
-		res.Capture = &c
-		res.Actions = []Action{{Target: t, Kind: ActHold, Scope: h.Scope, Reason: "hold resolved: take target; commit the capture"}}
+	if len(c.Holds) > 0 {
+		return res, nil
 	}
+	if len(c.Changes) == 0 {
+		// A no-op capture must have marked the target clean in state.
+		after, err := e.loadState()
+		if err != nil {
+			return res, err
+		}
+		lv, err := e.readTarget(ctx, abs)
+		if err != nil || !lv.exists || after.Targets[t].Written != hashOf(lv.bytes) {
+			return res, fmt.Errorf("resolve %s: capture produced no change and the target is still drifted", id)
+		}
+		res.Actions = []Action{{Target: t, Kind: ActSkip, Scope: h.Scope, Reason: "hold resolved: target already matches the source"}}
+		return res, nil
+	}
+	res.Capture = &c
+	res.Actions = []Action{{Target: t, Kind: ActHold, Scope: h.Scope, Reason: "hold resolved: take target; commit the capture"}}
 	return res, nil
 }

@@ -76,7 +76,10 @@ func (s *fakeStore) ReadPath(_ context.Context, rev model.CommitID, p model.Sour
 
 // fakeCrypto seals by XOR behind the real container magic. Its ciphertext
 // never contains the plaintext bytes, which is all secrecy tests need.
-type fakeCrypto struct{ members map[model.EnclaveName]bool }
+type fakeCrypto struct {
+	members map[model.EnclaveName]bool
+	epoch   byte // sealing epoch; opening accepts any
+}
 
 func xor(b []byte) []byte {
 	out := make([]byte, len(b))
@@ -91,29 +94,32 @@ func (c fakeCrypto) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
 	if !c.members[e] {
 		return nil, crypt.ErrNotMember
 	}
-	return append([]byte(crypt.FileMagic+string(e)+"\x00"), xor(pt)...), nil
+	return append([]byte(crypt.FileMagic+string(e)+"\x00"+string(rune('0'+c.epoch))), xor(pt)...), nil
 }
 func (c fakeCrypto) OpenFile(e model.EnclaveName, ct []byte) ([]byte, error) {
 	if !c.members[e] {
 		return nil, crypt.ErrNotMember
 	}
 	pre := []byte(crypt.FileMagic + string(e) + "\x00")
-	if !bytes.HasPrefix(ct, pre) {
+	if !bytes.HasPrefix(ct, pre) || len(ct) <= len(pre) {
 		return nil, crypt.ErrNotSealed
 	}
-	return xor(ct[len(pre):]), nil
+	return xor(ct[len(pre)+1:]), nil
 }
 func (c fakeCrypto) SealValue(e model.EnclaveName, k string, pt []byte) (string, error) {
 	if !c.members[e] {
 		return "", crypt.ErrNotMember
 	}
-	return "tok:" + string(e) + ":" + hex.EncodeToString(xor(pt)), nil
+	return fmt.Sprintf("tok:%s:%d:%s", e, c.epoch, hex.EncodeToString(xor(pt))), nil
 }
 func (c fakeCrypto) OpenValue(e model.EnclaveName, k, tok string) ([]byte, error) {
 	if !c.members[e] {
 		return nil, crypt.ErrNotMember
 	}
-	b, err := hex.DecodeString(strings.TrimPrefix(tok, "tok:"+string(e)+":"))
+	if !strings.HasPrefix(tok, "tok:"+string(e)+":") {
+		return nil, crypt.ErrAuthFailed
+	}
+	b, err := hex.DecodeString(tok[strings.LastIndexByte(tok, ':')+1:])
 	return xor(b), err
 }
 func (c fakeCrypto) SealRegion(e model.EnclaveName, l string, b []byte) (string, error) {

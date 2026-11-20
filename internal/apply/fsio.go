@@ -113,7 +113,8 @@ func hashOf(b []byte) string {
 // writeAtomic writes b to dst through a temp file in the same directory and a
 // rename, so a reader or a crash sees either the old bytes or the new ones.
 // The temp file is created 0600 and gets its final mode before the rename.
-func (e *Engine) writeAtomic(dst string, b []byte, mode fs.FileMode) error {
+// guard, if set, runs just before the rename and aborts it with its error.
+func (e *Engine) writeAtomic(dst string, b []byte, mode fs.FileMode, guard func() error) error {
 	dir, base := filepath.Split(dst)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -147,6 +148,11 @@ func (e *Engine) writeAtomic(dst string, b []byte, mode fs.FileMode) error {
 	if err := e.fs.BeforeRename(tmp, dst); err != nil {
 		crashed = true
 		return err
+	}
+	if guard != nil {
+		if err := guard(); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		return err

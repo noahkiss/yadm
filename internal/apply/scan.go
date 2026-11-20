@@ -170,18 +170,29 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 // scanRoots walks each owned root for regular files the state does not
 // manage. It reports ok false if the budget ran out before every walk ended.
 func (e *Engine) scanRoots(ctx context.Context, st *State, deadline time.Time) ([]Drift, bool) {
-	var out []Drift
+	// A file under nested roots belongs to the deepest one.
+	best := map[model.Target]Drift{}
+	depth := map[model.Target]int{}
 	ok := true
 	for _, root := range st.Roots {
 		left := time.Until(deadline)
 		if left <= 0 {
-			return out, false
+			ok = false
+			break
 		}
 		news, done := e.walkRoot(ctx, st, root, left)
-		out = append(out, news...)
+		for _, d := range news {
+			if n, seen := depth[d.Target]; !seen || len(root.Path) > n {
+				best[d.Target], depth[d.Target] = d, len(root.Path)
+			}
+		}
 		if !done {
 			ok = false
 		}
+	}
+	out := make([]Drift, 0, len(best))
+	for _, d := range best {
+		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Target < out[j].Target })
 	return out, ok

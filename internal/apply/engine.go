@@ -29,6 +29,11 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 	if e.Store == nil {
 		return nil, errors.New("apply: no store")
 	}
+	resolved, err := e.Store.ResolveRef(ctx, string(rev))
+	if err != nil {
+		return nil, err
+	}
+	rev = resolved
 	entries, err := e.Store.ListTree(ctx, rev)
 	if err != nil {
 		return nil, err
@@ -467,7 +472,8 @@ func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOption
 	return e.run(ctx, rev, nil, opts.DryRun, true)
 }
 
-// allowAll records every task definition of the plan in the allow list.
+// allowAll records every task definition of the plan and every collector
+// definition of the fleet in the allow list.
 func (e *Engine) allowAll(snap *Snapshot) error {
 	if e.Tasks == nil || e.Tasks.Allow == nil || snap.Plan == nil {
 		return nil
@@ -479,6 +485,17 @@ func (e *Engine) allowAll(snap *Snapshot) error {
 		}
 		if err := e.Tasks.Allow.Allow(extexec.KindTask, name, h); err != nil {
 			return fmt.Errorf("allow task %s: %w", name, err)
+		}
+	}
+	if snap.Fleet != nil {
+		for name, def := range snap.Fleet.Collectors {
+			h, err := tasks.DefinitionHash(def)
+			if err != nil {
+				return fmt.Errorf("allow collector %s: %w", name, err)
+			}
+			if err := e.Tasks.Allow.Allow(extexec.KindCollector, name, h); err != nil {
+				return fmt.Errorf("allow collector %s: %w", name, err)
+			}
 		}
 	}
 	return nil
@@ -512,8 +529,18 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	var changed, removed []model.Target
 	var units []manifest.Unit
 	var execErr error
-	for _, s := range steps {
-		if execErr = e.execute(st, s, now); execErr != nil {
+	for i, s := range steps {
+		if execErr = e.execute(st, s, now); errors.Is(execErr, errRaced) {
+			// The target changed between plan and write: hold, do not clobber.
+			ts := st.Targets[s.Target]
+			h := fileHold(st, now, s.Target, s.Scope, model.HoldDrifted, ts.ChangedAt, "changed while apply ran; not overwritten")
+			putHold(st, h)
+			res.Actions[i].Kind, res.Actions[i].Reason = ActHold, string(model.HoldDrifted)
+			res.Holds = append(res.Holds, h)
+			execErr = nil
+			continue
+		}
+		if execErr != nil {
 			execErr = fmt.Errorf("%s: %w", s.Target, execErr)
 			break
 		}
@@ -555,7 +582,7 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		for _, h := range holds {
 			putHold(st, h)
 		}
-		if ev.FirstApply {
+		if ev.FirstApply && !firstApplyHeld(holds) {
 			st.FirstApplyDone = true
 		}
 		if err := e.State.Save(st); err != nil {
@@ -597,11 +624,14 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 				return err
 			}
 		}
-		if err := e.writeAtomic(s.abs, s.d.bytes, s.d.mode); err != nil {
+		if err := e.writeAtomic(s.abs, s.d.bytes, s.d.mode, func() error { return unchanged(s) }); err != nil {
 			return err
 		}
 		return e.record(st, s, now)
 	case ActDelete:
+		if err := unchanged(s); err != nil {
+			return err
+		}
 		if err := e.backup(now, t, s.live.bytes); err != nil {
 			return err
 		}
@@ -613,6 +643,25 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 		return nil
 	}
 	return fmt.Errorf("unknown action %q", s.Kind)
+}
+
+// errRaced reports a target that changed between plan and write.
+var errRaced = errors.New("target changed while apply ran")
+
+// unchanged re-stats a target just before apply replaces or removes it and
+// returns errRaced if it no longer looks the way the plan saw it.
+func unchanged(s step) error {
+	info, err := os.Lstat(s.abs)
+	if !s.live.exists {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return errRaced
+	}
+	if err != nil || info.Size() != s.live.info.Size() || !info.ModTime().Equal(s.live.info.ModTime()) || info.Mode() != s.live.info.Mode() {
+		return errRaced
+	}
+	return nil
 }
 
 // record stores what is now on disk for a target that matches its source.
@@ -673,4 +722,15 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, ev tasks.Event) (
 		Removed: ev.Removed,
 	}
 	return e.Tasks.Run(ctx, ev, sel, req)
+}
+
+// firstApplyHeld reports whether a task hold came back, so first-apply tasks
+// run again on the next apply once they are allowed.
+func firstApplyHeld(holds []model.Hold) bool {
+	for _, h := range holds {
+		if h.Task != "" || h.Reason == model.HoldTaskUntrusted {
+			return true
+		}
+	}
+	return false
 }
