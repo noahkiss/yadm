@@ -3,6 +3,7 @@ package apply
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/noahkiss/yadm/internal/model"
@@ -101,4 +102,60 @@ func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
 	out := make([]model.Hold, len(st.Holds))
 	copy(out, st.Holds)
 	return out, nil
+}
+
+// settleReasons are the hold reasons whose cause is the target's content.
+// When a complete scan finds the target back at what this machine last
+// wrote or captured, the cause is gone and SettleHolds drops them.
+var settleReasons = map[model.HoldReason]bool{
+	model.HoldDrifted:       true,
+	model.HoldUncapturable:  true,
+	model.HoldRenderedEdit:  true,
+	model.HoldSealGuard:     true, // not a weakened-protection hold; see SettleHolds
+	model.HoldCheckFailed:   true,
+	model.HoldSecretScan:    true,
+	model.HoldTaskUntrusted: true, // only a gate hold on a target
+	model.HoldProtected:     true,
+}
+
+// SettleHolds drops the holds on managed targets whose cause is gone: drift
+// is the result of a complete scan (no named paths), and a managed target
+// it does not list equals what this machine last wrote or captured, so a
+// check that failed, a capture that failed or a drift no longer applies.
+// Conflict holds stay (they carry the incoming change), and so do holds
+// for a manifest that weakened protection (apply sets them again from the
+// plan). It returns the number of holds dropped.
+func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
+	for _, d := range drift {
+		if d.Kind == DriftUnreadable {
+			return 0, nil // incomplete scan: absence proves nothing
+		}
+	}
+	st, err := e.loadState()
+	if err != nil {
+		return 0, err
+	}
+	drifting := map[model.Target]bool{}
+	for _, d := range drift {
+		drifting[d.Target] = true
+	}
+	out := st.Holds[:0]
+	n := 0
+	for _, h := range st.Holds {
+		_, managed := st.Targets[h.Target]
+		if h.Target != "" && managed && !drifting[h.Target] && settleReasons[h.Reason] && !weakenedHold(h) {
+			n++
+			continue
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
+	if n == 0 {
+		return 0, nil
+	}
+	return n, e.State.Save(st)
+}
+
+func weakenedHold(h model.Hold) bool {
+	return h.Reason == model.HoldSealGuard && strings.Contains(h.Detail, "weakened this file's protection")
 }

@@ -264,6 +264,10 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		if err := s.holdBaseline(drift, cp); err != nil {
 			return rep, err
 		}
+		// A hold whose target is back at its source settles by itself.
+		if _, err := s.Apply.SettleHolds(ctx, drift); err != nil {
+			return rep, err
+		}
 	}
 
 	// 2. Auto-commit by policy.

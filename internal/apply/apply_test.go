@@ -334,8 +334,8 @@ func TestAdoptIdenticalWithoutRewrite(t *testing.T) {
 	if _, ok := st.Targets[".diff"]; ok {
 		t.Error("held file recorded as managed")
 	}
-	if !st.FirstApplyDone {
-		t.Error("first apply not recorded")
+	if st.FirstApplyDone {
+		t.Error("adopt marked the first apply done; first-apply tasks run on the first apply after it")
 	}
 }
 

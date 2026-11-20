@@ -491,6 +491,9 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	}
 	s.live = lv
 	if lv.exists && !lv.info.Mode().IsRegular() {
+		if adopt && !have && lv.info.Mode()&fs.ModeSymlink != 0 {
+			return e.materializeLink(ctx, snap, r, s, ts, hold)
+		}
 		return hold("target is not a regular file (symlink or directory); not replaced")
 	}
 	var lb []byte
@@ -523,6 +526,10 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 				s.Kind = ActAdopt
 			}
 		case have && uint32(liveMode) == ts.Mode:
+			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
+		case adopt && !have && liveMode&0o222 == 0:
+			// A read-only render another tool left (0444): adopt takes
+			// it over at the source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
 		default:
 			return hold(fmt.Sprintf("bytes match but mode is %#o, want %#o", liveMode, d.mode))
@@ -568,7 +575,21 @@ func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOption
 			return Result{}, err
 		}
 	}
-	return e.run(ctx, rev, nil, opts.DryRun, true)
+	snap, err := e.snapshot(ctx, rev)
+	if err != nil {
+		return Result{}, err
+	}
+	links, err := e.materializeDirLinks(snap, opts.DryRun)
+	if err != nil {
+		return Result{}, err
+	}
+	res, err := e.run(ctx, rev, nil, opts.DryRun, true)
+	var acts []Action
+	for _, p := range links {
+		acts = append(acts, Action{Target: p, Kind: ActWrite, Scope: model.ScopeShared, Reason: "materialize directory symlink"})
+	}
+	res.Actions = append(acts, res.Actions...)
+	return res, err
 }
 
 // allowAll records every task definition of the plan and every collector
@@ -676,6 +697,12 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		return res, execErr
 	}
 	e.pruneBackups(now, snap.Enclaves)
+	if adopt {
+		// Adopt only takes over what is on disk: no path task, unit reload
+		// or first-apply task runs. First-apply tasks run on the first
+		// apply after it (FirstApplyDone stays false).
+		return res, nil
+	}
 
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
 	results, holds := e.runTasks(ctx, snap, st, ev)

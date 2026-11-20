@@ -480,6 +480,8 @@ A fetched source whose key log rewrites, deletes or forks an entry, or holds an 
 
 A fetched manifest that weakens protection is refused the same way, with a `manifest-guard` hold: a target both sources plan loses its enclave, a seal key or regions, or a new or changed owned root covers a path the accepted source protects. The guard compares the last accepted remote with the fetched one, and refuses only what local `main` does not already run. `yadm protection allow <target>` or `yadm root allow <path>` names the refused source while the hold is open; the next sync takes it.
 
+A hold on a managed target settles by itself when a complete scan finds the target back at what this machine last wrote or captured: its drift, failed capture or failed check no longer applies. Conflict holds and weakened-protection holds stay until resolved or allowed.
+
 A conflict hold is settled with `yadm hold resolve <id>`: `--take target` (or `--take <file>`, written to the target first) commits this machine's file over the current source and pushes it; `--take source` drops the hold and rewrites the target from the source, backing up the replaced bytes.
 
 A fetched commit that touches `sealed/<enclave>/` or `keys/<enclave>/` from a machine (by `Machine:` trailer) that is not a member of that enclave is applied and reported through the notify hook. The trailer is not authenticated; key-log changes are, by signature.
@@ -684,11 +686,11 @@ Sealing creates each enclave's key log, signed by the importing machine, on top 
 `yadm adopt [--dry-run] [--allow-tasks] [--no-schedule]` switches one machine to this tool:
 
 1. Verify the identity and that the source clone resolves for this machine.
-2. For each target: identical bytes are recorded in state without writing (`adopt`); a missing target is written; a differing target is held (`drifted`) for the user to resolve. Nothing is overwritten.
-3. Run first-apply tasks (if allowed).
+2. Materialize links another tool left: a directory symlink above a target that points into `$HOME` becomes a real directory holding a copy of what it pointed to.
+3. For each target: identical bytes are recorded in state without writing (`adopt`); a missing target is written; a differing target is held (`drifted`) for the user to resolve. Nothing is overwritten. A target that is a symlink to a file with the rendered bytes becomes a regular file with those bytes, and a read-only file with the rendered bytes (a 0444 render) takes the entry's mode. A symlink with other content is held.
 4. Install the schedule.
 
-Adopt leaves any other dotfiles tool installed and untouched, so the user can roll back.
+Adopt runs no task: no path task, unit reload or first-apply task. `--allow-tasks` only records the allows; first-apply tasks run on the first apply after adopt. Adopt never changes or removes what a link pointed to, and leaves any other dotfiles tool installed, so the user can roll back.
 
 ## 16. Threat model
 
