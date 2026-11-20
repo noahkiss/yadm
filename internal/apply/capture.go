@@ -14,6 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
+	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
 // Git modes of captured blobs.
@@ -153,7 +154,11 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		}
 		p, err := e.Text.PatchTemplate(prevPlain, last, target)
 		if err != nil {
-			return hold(model.HoldRenderedEdit, "hand edit does not patch into the template: "+err.Error())
+			_, h, herr := hold(model.HoldRenderedEdit, "hand edit touches rendered expressions or conditional blocks; it does not patch into the template: "+err.Error())
+			if h != nil {
+				*h = proposePatch(*h, r, enc, model.PatchOfRender, last, target)
+			}
+			return nil, h, herr
 		}
 		newPlain = p
 	case !spec.Empty():
@@ -186,7 +191,11 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		if err != nil {
 			detail += ": " + err.Error()
 		}
-		return hold(failReason, detail)
+		_, h, herr := hold(failReason, detail)
+		if h != nil && failReason == model.HoldRenderedEdit {
+			*h = proposePatch(*h, r, enc, model.PatchOfTemplate, prevPlain, newPlain)
+		}
+		return nil, h, herr
 	}
 	if bytes.Equal(newRaw, prevRaw) {
 		// Nothing to commit: the drift is only in parts the source does not own.
@@ -203,6 +212,29 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		mode = gitModeExec
 	}
 	return &store.Change{Path: r.Source, Blob: newRaw, Mode: mode}, nil, nil
+}
+
+// proposePatch attaches a proposed source patch to a rendered_edit hold, so
+// an agent can finish the capture in one step: edit Source, then commit.
+// An enclave template gets no patch: holds live in the state file, which
+// never holds plaintext.
+func proposePatch(h model.Hold, r manifest.Resolved, enc model.EnclaveName, of string, from, to []byte) model.Hold {
+	h.Source = r.Source
+	if enc != "" {
+		h.Next = append(h.Next, "yadm diff "+string(r.Target))
+		return h
+	}
+	a, b := "a/"+string(r.Source), "b/"+string(r.Source)
+	if of == model.PatchOfRender {
+		a, b = "last-render/"+string(r.Target), "target/"+string(r.Target)
+	}
+	d, err := textmerge.Diff(a, b, from, to)
+	if err != nil || d == "" {
+		return h
+	}
+	h.Patch, h.PatchOf = d, of
+	h.Next = append(h.Next, "edit "+string(r.Source)+" and run yadm commit "+string(r.Target))
+	return h
 }
 
 // prevSource reads the source bytes the target was last applied from.

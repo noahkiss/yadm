@@ -116,7 +116,21 @@ type Hold struct {
 	Ours   string   `json:"ours,omitempty"`
 	Theirs string   `json:"theirs,omitempty"`
 	Next   []string `json:"next,omitempty"` // suggested commands, such as "yadm hold resolve <id> --take source"
+	// Rendered-edit detail: the template source and a proposed unified diff
+	// for it. PatchOf says what the diff is against: "template" (a patch of
+	// Source that failed only the round trip) or "render" (the hand edit
+	// against the last render, for an agent to map onto Source). Never set
+	// for an enclave file, so no plaintext enters the state.
+	Source  SourcePath `json:"source,omitempty"`
+	Patch   string     `json:"patch,omitempty"`
+	PatchOf string     `json:"patch_of,omitempty"`
 }
+
+// Values of Hold.PatchOf.
+const (
+	PatchOfTemplate = "template"
+	PatchOfRender   = "render"
+)
 
 // HoldID returns the stable id of a hold: the hex SHA-256 of its reason, its
 // target (or "task:" and its task name) and Since in UTC. Every package that

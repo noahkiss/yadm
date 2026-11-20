@@ -242,11 +242,39 @@ func TestCaptureTemplate(t *testing.T) {
 	if len(cp.Changes) != 0 || len(cp.Holds) != 1 || cp.Holds[0].Reason != model.HoldRenderedEdit {
 		t.Fatalf("rendered edit: %+v", cp)
 	}
+	// The hold carries a proposed patch an agent can finish in one step.
+	if h := cp.Holds[0]; h.Source != "files/.gitconfig.tmpl" || h.PatchOf != model.PatchOfRender ||
+		!strings.Contains(h.Patch, "-name = host-a\n+name = other\n") {
+		t.Fatalf("proposed patch: %+v", h)
+	}
 	// Apply never re-renders over it.
 	c2 := w.commit(map[model.SourcePath]string{"files/.gitconfig.tmpl": "[user]\nname = {{ machine.name }}\neditor = ed\n"}, tm)
 	w.apply(c2)
 	if w.read(".gitconfig") != "[user]\nname = other\neditor = vi\n" {
 		t.Error("render overwrote a held hand edit")
+	}
+}
+
+func TestCaptureSealedTemplateHoldHasNoPlaintext(t *testing.T) {
+	w := newWorld(t, "personal")
+	tm := manifest.Entry{Target: ".netrc", Source: "sealed/personal/.netrc.tmpl", Template: true, Enclave: "personal"}
+	c := w.commit(map[model.SourcePath]string{"sealed/personal/.netrc.tmpl": "machine {{ machine.name }}\npassword canary-pw\n"}, tm)
+	w.apply(c)
+	w.write(".netrc", "machine canary-host\npassword canary-pw\n")
+	ds, _ := w.eng.Scan(context.Background(), ScanOptions{})
+	cp, _ := w.eng.Capture(context.Background(), ds)
+	if len(cp.Holds) != 1 || cp.Holds[0].Reason != model.HoldRenderedEdit {
+		t.Fatalf("%+v", cp)
+	}
+	if h := cp.Holds[0]; h.Patch != "" || h.Source != tm.Source {
+		t.Fatalf("enclave hold carries a patch: %+v", h)
+	}
+	b, err := os.ReadFile(w.stateDir + "/" + StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "canary") {
+		t.Fatal("state file holds enclave plaintext")
 	}
 }
 
