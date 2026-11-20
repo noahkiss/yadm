@@ -366,13 +366,15 @@ A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(H
 
 ### 8.1 State
 
-`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content, except the proposed patch of a `rendered_edit` hold on a shared template, and never leaves the machine.
+`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the mode the entry wanted, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content, except the proposed patch of a `rendered_edit` hold on a shared template, and never leaves the machine.
 
 ### 8.2 Scan
 
 Every command starts with a scan. It is a stat pass over managed targets and owned roots that hashes a file only when its stat tuple changed. A full hash pass runs at most once a day. Scans are bounded by the managed set and owned roots; they never walk all of `$HOME`.
 
 Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
+
+A mode is drift only when it is wider than the entry wants or breaks a script. A live mode that grants a subset of the wanted bits (`live &^ want == 0`, such as 0640 from a tool writing under umask 027 where 0644 is wanted) is not drift and makes no hold. Apply and adopt take over a file yadm never wrote, whose bytes match, at such a stricter mode too. A mode with any bit outside the wanted one drifts. One exception: a wanted mode with the owner's execute bit drifts when the live mode lacks it (0644 where 0755 is wanted), since the file stops running; 0750 there is not drift.
 
 A file that matches a task's `outputs` glob (section 12.1) is generated: scan never reports it, capture and retag never take it, so it is never committed or gated. `yadm status` lists such files under `generated`.
 
@@ -381,7 +383,7 @@ A file that matches a task's `outputs` glob (section 12.1) is generated: scan ne
 1. Resolve the manifest for this machine; render each target in memory.
 2. Skip a target whose bytes already match.
 3. Hold a target whose current hash differs from the last written hash (`drifted`). Apply never overwrites it. The usual path captures it first.
-4. Write changed targets atomically (temp file and rename), with the entry's mode. Copy the replaced bytes into `backup/` for 30 days.
+4. Write changed targets atomically (temp file and rename), with the entry's mode. Copy the replaced bytes into `backup/` for 30 days. Apply never changes only the mode of a target whose stricter mode is not drift (section 8.2): it widens that mode only when it writes new bytes. When the entry's mode changes, apply sets the new mode on a target whose mode is still the one it last recorded.
 5. Delete a target that left the plan, only if it is unchanged since written; otherwise hold it.
 6. On a non-member, skip sealed files (`sealed` action) and leave sealed values and regions out.
 7. Run triggered tasks (section 12): path tasks, remove tasks, unit reloads and, once per machine, first-apply tasks.

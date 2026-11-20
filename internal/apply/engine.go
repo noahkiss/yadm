@@ -228,6 +228,27 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	return sourceDefaultMode(snap, r)
 }
 
+// ModeAccepted reports whether a target's live mode is not drift against
+// the mode its entry wants: it grants no bit outside want (a stricter mode,
+// such as 0640 from a tool writing under umask 027 where 0644 is wanted),
+// and keeps the owner's execute bit when want has it, since a script that
+// loses it stops working.
+func ModeAccepted(live, want fs.FileMode) bool {
+	live, want = live.Perm(), want.Perm()
+	if live&^want != 0 {
+		return false
+	}
+	return want&0o100 == 0 || live&0o100 != 0
+}
+
+// want is the mode the entry asked for when the target was last recorded.
+func (ts TargetState) want() fs.FileMode {
+	if ts.Want != 0 {
+		return fs.FileMode(ts.Want).Perm()
+	}
+	return fs.FileMode(ts.Mode).Perm()
+}
+
 // TargetMode is the mode apply writes r's target with in snap: an explicit
 // `mode`, else the source's (0755 or 0644), owner-only under .ssh and .gnupg.
 func TargetMode(snap *Snapshot, r manifest.Resolved) fs.FileMode { return modeOf(snap, r) }
@@ -617,13 +638,25 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 			if !have && adopt {
 				s.Kind = ActAdopt
 			}
+		case have && ts.want() == d.mode && ModeAccepted(liveMode, d.mode):
+			// Stricter than wanted, by the file's own tool or user: not
+			// drift, and apply never widens it.
+			s.Kind = ActSkip
 		case have && uint32(liveMode) == ts.Mode:
+			// The entry's mode changed and the file is as last recorded.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
+		case have && ModeAccepted(liveMode, d.mode):
+			s.Kind = ActSkip
 		case !have && liveMode&0o222 == 0:
 			// A read-only render another tool left (0444): adopt, and apply
 			// for a target adopt could not open yet, take it over at the
 			// source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
+		case !have && ModeAccepted(liveMode, d.mode):
+			s.Kind = ActSkip
+			if adopt {
+				s.Kind = ActAdopt
+			}
 		default:
 			return hold(fmt.Sprintf("bytes match but mode is %#o, want %#o", liveMode, d.mode))
 		}
@@ -665,7 +698,7 @@ func (e *Engine) unchangedSince(ctx context.Context, snap *Snapshot, st *State, 
 		return false
 	case !sameProt(ts.prot(), protOf(r.Entry)):
 		return false
-	case uint32(modeOf(snap, r)) != ts.Mode:
+	case modeOf(snap, r) != ts.want():
 		return false
 	case ts.ApplyKey != applyKey(snap, r):
 		return false
@@ -1037,6 +1070,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 		Size:       info.Size(),
 		ModTime:    info.ModTime(),
 		Mode:       uint32(info.Mode().Perm()),
+		Want:       uint32(s.d.mode.Perm()),
 		RenderHash: s.d.renderHash,
 		ApplyKey:   s.d.key,
 	}

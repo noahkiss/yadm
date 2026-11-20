@@ -59,13 +59,14 @@
 //
 //	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs }
 //	func (e *Engine) Generated(ctx) ([]model.Target, error) // files on disk matching a task's outputs
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; Want; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
 //	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
 //	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
+//	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode is not drift, unless it drops the owner's execute bit
 //	func InsideHome(home, p string) error; var ErrOutsideHome // p's real parent directory stays under $HOME
 //	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
 //	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error
