@@ -195,7 +195,27 @@ type Status struct {
 	Conflicts  int                     `json:"conflicts"`
 	OldestHeld *time.Time              `json:"oldest_held,omitempty"`
 	Epochs     map[EnclaveName]Epoch   `json:"epochs,omitempty"`
-	Observed   map[string]ObservedFact `json:"observed,omitempty"` // only collectors with publish = "plain"
-	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`   // sealed observed facts, per enclave
-	Tasks      []TaskResult            `json:"tasks,omitempty"`    // last result per task
+	Observed   map[string]ObservedFact `json:"observed,omitempty"`  // only collectors with publish = "plain"
+	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`    // sealed observed facts, per enclave
+	Tasks      []TaskResult            `json:"tasks,omitempty"`     // last result per task
+	Alerts     []Alert                 `json:"alerts,omitempty"`    // recent sync alerts, newest last
+	KeyHeads   map[EnclaveName]KeyHead `json:"key_heads,omitempty"` // the key-log head this machine has pinned, per enclave
+}
+
+// KeyHead names one verified key-log entry: its sequence number and the hex
+// SHA-256 of its signed bytes (the pin).
+type KeyHead struct {
+	Seq  uint64 `json:"seq"`
+	Hash string `json:"hash"`
+}
+
+// Alert is a sync event reported through the notify hook and recorded in the
+// status record, such as a commit from a non-member that touches an enclave.
+// It never carries file content.
+type Alert struct {
+	Kind    string    `json:"kind"` // "non_member_enclave_commit", "held", "task_failed", ...
+	Commit  CommitID  `json:"commit,omitempty"`
+	Machine MachineID `json:"machine,omitempty"`
+	Detail  string    `json:"detail"`
+	At      time.Time `json:"at"`
 }
