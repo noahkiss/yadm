@@ -23,21 +23,22 @@ const (
 	DefaultQuiet      = 2 * time.Minute
 	DefaultMaxRetries = 5
 	DefaultMassChange = 50 // more changed files than this in one scope are held
-	LockFile          = "lock"
 	LeaseDir          = "leases"
 	AlertsFile        = "alerts.json"
 	maxAlerts         = 20
 )
 
-// ErrLocked means another sync holds the lock.
-var ErrLocked = errors.New("another yadm process holds the lock")
+// ErrPushDeferred is the push error of a Commit whose push did not happen
+// in this call: another process held the network lock, or the remote kept
+// moving. The commit stands; the next sync pushes it.
+var ErrPushDeferred = errors.New("push deferred to the next sync")
 
 // Options tunes one sync.
 type Options struct {
 	Auto       bool // timer run: auto-commit by policy; otherwise commit nothing
 	Push       bool
 	DryRun     bool // scan, capture and plan; commit, fetch, apply and push nothing
-	MaxRetries int  // push retries; 0 means DefaultMaxRetries
+	MaxRetries int  // rounds after a rejected push; 0 means DefaultMaxRetries, negative none
 	// Quick first runs the cheap check (scan, `git ls-remote`) and stops
 	// there when nothing moved and no full sync is due (FullEvery, WakeGap).
 	Quick bool
@@ -59,6 +60,20 @@ type Report struct {
 	Resolutions []Resolution       `json:"resolutions,omitempty"`
 	Skipped     bool               `json:"skipped,omitempty"` // a quick sync found nothing to do
 	Reason      string             `json:"reason,omitempty"`  // why a quick sync ran in full
+	// Network says which network step this run left to the next sync and
+	// why: another process held the network lock, or the remote moved
+	// after the fetch and rejected the push.
+	Network string `json:"network,omitempty"`
+
+	deferred bool // the push was left to the next sync
+}
+
+// note records a network step this run left to the next sync.
+func (r *Report) note(s string) {
+	if r.Network != "" {
+		r.Network += "; "
+	}
+	r.Network += s
 }
 
 // Alert is an event sent through the notify hook and kept in the status record.
@@ -121,6 +136,7 @@ type Deps struct {
 	Identity fleet.Identity
 	Gate     tasks.Gate // nil: built per sync from the plan's checks and the allow list
 	Lock     Lock
+	NetLock  NetLock // nil: FileNetLock in Apply.StateDir
 	Leases   Leases
 	Policy   Policy
 	Version  string
@@ -224,31 +240,109 @@ type CommitOptions struct {
 	// Resolve settles the conflict holds of the named paths: they commit over
 	// the current source blob and the hold is dropped.
 	Resolve bool
-	// Push fetches, replays, applies, publishes and pushes after the commit,
-	// under the same lock.
+	// Push fetches before the commit and replays, applies, publishes and
+	// pushes after it, in the same call. Fetch and push run under the
+	// network lock, never under the sync lock.
 	Push       bool
 	MaxRetries int
 }
 
-// LockTimeout bounds how long any command waits for the lock before failing
-// with ErrLocked. Commands never wait without a bound.
+// LockTimeout bounds how long any command waits for the sync lock before
+// failing with ErrLocked. Commands never wait without a bound.
 const LockTimeout = 30 * time.Second
 
-// Run performs one sync (design §10).
+// lockHold is the sync lock a run takes, drops for its network steps and
+// takes again.
+type lockHold struct {
+	lock    Lock
+	release func()
+}
+
+func (h *lockHold) acquire(ctx context.Context) error {
+	r, err := h.lock.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	h.release = r
+	return nil
+}
+
+func (h *lockHold) unlock() {
+	if h.release != nil {
+		h.release()
+		h.release = nil
+	}
+}
+
+// netLock returns the network lock: Deps.NetLock, else the file lock in
+// the state directory.
+func (s *Syncer) netLock() NetLock {
+	switch {
+	case s.NetLock != nil:
+		return s.NetLock
+	case s.Apply != nil && s.Apply.StateDir != "":
+		return FileNetLock(s.Apply.StateDir)
+	}
+	return noNetLock{}
+}
+
+// fetched is what a fetch step left.
+type fetched struct {
+	base    model.CommitID // origin/main before the fetch: the guard's base on a first sync
+	err     error          // the fetch failed
+	skipped bool           // another process held the network lock
+}
+
+// fetch runs step 4 under the network lock, without the sync lock. Another
+// process on the network makes it skip: the run goes on with the last
+// fetched origin/main, and the next sync fetches.
+func (s *Syncer) fetch(ctx context.Context, rep *Report) fetched {
+	var f fetched
+	if f.base, f.err = s.Store.ResolveRef(ctx, store.RemoteMain); f.err != nil {
+		return f
+	}
+	release, err := s.netLock().TryAcquire()
+	if err != nil {
+		if errors.Is(err, ErrNetBusy) {
+			f.skipped = true
+			rep.note("fetch skipped: " + err.Error())
+			return f
+		}
+		f.err = err
+		return f
+	}
+	defer release()
+	f.err = s.Store.Fetch(ctx)
+	return f
+}
+
+// push runs step 9 under the network lock, without the sync lock. No specs
+// is no push and needs no lock.
+func (s *Syncer) push(ctx context.Context, specs []string) error {
+	if len(specs) == 0 {
+		return nil
+	}
+	release, err := s.netLock().TryAcquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return s.Store.Push(ctx, specs)
+}
+
+// Run performs one sync (design §10) in three phases: fetch under the
+// network lock; capture, commit, collect, replay, apply and publish under
+// the sync lock; push under the network lock once the sync lock is
+// released. No step waits on the network while it holds the sync lock.
 func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	var rep Report
 	if err := s.check(); err != nil {
 		return rep, err
 	}
-	release, err := s.Lock.Acquire(ctx)
-	if err != nil {
-		return rep, err
-	}
-	defer release()
 	defer s.begin()()
 
 	if opts.Quick && !opts.DryRun {
-		why, err := s.quickDue(ctx)
+		why, err := s.quickDue(ctx, &rep)
 		if err != nil {
 			return rep, err
 		}
@@ -259,6 +353,19 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		}
 		rep.Reason = why
 	}
+
+	// Phase 1: fetch, without the sync lock.
+	var f fetched
+	if !opts.DryRun {
+		f = s.fetch(ctx, &rep)
+	}
+
+	// Phase 2: local work under the sync lock.
+	lk := &lockHold{lock: s.Lock}
+	if err := lk.acquire(ctx); err != nil {
+		return rep, err
+	}
+	defer lk.unlock()
 
 	start, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -348,8 +455,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, nil
 	}
 
-	rep, err = s.exchange(ctx, rep, start, cp.Paths, committed, opts)
-	return s.settle(ctx, rep, cp.Paths, committed, err)
+	return s.exchange(ctx, rep, lk, f, start, cp.Paths, committed, opts)
 }
 
 // settle runs the full apply a run still owes: a commit applied only the
@@ -357,6 +463,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 // that far (a fetch that failed on a late network, a refused remote, an
 // error). It applies local main, so the state records the commit and every
 // target, owned root and task is current. err is the run's error so far.
+// The caller holds the sync lock.
 func (s *Syncer) settle(ctx context.Context, rep Report, captured []model.Target, committed map[model.Target]bool, err error) (Report, error) {
 	if s.partial == "" {
 		return rep, err
@@ -372,53 +479,58 @@ func (s *Syncer) settle(ctx context.Context, rep Report, captured []model.Target
 	return rep, err
 }
 
-// exchange runs steps 3 to 9 under the lock the caller holds: collectors,
-// fetch, replay, apply, publish and push, retrying a lost push race. Run and
+// exchange runs steps 3 and 5 to 9. The caller holds the sync lock in lk
+// and has run the fetch f. Collectors, replay onto the fetched origin/main,
+// apply and publish run under the sync lock; exchange then releases it and
+// pushes under the network lock. A push the remote rejects (it moved after
+// the fetch) starts another round, fetch first, up to opts.MaxRetries; after
+// that it is left to the next sync, which fetches and replays. Run and
 // Commit (with CommitOptions.Push) both end here, so a commit reaches the
 // remote in the same call.
-func (s *Syncer) exchange(ctx context.Context, rep Report, start model.CommitID, captured []model.Target, committed map[model.Target]bool, opts Options) (Report, error) {
+func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetched, start model.CommitID, captured []model.Target, committed map[model.Target]bool, opts Options) (Report, error) {
 	// 3. Collectors.
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
-		return rep, err
+		return s.settle(ctx, rep, captured, committed, err)
 	}
 	if err := s.collect(ctx, head); err != nil {
-		return rep, err
+		return s.settle(ctx, rep, captured, committed, err)
+	}
+	if f.err != nil {
+		// A network that returns late: the next run catches up once.
+		rep.Holds = s.currentHolds(captured, committed)
+		return s.settle(ctx, rep, captured, committed, f.err)
 	}
 
-	// 4-9. Fetch, replay, apply, publish, push; retry on a lost push race.
 	maxRetries := opts.MaxRetries
-	if maxRetries <= 0 {
+	switch {
+	case maxRetries == 0:
 		maxRetries = DefaultMaxRetries
+	case maxRetries < 0:
+		maxRetries = 0
 	}
 	seen := map[model.CommitID]bool{}
 	var publishedTip model.CommitID
 	published := false
 	for attempt := 0; ; attempt++ {
+		// 5-8. Replay onto the fetched origin/main, apply, publish.
 		base := s.accepted()
 		if base == "" {
 			// First sync: the clone's own fetch is the trusted start.
-			if base, err = s.Store.ResolveRef(ctx, store.RemoteMain); err != nil {
-				return rep, err
-			}
-		}
-		if err := s.Store.Fetch(ctx); err != nil {
-			// A network that returns late: the next run catches up once.
-			rep.Holds = s.currentHolds(captured, committed)
-			return rep, err
+			base = f.base
 		}
 		local, err := s.Store.ResolveRef(ctx, store.RefMain)
 		if err != nil {
-			return rep, err
+			return s.settle(ctx, rep, captured, committed, err)
 		}
 		remote, err := s.Store.ResolveRef(ctx, store.RemoteMain)
 		if err != nil {
-			return rep, err
+			return s.settle(ctx, rep, captured, committed, err)
 		}
 		rep.Fetched = remote
 		res, err := s.integrateAndApply(ctx, &rep, base, local, remote, seen)
 		if err != nil {
-			return rep, err
+			return s.settle(ctx, rep, captured, committed, err)
 		}
 		tip := res.tip
 		rep.Alerts = append(rep.Alerts, res.alerts...)
@@ -430,16 +542,22 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, start model.CommitID,
 		changed := tip != start || len(rep.Committed) > 0 || len(rep.Alerts) > 0
 		if !published || tip != publishedTip {
 			if err := s.publish(ctx, tip, changed || published, len(pending(captured, committed, nil))); err != nil {
-				return rep, fmt.Errorf("status: %w", err)
+				return s.settle(ctx, rep, captured, committed, fmt.Errorf("status: %w", err))
 			}
 			published, publishedTip = true, tip
 		}
 		rep.Applied = tip
-
-		// 9. Push main, the status ref and the reviewed refs atomically.
-		if !opts.Push {
-			break
+		if rep, err = s.settle(ctx, rep, captured, committed, nil); err != nil {
+			return rep, err
 		}
+		if !opts.Push {
+			return s.finish(ctx, rep, captured, committed)
+		}
+
+		// 9. Push main, the status ref and the reviewed refs atomically,
+		// under the network lock and without the sync lock. The specs name
+		// refs, so a local commit made meanwhile goes out too: it descends
+		// from this tip.
 		pushTip := tip
 		if res.refused {
 			pushTip = "" // never push over a refused remote; status still goes out
@@ -448,26 +566,45 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, start model.CommitID,
 		if err != nil {
 			return rep, err
 		}
-		err = s.Store.Push(ctx, specs)
-		if err == nil {
+		left := s.leftDrift(ctx)
+		lk.unlock()
+
+		err = s.push(ctx, specs)
+		switch {
+		case err == nil:
 			rep.Pushed = len(specs) > 0
-			if pushTip != "" && pushTip != remote {
+			if rep.Pushed && pushTip != "" && pushTip != remote {
 				s.nudge(ctx, pushTip)
 			}
-			break
-		}
-		if !errors.Is(err, store.ErrRejected) || attempt >= maxRetries {
+			s.recordFull(ctx, left)
+			return s.finish(ctx, rep, captured, committed)
+		case errors.Is(err, ErrNetBusy):
+			rep.note("push skipped: " + err.Error())
+			rep.deferred = true
+			return s.finish(ctx, rep, captured, committed)
+		case !errors.Is(err, store.ErrRejected):
 			return s.finishErr(rep, captured, committed, err)
+		case attempt >= maxRetries:
+			rep.note("push rejected: the remote moved after the fetch; the next sync fetches and replays")
+			rep.deferred = true
+			return s.finish(ctx, rep, captured, committed)
 		}
 		rep.Retries++
 		if err := s.backoff(ctx, attempt); err != nil {
 			return rep, err
 		}
+		if f = s.fetch(ctx, &rep); f.err != nil {
+			return s.finishErr(rep, captured, committed, f.err)
+		}
+		if f.skipped {
+			rep.deferred = true
+			return s.finish(ctx, rep, captured, committed)
+		}
+		if err := lk.acquire(ctx); err != nil {
+			return s.finishErr(rep, captured, committed, err)
+		}
+		s.applied = "" // other processes may have applied since
 	}
-	if opts.Push {
-		s.recordFull(ctx)
-	}
-	return s.finish(ctx, rep, captured, committed)
 }
 
 // stepResult is the outcome of steps 5 to 7.

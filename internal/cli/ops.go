@@ -881,14 +881,16 @@ func (a *app) cmdReviewNote(cmd *cobra.Command, args []string) (result, error) {
 			return err
 		}
 		d.Note = n
-		if noPush {
-			return nil
-		}
-		if d.Pushed, err = sync.PushNotes(ctx, m.repo); err != nil {
-			d.PushError = err.Error()
-		}
 		return nil
 	})
+	if err == nil && !noPush {
+		// The push runs after the sync lock is released, under the
+		// network lock.
+		if d.Pushed, err = sync.PushNotes(ctx, m.repo, m.lock(0), sync.FileNetLock(m.paths.State)); err != nil {
+			d.PushError = err.Error()
+		}
+		err = nil
+	}
 	if errors.Is(err, sync.ErrNoteNeedsSeal) {
 		return result{next: []string{"yadm review note " + model.ShellQuote(args[0]) + " --paths-only"}}, fmt.Errorf("%w: %v", ErrRefused, err)
 	}

@@ -302,6 +302,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Exec:     m.exec,
 		Identity: m.local,
 		Lock:     m.lock(0),
+		NetLock:  sync.FileNetLock(m.paths.State),
 		Leases:   sync.FileLeases(m.paths.State),
 		Policy:   policy(m.snap),
 		Version:  version,
