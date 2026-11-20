@@ -129,6 +129,7 @@ func (a *app) register(root *cobra.Command) {
 	im.Flags().String("password-env", "", "env var holding the transcrypt password")
 	im.Flags().StringToString("class-enclave", nil, "legacy class=enclave")
 	im.Flags().String("default-enclave", "", "enclave for encrypted files with no class")
+	im.Flags().String("filters", "", "TOML file mapping legacy strip filters to keep, drop and volatile rules")
 	im.Flags().String("output", "", "directory for the converted repository")
 	im.Flags().String("branch", "", "branch name in the output (default main)")
 	im.Flags().Bool("dry-run", false, "convert in memory and report; write nothing")
@@ -864,20 +865,39 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 }
 
 func (a *app) cmdProtectionAllow(cmd *cobra.Command, args []string) (result, error) {
-	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
-		return m.eng.AllowProtection(cmd.Context(), m.snap.Commit, t)
+	return a.allowOne(cmd, args[0], func(m *machineEnv, rev model.CommitID, t model.Target) error {
+		return m.eng.AllowProtection(cmd.Context(), rev, t)
 	})
 }
 
 func (a *app) cmdRootAllow(cmd *cobra.Command, args []string) (result, error) {
-	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
-		return m.eng.AllowRoot(cmd.Context(), m.snap.Commit, t)
+	return a.allowOne(cmd, args[0], func(m *machineEnv, rev model.CommitID, t model.Target) error {
+		return m.eng.AllowRoot(cmd.Context(), rev, t)
 	})
 }
 
+// allowRev is the source an allow reads. While a fetched source is refused
+// (a manifest-guard hold), the allow names that fetched source, so the next
+// sync takes it; otherwise local main.
+func (m *machineEnv) allowRev(ctx context.Context) model.CommitID {
+	hs, err := m.eng.Holds(ctx)
+	if err != nil {
+		return m.snap.Commit
+	}
+	for _, h := range hs {
+		if h.Target == "" && h.Task == sync.HoldTaskGuard {
+			if r, err := m.repo.ResolveRef(ctx, store.RemoteMain); err == nil && r != "" {
+				return r
+			}
+		}
+	}
+	return m.snap.Commit
+}
+
 // allowOne records one local allow under the lock, then applies so the
-// allowed target or root takes effect now.
-func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, model.Target) error) (result, error) {
+// allowed target or root takes effect now. While a fetched source is
+// refused, the allow names that source; the next sync then takes it.
+func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, model.CommitID, model.Target) error) (result, error) {
 	ctx := cmd.Context()
 	m, err := openLoaded(ctx)
 	if err != nil {
@@ -889,8 +909,15 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 	}
 	var res apply.Result
 	if err := m.locked(ctx, func() error {
-		if err := allow(m, t); err != nil {
-			return err
+		rev := m.allowRev(ctx)
+		if err := allow(m, rev, t); err != nil {
+			if rev == m.snap.Commit {
+				return err
+			}
+			// Not in the fetched source: it may be one local main weakens.
+			if err2 := allow(m, m.snap.Commit, t); err2 != nil {
+				return err
+			}
 		}
 		var err error
 		res, err = m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{})

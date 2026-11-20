@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/noahkiss/yadm/internal/crypt"
+	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/secrecytest"
 )
 
@@ -59,19 +60,10 @@ func TestImportSealsThroughCLI(t *testing.T) {
 	out := filepath.Join(root, "out")
 	env, code, raw := yadm(t, "import", legacy, "--output", out, "--password-env", "LEGACY_PW", "--default-enclave", "personal", "--new-recovery", filepath.Join(root, "recovery"))
 	if code != ExitOK {
-		// Sealed containers bind their source path, and importer.Sealer does
-		// not pass it yet: the import must refuse, commit nothing and leak
-		// nothing. Once the importer passes paths, the checks below run.
-		if code != ExitError || !strings.Contains(string(raw), "needs the source path") {
-			t.Fatalf("import: exit %d\n%s", code, raw)
-		}
-		if strings.Contains(string(raw), c.String()) {
-			t.Fatal("the refusal printed plaintext")
-		}
-		if _, err := os.Stat(filepath.Join(out, ".git")); err == nil {
-			secrecytest.AssertRepoClean(t, out, c)
-		}
-		return
+		t.Fatalf("import: exit %d\n%s", code, raw)
+	}
+	if strings.Contains(string(raw), c.String()) {
+		t.Fatal("the import output printed plaintext")
 	}
 	d := decode[importData](t, env.Data)
 	if d.KeyLogs["personal"] == "" || d.Commit == "" {
@@ -107,8 +99,67 @@ func TestImportSealsThroughCLI(t *testing.T) {
 	if !sealed {
 		t.Fatalf("no sealed mapping: %+v", d.Mappings)
 	}
+	// The member (this machine) opens the sealed file at its source path.
+	p, err := DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := crypt.LoadIdentity(p.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := crypt.Open(le, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "sealed/personal/.config/secret.txt"
+	blob, err := os.ReadFile(filepath.Join(out, filepath.FromSlash(src)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crypt.IsSealedFile(blob) {
+		t.Fatal("sealed source is not a sealed container")
+	}
+	pt, err := ring.OpenFile(model.SourcePath(src), blob)
+	if err != nil || string(pt) != string(c.Bytes())+"\n" {
+		t.Fatalf("member cannot open the imported file: %v", err)
+	}
 	secrecytest.AssertRepoClean(t, out, c)
 	secrecytest.AssertTreeClean(t, out, c)
+}
+
+// TestImportStripFilterFlag: a legacy strip filter without --filters fails
+// the import; with a filters file it becomes the entry's rules.
+func TestImportStripFilterFlag(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	legacy := filepath.Join(root, "legacy")
+	git(t, root, "init", "-q", "-b", "main", legacy)
+	writeFile(t, filepath.Join(legacy, ".gitattributes"), ".config/app/settings.json filter=strip-runtime\n")
+	writeFile(t, filepath.Join(legacy, ".config/app/settings.json"), "{\n  \"theme\": \"dark\"\n}\n")
+	git(t, legacy, "add", "-A")
+	git(t, legacy, "commit", "-q", "-m", "legacy")
+
+	_, code, raw := yadm(t, "import", legacy, "--dry-run")
+	if code == ExitOK || !strings.Contains(string(raw), "strip-runtime") {
+		t.Fatalf("unmapped strip filter: exit %d\n%s", code, raw)
+	}
+	ff := filepath.Join(root, "filters.toml")
+	writeFile(t, ff, "[filters.strip-runtime.paths.\".config/app/settings.json\"]\ndrop = [\"model\"]\n")
+	out := filepath.Join(root, "out")
+	if _, code, raw := yadm(t, "import", legacy, "--output", out, "--filters", ff); code != ExitOK {
+		t.Fatalf("import: exit %d\n%s", code, raw)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "manifest.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `format = "json"`) || !strings.Contains(string(b), `drop = ["model"]`) {
+		t.Fatalf("manifest lacks the strip rule:\n%s", b)
+	}
+	if _, code, _ := yadm(t, "import", legacy, "--dry-run", "--filters", filepath.Join(root, "missing.toml")); code != ExitUsage {
+		t.Fatalf("missing filters file: exit %d", code)
+	}
 }
 
 // TestCheckFlagsGitConfig: check fails the secrecy item on a textconv cache

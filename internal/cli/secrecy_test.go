@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,10 +190,7 @@ func TestImportSealerSecrecy(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newImportSealer(by, rec.Member())
-	if _, err := s.SealFile("personal", c.Bytes()); !errors.Is(err, model.ErrNotImplemented) {
-		t.Fatalf("path-less SealFile must refuse: %v", err)
-	}
-	sealed, err := s.SealFileAt("personal", "sealed/personal/.secret", c.Bytes())
+	sealed, err := s.SealFile("personal", "sealed/personal/.secret", c.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}

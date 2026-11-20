@@ -32,15 +32,13 @@ func newImportSealer(by *crypt.Identity, recovery crypt.Member) *importSealer {
 	return &importSealer{by: by, recovery: recovery, rings: map[model.EnclaveName]*crypt.Keyring{}, entries: map[model.EnclaveName]crypt.LogEntry{}}
 }
 
-// SealFile implements importer.Sealer. Sealed files now bind their source
-// path, which the importer's Sealer does not pass yet, so an import that
-// seals refuses until it does (a path-less container would not open).
-func (s *importSealer) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error) {
-	return nil, fmt.Errorf("import: sealing for %s needs the source path; the importer's Sealer must pass it: %w", e, model.ErrNotImplemented)
+// SealFile implements importer.Sealer.
+func (s *importSealer) SealFile(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
+	return s.SealFileAt(e, path, plaintext)
 }
 
-// SealFileAt seals plaintext for e, bound to its source path. It is the
-// Sealer the importer will call once it passes paths.
+// SealFileAt seals plaintext for e, bound to its source path. On the first
+// file of e it creates the enclave's key log.
 func (s *importSealer) SealFileAt(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
 	ring, ok := s.rings[e]
 	if !ok {
@@ -94,6 +92,13 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 		for k, v := range ce {
 			opts.ClassEnclaves[k] = model.EnclaveName(v)
 		}
+	}
+	if ff, _ := f.GetString("filters"); ff != "" {
+		filters, err := importer.ReadFilters(ff)
+		if err != nil {
+			return result{}, usagef("--filters: %v", err)
+		}
+		opts.Filters = filters
 	}
 	if opts.Output == "" && !opts.DryRun {
 		return result{}, usagef("--output <dir> is required (or --dry-run)")

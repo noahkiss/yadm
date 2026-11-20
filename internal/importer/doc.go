@@ -33,6 +33,13 @@
 //     names, and sealed through the caller's Sealer into the enclave the
 //     caller maps their class to. The importer never writes the password or
 //     the plaintext anywhere.
+//   - Strip filters: any other `filter` attribute (a clean filter that
+//     dropped runtime keys or kept only owned tables) maps through
+//     Options.Filters to the entry's format, keep, drop, volatile and merge
+//     fields. A filter marked Crypt also runs transcrypt, so its files are
+//     decrypted and sealed too. A path whose filter has no mapping, or whose
+//     filter has no rule for its target, fails the import: a filter is never
+//     lost silently.
 //   - Tracked symlinks become entries that reuse the source of what they
 //     point at, under both conditions.
 //   - A machines table (TSV with a header): `name`, `hostname`, `classes`
@@ -47,8 +54,10 @@
 //
 // Exported API:
 //
-//	type Sealer interface{ SealFile(enclave model.EnclaveName, plaintext []byte) ([]byte, error) }
-//	type Options struct{ Legacy, Machines, Branch, Output, PasswordEnv string; ClassEnclaves map[string]model.EnclaveName; DefaultEnclave model.EnclaveName; CryptFilters []string; Sealer Sealer; DryRun bool }
+//	type Sealer interface{ SealFile(enclave model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) }
+//	type Options struct{ Legacy, Machines, Branch, Output, PasswordEnv string; ClassEnclaves map[string]model.EnclaveName; DefaultEnclave model.EnclaveName; CryptFilters []string; Filters map[string]Filter; Sealer Sealer; DryRun bool }
+//	type Filter struct{ Crypt bool; Paths map[string]StripRule }; type StripRule struct{ Format; Keep, Drop, Volatile []string; Merge }
+//	func ReadFilters(file string) (map[string]Filter, error); func ParseFilters(b []byte) (map[string]Filter, error)
 //	type Mapping struct{ From string; Target model.Target; Source model.SourcePath; When string; Sealed bool }
 //	type Problem struct{ Path string; Line int; Reason string }
 //	type Report struct{ Commit model.CommitID; Mappings []Mapping; Machines int; Problems []Problem }

@@ -12,10 +12,12 @@ import (
 )
 
 // Sealer seals one whole file for an enclave. The importer calls it once per
-// encrypted legacy file, with the decrypted plaintext, and stores only what
-// it returns. A crypt.Keyring per enclave provides it; tests fake it.
+// encrypted legacy file, with the decrypted plaintext and the file's sealed
+// source path (`sealed/<enclave>/<target>`), which the container binds, and
+// stores only what it returns. A crypt.Keyring per enclave provides it; tests
+// fake it.
 type Sealer interface {
-	SealFile(enclave model.EnclaveName, plaintext []byte) ([]byte, error)
+	SealFile(enclave model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error)
 }
 
 // Options configures one import.
@@ -31,8 +33,11 @@ type Options struct {
 	// Empty means "crypt" plus every filter in the legacy repository's own
 	// config whose smudge command runs transcrypt.
 	CryptFilters []string
-	Sealer       Sealer // seals encrypted files; required when any exist
-	DryRun       bool
+	// Filters maps the other gitattributes filters (strip filters) to
+	// intra-file rules. A path marked with an unmapped filter fails the import.
+	Filters map[string]Filter
+	Sealer  Sealer // seals encrypted files; required when any exist
+	DryRun  bool
 }
 
 // Mapping records one converted path.
@@ -152,6 +157,11 @@ func convert(ctx context.Context, opts Options) (*converted, error) {
 		}
 	} else {
 		filters = cryptFilters(ctx, legacyDir)
+	}
+	for name, f := range opts.Filters {
+		if f.Crypt {
+			filters[name] = true
+		}
 	}
 	p := &planner{opts: opts, repo: repo, filters: filters, files: map[model.SourcePath]outFile{}}
 	var machines []machineRow

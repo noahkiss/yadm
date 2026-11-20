@@ -260,7 +260,12 @@ func (p *planner) emitFile(f *legacyFile, v *variant, target, when string, singl
 	if !ok {
 		return
 	}
+	strip, ok := p.stripRule(f.Path, f.Filter, target)
+	if !ok {
+		return
+	}
 	e := manifest.Entry{Target: model.Target(target), When: when}
+	applyStrip(&e, strip)
 	stored := target
 	if !single {
 		stored = f.Path
@@ -299,7 +304,7 @@ func (p *planner) emitFile(f *legacyFile, v *variant, target, when string, singl
 			p.problem(f.Path, "encrypted file needs a sealer for enclave %s", e.Enclave)
 			return
 		}
-		sealed, err := p.opts.Sealer.SealFile(e.Enclave, data)
+		sealed, err := p.opts.Sealer.SealFile(e.Enclave, e.Source, data)
 		if err != nil {
 			p.problem(f.Path, "seal for enclave %s: %v", e.Enclave, err)
 			return
