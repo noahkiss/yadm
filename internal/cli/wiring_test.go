@@ -63,8 +63,9 @@ func TestContractsCompose(t *testing.T) {
 	ni("crypt.LoadIdentity", err)
 	_, err = runner.Run(ctx, extexec.Spec{}, extexec.Request{})
 	ni("extexec.Run", err)
-	_, err = importer.Import(ctx, importer.Options{})
-	ni("importer.Import", err)
+	if _, err = importer.Import(ctx, importer.Options{}); err == nil || errors.Is(err, model.ErrNotImplemented) {
+		t.Errorf("importer.Import with no legacy repository: want a usage error, got %v", err)
+	}
 	_, err = schedule.ForOS("linux")
 	ni("schedule.ForOS", err)
 
