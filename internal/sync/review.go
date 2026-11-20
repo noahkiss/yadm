@@ -35,28 +35,64 @@ func inScope(p model.SourcePath, scope model.Scope) bool {
 	return strings.HasPrefix(s, "sealed/"+string(scope)+"/") || strings.HasPrefix(s, "keys/"+string(scope)+"/")
 }
 
-// reviewedBase returns the further of the local and fetched reviewed refs.
+// reviewedBase returns the reviewed ref this machine trusts: its local ref.
+// Any machine can push the fetched copy, so it never hides a commit from
+// this machine's queue; sync fast-forwards the local ref from it only when
+// the advance skips no commit of the scope (reviewedSpecs). `init` seeds
+// the local refs from the fetched ones once (SeedReviewed).
 func reviewedBase(ctx context.Context, st store.Store, scope model.Scope) (model.CommitID, error) {
-	local, err := st.ResolveRef(ctx, store.RefReviewed(scope))
+	return st.ResolveRef(ctx, store.RefReviewed(scope))
+}
+
+// SeedReviewed sets each empty local reviewed ref to its fetched copy. A new
+// machine runs it once, right after its clone: it trusts the fleet's review
+// of the history it joins. Later remote advances go through reviewedSpecs.
+func SeedReviewed(ctx context.Context, st store.Store) error {
+	scopes, err := reviewScopes(ctx, st)
 	if err != nil {
-		return "", err
+		return err
 	}
-	remote, err := st.ResolveRef(ctx, remoteReviewed(scope))
+	for _, sc := range scopes {
+		local, err := st.ResolveRef(ctx, store.RefReviewed(sc))
+		if err != nil {
+			return err
+		}
+		if local != "" {
+			continue
+		}
+		remote, err := st.ResolveRef(ctx, remoteReviewed(sc))
+		if err != nil {
+			return err
+		}
+		if remote != "" {
+			if err := st.UpdateRef(ctx, store.RefReviewed(sc), remote, ""); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// skippedInScope counts the commits in from..to that touch scope.
+func skippedInScope(ctx context.Context, st store.Store, scope model.Scope, from, to model.CommitID) (int, error) {
+	rng := string(to)
+	if from != "" {
+		rng = string(from) + ".." + string(to)
+	}
+	commits, err := st.Log(ctx, rng, nil)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
-	if local == "" || local == remote {
-		return remote, nil
+	n := 0
+	for _, c := range commits {
+		for _, p := range c.Paths {
+			if inScope(p, scope) {
+				n++
+				break
+			}
+		}
 	}
-	if remote == "" {
-		return local, nil
-	}
-	if ok, err := st.IsAncestor(ctx, local, remote); err != nil {
-		return "", err
-	} else if ok {
-		return remote, nil
-	}
-	return local, nil
+	return n, nil
 }
 
 // Unreviewed lists commits in RefReviewed(scope)..main that touch scope,

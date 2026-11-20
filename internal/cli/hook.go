@@ -943,9 +943,8 @@ func (m *machineEnv) unreviewedAuto(ctx context.Context, snap *apply.Snapshot) i
 	seen := map[model.CommitID]bool{}
 	for _, sc := range scopes {
 		rng := string(main)
+		// The local reviewed ref only: a fetched one may skip commits.
 		if base, _ := m.repo.ResolveRef(ctx, store.RefReviewed(sc)); base != "" {
-			rng = string(base) + ".." + string(main)
-		} else if base, _ := m.repo.ResolveRef(ctx, "refs/remotes/origin/yadm/reviewed/"+string(sc)); base != "" {
 			rng = string(base) + ".." + string(main)
 		}
 		cs, err := m.repo.Log(ctx, rng, nil)

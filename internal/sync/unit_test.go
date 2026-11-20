@@ -239,9 +239,37 @@ func TestManualCommitAndReview(t *testing.T) {
 	if got := git(t, w.remote, "rev-parse", store.RefReviewed("personal")); got != string(last) {
 		t.Errorf("remote reviewed ref %s, want %s", got, last)
 	}
+	// Another machine's ack never hides commits from A's own queue: the
+	// fetched ref skips commits A has not reviewed, so A keeps its own and
+	// alerts once.
 	A.sync()
+	A.sync()
+	if items, _ := Unreviewed(ctx, A.st, nil, "personal"); len(items) == 0 {
+		t.Error("B's ack hid unreviewed commits from A")
+	}
+	n := 0
+	for _, a := range A.s.loadAlerts() {
+		if a.Kind == AlertReviewedSkip {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("reviewed-skip alerts on A: %d, want 1", n)
+	}
+	// Once A has reviewed up to the same commit, the refs agree again.
+	if err := Ack(ctx, A.st, "personal", last); err != nil {
+		t.Fatal(err)
+	}
 	if items, _ := Unreviewed(ctx, A.st, nil, "personal"); len(items) != 0 {
-		t.Errorf("A still sees %d unreviewed after B's ack", len(items))
+		t.Errorf("A sees %d unreviewed after its own ack", len(items))
+	}
+	// A new machine trusts the fleet's review of the history it joins.
+	C := w.newMachine(fixture.HostC)
+	if err := SeedReviewed(ctx, C.st); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := Unreviewed(ctx, C.st, nil, "personal"); len(items) != 0 {
+		t.Errorf("a new machine sees %d unreviewed commits", len(items))
 	}
 }
 

@@ -208,6 +208,10 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	defer repo.Close()
+	// A new machine trusts the fleet's review of the history it joins.
+	if err := sync.SeedReviewed(ctx, repo); err != nil {
+		return result{}, err
+	}
 	head, err := repo.ResolveRef(ctx, store.RefMain)
 	if err != nil {
 		return result{}, err
