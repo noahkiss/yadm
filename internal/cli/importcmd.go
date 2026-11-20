@@ -200,6 +200,7 @@ func addKeyLogs(ctx context.Context, dir, branch string, parent model.CommitID, 
 	if err != nil {
 		return "", err
 	}
+	defer repo.Close()
 	var paths []string
 	for _, c := range changes {
 		paths = append(paths, string(c.Path))

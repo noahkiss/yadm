@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	gosync "sync"
 	"time"
 
 	"github.com/noahkiss/yadm/internal/apply"
@@ -98,6 +99,30 @@ func homeAndUser() (string, string, error) {
 	return home, name, nil
 }
 
+// openRepos are the source clones this command opened. mainWith closes
+// them when the command finishes, which stops their batch readers.
+var openRepos struct {
+	gosync.Mutex
+	list []*store.Repo
+}
+
+func trackRepo(r *store.Repo) {
+	openRepos.Lock()
+	defer openRepos.Unlock()
+	openRepos.list = append(openRepos.list, r)
+}
+
+// closeRepos closes every repository trackRepo recorded.
+func closeRepos() {
+	openRepos.Lock()
+	list := openRepos.list
+	openRepos.list = nil
+	openRepos.Unlock()
+	for _, r := range list {
+		_ = r.Close()
+	}
+}
+
 func identityPath(p Paths) string { return filepath.Join(p.Config, fleet.IdentityFile) }
 
 // open loads machine.toml, the identity and the source clone. It does not
@@ -136,6 +161,7 @@ func open(ctx context.Context) (*machineEnv, error) {
 	if err != nil {
 		return nil, err
 	}
+	trackRepo(repo)
 	ex := hooks.exec()
 	allow := tasks.FileAllowList(p.State)
 	m := &machineEnv{paths: p, home: home, user: usr, local: local, id: id, repo: repo, exec: ex, allow: allow}

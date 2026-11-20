@@ -343,6 +343,7 @@ func mainCLI(args []string, stdout, stderr io.Writer, version string) int {
 }
 
 func mainWith(a *app, args []string) int {
+	defer closeRepos()
 	root := a.root()
 
 	if name, rest, ok := externalName(root, args); ok {
