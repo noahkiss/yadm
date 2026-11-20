@@ -81,6 +81,80 @@ func TestFirstApplyWaitsForTaskHolds(t *testing.T) {
 	}
 }
 
+// A held path task must not keep the first apply open, and an allowed
+// bootstrap must not run on every apply.
+func TestHeldPathTaskDoesNotBlockFirstApply(t *testing.T) {
+	w := newWorld(t)
+	exec := &countExec{runs: map[string]int{}}
+	allow := tasks.FileAllowList(t.TempDir())
+	w.eng.Tasks = &tasks.Runner{Exec: exec, Allow: allow}
+	boot := manifest.TaskDef{FirstApply: true, Command: []string{"bootstrap-tool"}}
+	pkgs := manifest.TaskDef{On: []string{".x"}, Command: []string{"pkg-tool"}}
+	for name, def := range map[string]manifest.TaskDef{"bootstrap": boot} {
+		h, _ := tasks.DefinitionHash(def)
+		if err := allow.Allow(extexec.KindTask, name, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := w.commit(map[model.SourcePath]string{"files/.x": "x\n"}, manifest.Entry{Target: ".x"})
+	w.plans[c].Tasks = map[string]manifest.TaskDef{"bootstrap": boot, "packages": pkgs}
+
+	r := w.apply(c)
+	if h := taskHolds(r.Holds); len(h) != 1 || h[0].Task != "packages" {
+		t.Fatalf("holds: %+v", r.Holds)
+	}
+	if !w.state().FirstApplyDone || exec.runs["bootstrap"] != 1 {
+		t.Fatalf("done=%v bootstrap runs=%d", w.state().FirstApplyDone, exec.runs["bootstrap"])
+	}
+	w.apply(c)
+	w.apply(c)
+	if exec.runs["bootstrap"] != 1 {
+		t.Fatalf("bootstrap ran %d times", exec.runs["bootstrap"])
+	}
+
+	// Allowing the path task clears its hold on the next apply that runs tasks.
+	h, _ := tasks.DefinitionHash(pkgs)
+	if err := allow.Allow(extexec.KindTask, "packages", h); err != nil {
+		t.Fatal(err)
+	}
+	c2 := w.commit(map[model.SourcePath]string{"files/.x": "y\n"}, manifest.Entry{Target: ".x"})
+	w.plans[c2].Tasks = w.plans[c].Tasks
+	w.apply(c2)
+	if exec.runs["packages"] != 1 || len(taskHolds(w.state().Holds)) != 0 {
+		t.Fatalf("packages runs=%d holds=%+v", exec.runs["packages"], w.state().Holds)
+	}
+}
+
+// A bootstrap that already succeeded does not rerun while another
+// first-apply task keeps the first apply open.
+func TestDoneBootstrapWaitsForHeldSibling(t *testing.T) {
+	w := newWorld(t)
+	exec := &countExec{runs: map[string]int{}}
+	allow := tasks.FileAllowList(t.TempDir())
+	w.eng.Tasks = &tasks.Runner{Exec: exec, Allow: allow}
+	a := manifest.TaskDef{FirstApply: true, Command: []string{"tool-a"}}
+	b := manifest.TaskDef{FirstApply: true, Command: []string{"tool-b"}}
+	ha, _ := tasks.DefinitionHash(a)
+	if err := allow.Allow(extexec.KindTask, "a", ha); err != nil {
+		t.Fatal(err)
+	}
+	c := w.commit(map[model.SourcePath]string{"files/.x": "x\n"}, manifest.Entry{Target: ".x"})
+	w.plans[c].Tasks = map[string]manifest.TaskDef{"a": a, "b": b}
+	w.apply(c)
+	w.apply(c)
+	if w.state().FirstApplyDone || exec.runs["a"] != 1 {
+		t.Fatalf("done=%v a runs=%d", w.state().FirstApplyDone, exec.runs["a"])
+	}
+	hb, _ := tasks.DefinitionHash(b)
+	if err := allow.Allow(extexec.KindTask, "b", hb); err != nil {
+		t.Fatal(err)
+	}
+	w.apply(c)
+	if !w.state().FirstApplyDone || exec.runs["a"] != 1 || exec.runs["b"] != 1 {
+		t.Fatalf("done=%v runs=%v", w.state().FirstApplyDone, exec.runs)
+	}
+}
+
 func TestTaskHoldOfRemovedTaskIsPruned(t *testing.T) {
 	w := newWorld(t)
 	w.eng.Tasks = &tasks.Runner{Exec: &countExec{runs: map[string]int{}}, Allow: tasks.FileAllowList(t.TempDir())}
