@@ -18,7 +18,7 @@ This document specifies how `yadm` works. The Go package docs (`go doc ./interna
 | Path | Content |
 |---|---|
 | `$XDG_DATA_HOME/yadm/source` | The source clone. Default `~/.local/share/yadm/source`. |
-| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
+| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
 | `$XDG_STATE_HOME/yadm/identity.age.key` | This machine's age X25519 identity, mode 0600. |
 | `$XDG_STATE_HOME/yadm/identity.sign.key` | This machine's Ed25519 signing key, mode 0600. |
 | `$XDG_CONFIG_HOME/yadm/machine.toml` | Local identity: machine id, remote, notify and busy commands. Untracked. |
@@ -418,7 +418,7 @@ Every commit operation builds its own fresh index file in the state directory, s
 
 Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
-Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag or a track. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
+Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag or a track. They hold no plaintext, and check `paths` name targets. They still commit under the sync lock, through a private index.
 
 ### 9.3 Auto-commit
 
@@ -430,7 +430,7 @@ The timer runs `yadm sync --auto`. A captured path auto-commits when all hold:
 - it is not protected: `manifest.toml`, `fleet.toml`, `keys/**`, `conditions.include` files, manifest `protected` globs, entries with `review = true`, new files outside owned roots, files that were in an owned root when it was accepted here (held `protected` until committed by name), deletions, retags, and more than 50 changed files in one scope;
 - the gate passes.
 
-Commits group by scope (`shared` or an enclave name), one commit per scope per run. Every commit the tool makes is followed in the same call, under the same lock, by fetch, replay, apply and push (section 10, steps 3 to 9), except a harness hook's commit: hooks commit locally and never touch the network, and the next timer tick pushes (the quick check runs in full when local `main` is ahead of the remote). One process per machine then reaches the remote, whatever the number of agent sessions.
+Commits group by scope (`shared` or an enclave name), one commit per scope per run. Every commit the tool makes reaches the remote in the same call, through the phases of a sync (section 10): fetch, then the commit, replay, apply and publish under the sync lock, then push. The exception is a harness hook's commit: hooks commit locally and never touch the network, and the next timer tick pushes (the quick check runs in full when local `main` is ahead of the remote). The network lock lets one process per machine reach the remote at a time, whatever the number of agent sessions.
 
 ### 9.4 Commit messages
 
@@ -461,13 +461,13 @@ A message names paths only. No subject, body or trailer ever carries file conten
 
 ### 9.5 Manual commits
 
-`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. A named path that no manifest entry or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes.
+`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. A named path that no manifest entry or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes. When the push does not happen in this call (another process holds the network lock, or the remote kept moving), the commit stands, `push_error` says why, and the next sync pushes.
 
 ### 9.6 Review
 
 Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. Each machine trusts its own copy. Sync pushes a local advance, and moves the local ref to a fetched one only when the move skips no commit of the scope; otherwise the fetched ref is refused with a `reviewed_ref_refused` alert, since any machine can push it. `init` seeds empty local refs from the fetched ones. `yadm review list [scope] --json` lists commits in `reviewed/<scope>..main` that touch the scope, with plaintext diffs for scopes this machine can open, and `deferred`: the decisions agents moved here with `yadm defer` (section 9.7) whose holds are still open. Agents act with `yadm review ok <scope> <commit>`, `yadm review revert <commit>` (a new commit), a fix-forward commit, or `yadm bisect --as <machine> -- <cmd>`, which renders each candidate commit into a sandbox and never touches `$HOME`.
 
-`yadm review note <commit> --why "<text>"` attaches a why note to a commit on `refs/yadm/notes/review`: a chain of commits whose tree holds `<commit id>.json` per note. The ref is fetched with the other yadm refs, and sync pushes it with `main`; a diverged notes ref is rebuilt on the remote one with the local notes it lacks, the newer note winning on one commit. `yadm log` and `review list` show each commit's note.
+`yadm review note <commit> --why "<text>"` attaches a why note to a commit on `refs/yadm/notes/review`: a chain of commits whose tree holds `<commit id>.json` per note. The ref is fetched with the other yadm refs, and sync pushes it with `main`. A diverged notes ref is rebuilt on the remote one with the local notes it lacks, the newer note winning on one commit. `review note` writes the note under the sync lock and pushes it afterwards, under the network lock. `yadm log` and `review list` show each commit's note.
 
 - A note on a commit that touches no enclave is stored as written.
 - A free-text note on a commit that touches an enclave (`sealed/<e>/`, `keys/<e>/`, or a file whose entry seals values for `e`) is sealed to that enclave before it is written, with the file container bound to `notes/review/<commit>`. Members read it; every other machine sees `sealed note`. The note is refused (exit 6) when the commit touches more than one enclave, when it changes a file with sealed regions and `--seal` names no enclave, or when this machine is not a member.
@@ -484,7 +484,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 | `stop` | the agent (or a subagent) ends its turn | Commits the session's recorded paths locally; the next timer tick pushes them. Blocks the stop while a decision this session caused is open, including a conflict the timer met while pushing them. |
 | `session-start` | a session starts | A quick sync, then at most 10 lines: holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
 
-A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the lock; if a sync holds it, the path stays recorded and `stop` or the timer commits it.
+A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the sync lock; if another process holds it, the path stays recorded and `stop` or the timer commits it.
 
 A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to, and the options to share it, track it for those types with `yadm retag`, ignore it with `yadm hold ignore`, or defer it), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
 
@@ -492,14 +492,29 @@ A **decision packet** says what happened, the diff size (line counts, never cont
 
 ## 10. Sync
 
-`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4; a harness hook waits at most 3 s and leaves the work to the timer. No command waits without a bound; every git and external call has a timeout (3 min for a network call). Git runs in its own process group, and the whole group is killed at the deadline, so a stalled ssh child cannot keep the lock. Apply, capture, collect, hold resolve, retag, enclave writes and the local allows (`task allow`, `root allow`, `protection allow`) take the same lock, and every commit goes through `sync.Commit`. `apply` and the local allows read `main` again once they hold the lock, since the sync they waited for may have moved it.
+Two locks in the state directory serialize the processes of one machine. No process holds the sync lock while it waits on the network.
 
-A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. The quick check also runs in full when local `main` is ahead of the remote (a hook's commit waits for the timer to push it).
+| Lock | File | Serializes | When it is held |
+|---|---|---|---|
+| sync lock | `lock` | Local writes: scan and capture, commits, replay, apply, publish, collectors, hold resolve, retag, enclave writes, the local allows (`task allow`, `root allow`, `protection allow`) | A command waits at most 30 s, then exits with code 4; a harness hook waits at most 3 s and leaves the work to the timer |
+| network lock | `netlock` | Fetch, push and `git ls-remote` | Never waited on: a process that finds it held skips its network step, says so, and the next sync does it |
+
+Each lock file holds its holder's record while held: pid, command (the binary name and subcommand words, no paths) and start time. The exit-4 error names the holder and how long it has held the lock. `yadm status` lists a lock held for more than 10 s and an active network backoff. A record whose pid is dead is ignored. No command waits without a bound; every git and external call has a timeout (3 min for a network call). Git runs in its own process group, and the whole group is killed at the deadline, so a stalled ssh child cannot keep a lock. Every commit goes through `sync.Commit`. `apply` and the local allows read `main` again once they hold the sync lock, since the process they waited for may have moved it.
+
+A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. The quick check also runs in full when local `main` is ahead of the remote (a hook's commit, or a push that was skipped or rejected, waits for the timer to push it). The stat scan runs under the sync lock and `git ls-remote` under the network lock; when another process holds the network lock, the check stops there, since that process is syncing already.
+
+A sync runs in three phases:
+
+- **Fetch**, under the network lock and without the sync lock: step 4. It updates only remote-tracking refs, so local writers go on meanwhile. When the network lock is held, the fetch is skipped and the run replays onto the last fetched `origin/main`. When the fetch fails, the local steps still run (capture, auto-commit, collectors), and the run ends with the fetch error before step 5.
+- **Local work**, under the sync lock: steps 1 to 3 and 5 to 8.
+- **Push**, under the network lock, after the sync lock is released: step 9.
+
+The steps:
 
 1. Scan and capture.
 2. With `--auto`, auto-commit by policy (section 9.3).
 3. Run allowed collectors.
-4. Fetch `main` and `refs/yadm/*`.
+4. Fetch `main` and `refs/yadm/*` (the fetch phase, before step 1). On a first sync, the key-log and manifest guards compare the fetched source with the `origin/main` the clone had before this fetch.
 5. If local `main` is not an ancestor of `origin/main`, replay each local commit onto `origin/main` with `git merge-tree --write-tree`, in memory:
    - clean: `commit-tree` with the original message and trailers;
    - conflict on a sealed file this machine can open: open the three stages, merge them in memory (`textmerge.Merge3`), reseal, write the tree; a remaining conflict is held like any other;
@@ -509,9 +524,11 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes). `main` moves only over a clean clone, checked while `HEAD` still names the old `main`, so the clone's index never falls behind `HEAD`. A clean clone at a commit yadm reached (a `yadm git commit` on `main`, for example) counts as clean. The hold's advice returns the clone to `HEAD`.
 7. Apply.
 8. Publish this machine's status record (section 11).
-9. Push `main` and the status ref atomically. On rejection, go back to step 4, up to 5 retries with backoff. Never force. After a push that moved `main`, run the nudge (section 12.5).
+9. Release the sync lock. Under the network lock, push `main`, the status ref, the advanced reviewed refs and the notes ref atomically. The refspecs are computed in step 8, under the sync lock. A local commit made between steps 8 and 9 goes out too, since it descends from the replayed `main`. Never force. A rejection means the remote moved after the fetch; it is not an error. The run fetches, replays and pushes again, up to 5 more rounds with backoff, taking the sync lock again for each replay (when another process holds it, the run stops there and notes it); after that the next sync does it. When the network lock is held, the push is skipped and the next sync does it. After a push that moved `main`, run the nudge (section 12.5).
 
-A manual commit runs steps 3 to 9 right after its commit, in the same call; a hook commit leaves them to the next tick.
+`sync` reports a skipped or rejected network step in `network`. Only a sync that fetched and whose push went out, or had nothing to push, counts as a full sync for the quick check and clears its backoff, so local `main` stays ahead and the next tick runs in full.
+
+A manual commit, a hold resolve that commits, `retag`, `track` and the enclave commands run the same phases around their commit, in the same call: fetch first, then the commit and steps 3 and 5 to 8 under the sync lock, then step 9. A hook commit leaves the network to the next tick.
 
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
 
@@ -655,7 +672,7 @@ On failure, `ok` is false and `error` is `{ "code": "…", "message": "…", "de
 | 1 | `error` | The command failed |
 | 2 | `usage` | Bad flags or arguments, or an unknown command with no `yadm-<name>` |
 | 3 | `attention` | The command succeeded, but holds or conflicts exist; `data` lists them |
-| 4 | `locked` | Another yadm process holds the lock; retry later |
+| 4 | `locked` | Another yadm process has held the sync lock past the wait (section 10); the message names its pid, command and age. Retry later |
 | 5 | `not_implemented` | |
 | 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition |
 
@@ -686,12 +703,12 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `managed <path>` | Is it managed here | `{target, managed, scope, source}` |
 | `explain <command>` | Steps the command would take here | `{steps[]}` |
 | `init <remote> --machine <m>` | Clone, write `machine.toml`, create identity, install schedule | `{machine, recipient, sign_key, source}` |
-| `status` | Drift, holds, ahead/behind, last sync | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?}` |
+| `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?}` |
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff}]}` |
 | `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
-| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason}` |
+| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?}` |

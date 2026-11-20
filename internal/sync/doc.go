@@ -1,8 +1,18 @@
 // Package sync runs the sync loop, mechanical auto-commit, agent leases and
 // the review queue.
 //
-// One sync, under an exclusive lock in the state directory (bounded wait,
-// LockTimeout):
+// Two locks in the state directory serialize one machine's processes. The
+// sync lock (LockFile; Acquire waits at most LockTimeout, then ErrLocked)
+// covers local writes. The network lock (NetLockFile) covers fetch, push
+// and ls-remote; it is only ever tried (TryAcquire), and a caller that
+// finds it held skips its network step (ErrNetBusy) and says so in
+// Report.Network. No process holds the sync lock while it waits on the
+// network. Each lock file holds its holder's record (pid, command, start);
+// a LockedError names it, and HeldLocks reads both without locking.
+//
+// One sync runs in three phases: step 4 under the network lock; steps 1 to
+// 3 and 5 to 7 under the sync lock; step 8 under the network lock after the
+// sync lock is released.
 //
 //  1. Scan and capture drift (package apply). Unreadable drift never commits.
 //  2. With Options.Auto, auto-commit captured paths whose quiet period has
@@ -17,7 +27,10 @@
 //     moved past is merged first, so a commit never reverts what it did not
 //     see. Main moves by compare-and-swap and apply records the targets.
 //  3. Run allowed collectors (fleet.CollectWith, with source and commit).
-//  4. Fetch origin main and refs/yadm/*. A fetched source that rewrites or
+//  4. Fetch origin main and refs/yadm/* (first, before step 1). On a first
+//     sync the guard's base is origin main as it was before this fetch.
+//     A failed fetch still lets steps 1 to 3 run; the sync then ends with
+//     the fetch error. A fetched source that rewrites or
 //     deletes a key-log entry, or that the RemoteGuard refuses, is not taken:
 //     a hold and one alert, local main stays, main is not pushed.
 //  5. If local main is not an ancestor of origin main, replay each local
@@ -35,8 +48,13 @@
 //     HEAD; a commit over a dirty clone makes nothing.
 //  7. Publish the status record to this machine's status ref: holds, tasks,
 //     published facts, alerts and the pinned key-log head of each enclave.
-//  8. Push main, the status ref and advanced reviewed refs atomically. On
-//     rejection go back to 4, up to MaxRetries with backoff. Never force.
+//  8. Release the sync lock; push main, the status ref and advanced
+//     reviewed refs atomically under the network lock. A rejection is not
+//     an error: go back to 4 (fetch, then 5 to 7 under the sync lock again),
+//     up to MaxRetries rounds with backoff (negative: none), then leave it to
+//     the next sync. Only a run that fetched and whose push went out records
+//     a full sync for the quick check, so unpushed commits trigger the next
+//     one. Never force.
 //     A fetched reviewed ref moves the local one only when it skips no
 //     commit of its scope; otherwise it is refused with an alert
 //     (AlertReviewedSkip). SeedReviewed seeds empty local refs at init.
@@ -44,8 +62,11 @@
 // A quick sync (Options.Quick) first stats the targets and lists the remote
 // heads with `git ls-remote`; it stops there unless the remote moved, a
 // target drifted, FullEvery passed since the last full sync, or WakeGap
-// passed since the last check. Commit with Push runs steps 3 to 8 right
-// after its commit, under the same lock. After a push that moved main,
+// passed since the last check; the scan runs under the sync lock and
+// ls-remote under the network lock. Commit with Push runs the same phases
+// around its commit: fetch, then the commit and steps 3 and 5 to 7 under the
+// sync lock, then the push; a push left to the next sync is an ExchangeError
+// wrapping ErrPushDeferred. After a push that moved main,
 // Deps.Nudge runs so peers can sync now.
 //
 // Fetched commits that touch an enclave and whose Machine trailer names no
@@ -65,6 +86,11 @@
 //	func (s *Syncer) Commit(ctx, opts CommitOptions) (Report, error)
 //	type Lock interface{ Acquire(ctx context.Context) (release func(), err error) }
 //	func FileLock(stateDir string) Lock; func FileLockTimeout(stateDir string, d time.Duration) Lock
+//	type NetLock interface{ TryAcquire() (release func(), err error) }; func FileNetLock(stateDir string) NetLock
+//	const LockFile, NetLockFile, LockSync, LockNetwork; var ErrLocked, ErrNetBusy, ErrPushDeferred
+//	type Holder struct{ PID int; Command string; Since time.Time }; type LockedError struct{ Lock; Holder; Cause }
+//	type HeldLock struct{ Lock; Holder; Age }; func HeldLocks(stateDir string) []HeldLock
+//	func NetBackingOff(stateDir, now) bool; func NetBackoff(stateDir, now) (time.Time, bool)
 //	type Policy struct{ Quiet; MassChange; Protected; Host; QuietFor; Protect; LastChange; MergeFor; VolatileFor }
 //	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error)
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
@@ -82,6 +108,6 @@
 //	type Note struct{ Commit; Machine; Time; Why; PathsOnly; Sealed; Enclave; Opened }; func (Note) Text() string
 //	func WriteNote(ctx, st store.Store, snap *apply.Snapshot, opts NoteOptions) (Note, error) // seals before writing
 //	func ReadNotes(ctx, st store.Store, keys *crypt.Set) (map[model.CommitID]Note, error)
-//	func PushNotes(ctx, st store.Store) (bool, error)
+//	func PushNotes(ctx, st store.Store, lock Lock, net NetLock) (bool, error)
 //	(ReviewItem gains Note *Note; pushSpecs also pushes the notes ref, merging a diverged one)
 package sync

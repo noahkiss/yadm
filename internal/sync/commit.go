@@ -372,20 +372,29 @@ func baseBlob(st *apply.State, applied map[model.SourcePath]store.TreeEntry, t m
 // Commit makes a manual commit: capture, gate, one commit per scope through a
 // fresh private index. It bypasses the quiet period and leases but never the
 // gate or the seal guard. Protected paths need to be named in Paths, unless
-// the commit is Unattended. With Push it then fetches, replays, applies,
-// publishes and pushes under the same lock, so the commit reaches the remote
-// in this call; without it the next sync pushes.
+// the commit is Unattended. With Push it runs the phases of a sync around
+// the commit: fetch under the network lock first, then the commit, replay,
+// apply and publish under the sync lock, then the push under the network
+// lock, so the commit reaches the remote in this call; without it the next
+// sync pushes. A push that does not happen in this call (another process on
+// the network, a remote that kept moving) is an ExchangeError wrapping
+// ErrPushDeferred.
 func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error) {
 	var rep Report
 	if err := s.check(); err != nil {
 		return rep, err
 	}
-	release, err := s.Lock.Acquire(ctx)
-	if err != nil {
+	defer s.begin()()
+	net := opts.Push && !opts.DryRun
+	var f fetched
+	if net {
+		f = s.fetch(ctx, &rep)
+	}
+	lk := &lockHold{lock: s.Lock}
+	if err := lk.acquire(ctx); err != nil {
 		return rep, err
 	}
-	defer release()
-	defer s.begin()()
+	defer lk.unlock()
 
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -394,8 +403,8 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if opts.Resolve && opts.Capture == nil {
 		// Resolve against the current main, not a stale local head: when
 		// several machines resolve in turn, each settles over the last.
-		if opts.Push {
-			dirty, err := s.catchUp(ctx, &rep)
+		if net {
+			dirty, err := s.catchUp(ctx, &rep, f)
 			if err != nil {
 				return rep, err
 			}
@@ -555,8 +564,10 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		rep.Applied = a
 	}
 	if opts.Push && !out.dirty {
-		r, err := s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
-		r, err = s.settle(ctx, r, cp.Paths, out.committed, err)
+		r, err := s.exchange(ctx, rep, lk, f, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
+		if err == nil && r.deferred {
+			err = fmt.Errorf("%w: %s", ErrPushDeferred, r.Network)
+		}
 		if err != nil {
 			return r, &ExchangeError{Err: err}
 		}
@@ -565,20 +576,17 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	return s.finish(ctx, rep, cp.Paths, out.committed)
 }
 
-// catchUp fetches and integrates the remote main into the local one, as
-// steps 4 to 7 of a sync do, so a resolution commits over the current main.
-// Offline, it keeps the local head: the push of this call catches up.
-func (s *Syncer) catchUp(ctx context.Context, rep *Report) (bool, error) {
+// catchUp integrates the remote main that the call's fetch f brought into
+// the local one, as steps 5 to 7 of a sync do, so a resolution commits over
+// the current main. Offline, it keeps the local head: the push of this call
+// catches up. The caller holds the sync lock.
+func (s *Syncer) catchUp(ctx context.Context, rep *Report, f fetched) (bool, error) {
+	if f.err != nil {
+		return false, nil
+	}
 	base := s.accepted()
 	if base == "" {
-		b, err := s.Store.ResolveRef(ctx, store.RemoteMain)
-		if err != nil {
-			return false, err
-		}
-		base = b
-	}
-	if err := s.Store.Fetch(ctx); err != nil {
-		return false, nil
+		base = f.base
 	}
 	local, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -672,9 +680,11 @@ func (s *Syncer) holdBaseline(drift []apply.Drift, cp apply.Capture) error {
 	return s.Apply.State.Save(st)
 }
 
-// ExchangeError wraps a failure after Commit's own commit step: fetch,
-// replay, apply or push. The commits in the report stand; the next sync
-// pushes them.
+// ExchangeError wraps a failure of Commit's network or exchange steps: a
+// fetch that failed before the commit (reported after it), or the replay,
+// apply or push after it, or a push left to the next sync
+// (ErrPushDeferred). The commits in the report stand; the next sync pushes
+// them.
 type ExchangeError struct{ Err error }
 
 func (e *ExchangeError) Error() string { return "after the commit: " + e.Err.Error() }

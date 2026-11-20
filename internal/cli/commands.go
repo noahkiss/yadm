@@ -334,7 +334,7 @@ func scheduleSpec() schedule.Spec {
 // lockedResult suggests a retry when err is the lock timeout.
 func lockedResult(err error) result {
 	if errors.Is(err, sync.ErrLocked) {
-		return result{next: []string{"retry in a moment: a sync is running"}}
+		return result{next: []string{"retry in a moment: another yadm process holds the sync lock"}}
 	}
 	return result{}
 }
@@ -384,7 +384,16 @@ type statusData struct {
 	// Generated lists files a task writes (its `outputs`); they are never
 	// captured or committed.
 	Generated []model.Target `json:"generated,omitempty"`
+	// Locks lists the sync and network locks another live process has held
+	// for more than LockShowAfter.
+	Locks []sync.HeldLock `json:"locks,omitempty"`
+	// NetBackoff is when the quick check reaches the remote again after
+	// repeated failures, while that is still ahead.
+	NetBackoff *time.Time `json:"net_backoff_until,omitempty"`
 }
+
+// LockShowAfter is how long a lock is held before `yadm status` shows it.
+const LockShowAfter = 10 * time.Second
 
 func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
@@ -424,6 +433,14 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 		t := s.LastSync
 		d.LastSync = &t
 	}
+	for _, l := range sync.HeldLocks(m.paths.State) {
+		if l.Age > LockShowAfter {
+			d.Locks = append(d.Locks, l)
+		}
+	}
+	if until, ok := sync.NetBackoff(m.paths.State, hooks.now()); ok {
+		d.NetBackoff = &until
+	}
 	var next []string
 	if len(d.Drift) > 0 {
 		next = append(next, "yadm diff", "yadm commit")
@@ -433,6 +450,12 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "machine %s  applied %s  ahead %d  behind %d\n", d.Machine, short(d.Applied), d.Ahead, d.Behind)
+	for _, l := range d.Locks {
+		fmt.Fprintf(&b, "  %s lock held %s by pid %d (%s)\n", l.Lock, l.Age, l.Holder.PID, l.Holder.Command)
+	}
+	if d.NetBackoff != nil {
+		fmt.Fprintf(&b, "  network backoff: the remote failed; next check after %s\n", d.NetBackoff.Format(time.RFC3339))
+	}
 	for _, x := range d.Drift {
 		fmt.Fprintf(&b, "  %-10s %s\n", x.Kind, x.Target)
 	}
@@ -736,6 +759,9 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	var next []string
 	if len(rep.Holds) > 0 {
 		next = []string{"yadm hold list"}
+	}
+	if rep.Network != "" {
+		next = append(next, "yadm sync") // the timer does it on its next tick
 	}
 	return result{data: rep, next: next}, attention(rep.Holds)
 }

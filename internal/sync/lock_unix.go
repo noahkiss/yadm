@@ -20,3 +20,9 @@ func tryLock(f *os.File) (bool, error) {
 }
 
 func unlock(f *os.File) { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
+
+// pidAlive reports whether a process with this pid exists.
+func pidAlive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}

@@ -364,17 +364,33 @@ func notesSpec(ctx context.Context, st store.Store) (string, error) {
 
 // PushNotes fetches, merges the local notes ref with the remote one and
 // pushes it, retrying once on a rejected push. It never forces. It reports
-// whether anything was pushed.
-func PushNotes(ctx context.Context, st store.Store) (bool, error) {
+// whether anything was pushed. Fetch and push run under the network lock
+// net, the merge under the sync lock lock; the caller holds neither. When
+// another process holds the network lock, the error matches ErrNetBusy and
+// the next sync pushes the notes.
+func PushNotes(ctx context.Context, st store.Store, lock Lock, net NetLock) (bool, error) {
+	onNet := func(fn func() error) error {
+		release, err := net.TryAcquire()
+		if err != nil {
+			return err
+		}
+		defer release()
+		return fn()
+	}
 	for attempt := 0; ; attempt++ {
-		if err := st.Fetch(ctx); err != nil {
+		if err := onNet(func() error { return st.Fetch(ctx) }); err != nil {
+			return false, err
+		}
+		release, err := lock.Acquire(ctx)
+		if err != nil {
 			return false, err
 		}
 		spec, err := notesSpec(ctx, st)
+		release()
 		if err != nil || spec == "" {
 			return false, err
 		}
-		err = st.Push(ctx, []string{spec})
+		err = onNet(func() error { return st.Push(ctx, []string{spec}) })
 		if err == nil {
 			return true, nil
 		}

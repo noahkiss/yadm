@@ -24,12 +24,14 @@
 //	eval <cond> [--as]             cond.Parse with the named conditions, cond.Expand; another machine's observed
 //	                               facts from its status ref: plain, plus sealed ones a member opens (fleet.WithVisible)
 //	init, clone                    store.Clone, crypt.GenerateIdentity + Save, schedule.ForOS().Install
-//	status                         apply.Engine.Scan, apply.Engine.Holds, store.IsAncestor
+//	status                         apply.Engine.Scan, apply.Engine.Holds, store.IsAncestor, sync.HeldLocks, sync.NetBackoff
 //	apply                          apply.Engine.Load, Plan, Apply
 //	capture                        apply.Engine.Scan, Capture
 //	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff
 //	commit                         refuses unmanaged named paths, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
+//	                               (fetch and push under sync.FileNetLock, never under the sync lock)
 //	sync                           sync.Syncer.Run (--auto implies the quick check)
+//	review note                    sync.WriteNote under the sync lock, then sync.PushNotes
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md)
 //	defer                          deferred.json in the state directory; review list shows it

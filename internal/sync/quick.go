@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,11 +62,18 @@ func netBackoff(n int) time.Duration {
 // check is still waiting before it reaches it again (`yadm status` and
 // tests read it).
 func NetBackingOff(stateDir string, now time.Time) bool {
+	_, ok := NetBackoff(stateDir, now)
+	return ok
+}
+
+// NetBackoff returns when the quick check reaches the remote again, and
+// whether that is still ahead of now.
+func NetBackoff(stateDir string, now time.Time) (time.Time, bool) {
 	var q quickState
 	if b, err := os.ReadFile(filepath.Join(stateDir, QuickFile)); err == nil {
 		_ = json.Unmarshal(b, &q)
 	}
-	return now.Before(q.NetRetryAt)
+	return q.NetRetryAt, now.Before(q.NetRetryAt)
 }
 
 func (s *Syncer) quickPath() string { return filepath.Join(s.Apply.StateDir, QuickFile) }
@@ -80,12 +88,24 @@ func (s *Syncer) loadQuick() quickState {
 
 // quickDue decides whether a quick sync must run in full, and says why. ""
 // means nothing changed: the run stops after the check.
-func (s *Syncer) quickDue(ctx context.Context) (string, error) {
+//
+// The scan runs under the sync lock; `git ls-remote` runs under the network
+// lock without it. When another process holds the network lock, the check
+// stops there and notes it in rep: that process is syncing already.
+func (s *Syncer) quickDue(ctx context.Context, rep *Report) (string, error) {
 	now := s.now()
 	q := s.loadQuick()
+	failures, retryAt := q.NetFailures, q.NetRetryAt
 	defer func() {
-		q.LastCheck = now
-		_ = writeJSON(s.quickPath(), q)
+		// Keep what a full sync recorded meanwhile (it may have cleared the
+		// backoff); this check writes the check time, and the backoff only
+		// when its own remote check changed it.
+		cur := s.loadQuick()
+		cur.LastCheck = now
+		if q.NetFailures != failures || !q.NetRetryAt.Equal(retryAt) {
+			cur.NetFailures, cur.NetRetryAt = q.NetFailures, q.NetRetryAt
+		}
+		_ = writeJSON(s.quickPath(), cur)
 	}()
 	switch {
 	case q.LastFull.IsZero():
@@ -95,7 +115,12 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 	case now.Sub(q.LastFull) >= FullEvery:
 		return "periodic", nil
 	}
+	release, err := s.Lock.Acquire(ctx)
+	if err != nil {
+		return "", err
+	}
 	drift, err := s.Apply.Scan(ctx, apply.ScanOptions{})
+	release()
 	if err != nil {
 		return "", err
 	}
@@ -115,7 +140,16 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 			return "unpushed commits", nil
 		}
 	}
+	netRelease, err := s.netLock().TryAcquire()
+	if err != nil {
+		if errors.Is(err, ErrNetBusy) {
+			rep.note("check skipped: " + err.Error())
+			return "", nil
+		}
+		return "", err
+	}
 	heads, err := rh.RemoteHeads(ctx)
+	netRelease()
 	if err != nil {
 		// Back off instead of a full sync that would reach the same remote
 		// again. The wake and periodic paths above still run the full sync,
@@ -182,14 +216,26 @@ func sameDrift(a, b map[model.Target]string) bool {
 	return true
 }
 
+// leftDrift scans what a full sync leaves behind (held or pending targets)
+// for recordFull. The caller holds the sync lock. nil means the scan failed.
+func (s *Syncer) leftDrift(ctx context.Context) map[model.Target]string {
+	drift, err := s.Apply.Scan(ctx, apply.ScanOptions{})
+	if err != nil {
+		return nil
+	}
+	return driftSig(drift)
+}
+
 // recordFull remembers a finished full sync, the remote heads it left (read
 // from the remote-tracking refs it fetched and pushed) and the drift it
-// left behind (held or pending targets), so an unchanged leftover does not
-// count as new drift.
-func (s *Syncer) recordFull(ctx context.Context) {
+// left behind, so an unchanged leftover does not count as new drift. Only
+// a push that went out (or had nothing to send) records one: a skipped or
+// rejected push leaves local main ahead, and the next quick check runs in
+// full.
+func (s *Syncer) recordFull(ctx context.Context, left map[model.Target]string) {
 	q := s.loadQuick()
-	if drift, err := s.Apply.Scan(ctx, apply.ScanOptions{}); err == nil {
-		q.Drift = driftSig(drift)
+	if left != nil {
+		q.Drift = left
 	}
 	q.LastFull, q.LastCheck = s.now(), s.now()
 	q.NetFailures, q.NetRetryAt = 0, time.Time{} // the remote answered
@@ -205,14 +251,28 @@ func (s *Syncer) recordFull(ctx context.Context) {
 	_ = writeJSON(s.quickPath(), q)
 }
 
-// writeJSON writes v to p atomically, mode 0600.
+// writeJSON writes v to p atomically, mode 0600. The temp file has its own
+// name, so writers outside the sync lock never interleave in it.
 func writeJSON(p string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(p+".tmp", b, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(p), filepath.Base(p)+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(p+".tmp", p)
+	tmp := f.Name()
+	_, werr := f.Write(b)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, p)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+	}
+	return werr
 }

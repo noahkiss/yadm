@@ -11,3 +11,6 @@ import (
 func tryLock(*os.File) (bool, error) { return false, model.ErrNotImplemented }
 
 func unlock(*os.File) {}
+
+// pidAlive cannot tell on this platform; a record is trusted.
+func pidAlive(int) bool { return true }
