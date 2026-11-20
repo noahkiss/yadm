@@ -2,11 +2,13 @@ package fixture
 
 import (
 	"bytes"
-	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"testing"
 
 	"github.com/noahkiss/yadm/internal/crypt"
@@ -45,6 +47,8 @@ type Fixture struct {
 	Canaries   map[model.EnclaveName]secrecytest.Canary
 	Identities map[model.MachineID]*crypt.Identity
 	Recovery   *crypt.Identity
+	Logs       map[model.EnclaveName][]crypt.LogEntry // each enclave's key log, also written under keys/
+	Rings      map[model.EnclaveName]*crypt.Keyring   // each enclave's keyring at its head
 }
 
 // AllCanaries returns every enclave canary.
@@ -63,6 +67,8 @@ func Build(t testing.TB) *Fixture {
 		Root:       t.TempDir(),
 		Canaries:   map[model.EnclaveName]secrecytest.Canary{},
 		Identities: map[model.MachineID]*crypt.Identity{},
+		Logs:       map[model.EnclaveName][]crypt.LogEntry{},
+		Rings:      map[model.EnclaveName]*crypt.Keyring{},
 	}
 	for e := range Members {
 		f.Canaries[e] = secrecytest.NewCanary(t, string(e))
@@ -71,9 +77,6 @@ func Build(t testing.TB) *Fixture {
 		t.Fatal(err)
 	}
 	if err := f.seal(); err != nil {
-		if errors.Is(err, model.ErrNotImplemented) {
-			t.Skip("fixture: crypt is not implemented yet")
-		}
 		t.Fatal(err)
 	}
 	return f
@@ -93,11 +96,149 @@ func (f *Fixture) seal() error {
 		return err
 	}
 	f.Recovery = rec
-	// Remaining steps, once crypt exists: for each enclave, crypt.Create by the
-	// first member, Add the others, write keys/<enclave>/<seq>.toml, then seal
-	// enclave-plain, value-plain and region-plain inputs (canary substituted)
-	// and replace the placeholders in the source tree.
-	return model.ErrNotImplemented
+	enclaves := make([]model.EnclaveName, 0, len(Members))
+	for e := range Members {
+		enclaves = append(enclaves, e)
+	}
+	sort.Slice(enclaves, func(i, j int) bool { return enclaves[i] < enclaves[j] })
+	for _, e := range enclaves {
+		if err := f.createEnclave(e); err != nil {
+			return fmt.Errorf("enclave %s: %w", e, err)
+		}
+		if err := f.sealFiles(e); err != nil {
+			return fmt.Errorf("enclave %s: %w", e, err)
+		}
+	}
+	return f.replacePlaceholders()
+}
+
+// createEnclave writes the key log: create by the first member, then add the others.
+func (f *Fixture) createEnclave(e model.EnclaveName) error {
+	ms := Members[e]
+	by := f.Identities[ms[0]]
+	pins := crypt.MemPins() // the creator's pins; tests pin machines with PinAll
+	head, ring, err := crypt.Create(e, by, f.Recovery.Member(), pins)
+	if err != nil {
+		return err
+	}
+	log := []crypt.LogEntry{head}
+	for _, m := range ms[1:] {
+		if head, err = ring.Add(head, f.Identities[m].Member(), by, pins); err != nil {
+			return err
+		}
+		log = append(log, head)
+	}
+	for _, entry := range log {
+		b, err := crypt.MarshalLogEntry(entry)
+		if err != nil {
+			return err
+		}
+		if err := writeFile(filepath.Join(f.Root, filepath.FromSlash(string(crypt.LogPath(e, entry.Seq)))), b); err != nil {
+			return err
+		}
+	}
+	f.Logs[e] = log
+	f.Rings[e] = ring
+	return nil
+}
+
+// sealFiles seals enclave-plain/<enclave>/<target> into sealed/<enclave>/<target>.
+// The canary-substituted plaintext exists only in memory.
+func (f *Fixture) sealFiles(e model.EnclaveName) error {
+	src := filepath.Join(Dir(), "enclave-plain", string(e))
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(src, p)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		blob, err := f.Rings[e].SealFile(f.Plaintext(e, b))
+		if err != nil {
+			return err
+		}
+		return writeFile(filepath.Join(f.Root, "sealed", string(e), rel), blob)
+	})
+}
+
+var placeholder = regexp.MustCompile(`@@(SEAL|REGION):([^:@]+):([^@]+)@@`)
+
+// replacePlaceholders swaps @@SEAL:<enclave>:<keypath>@@ for a value token
+// and @@REGION:<enclave>:<label>@@ for a "# yadm:sealed ..." line.
+func (f *Fixture) replacePlaceholders() error {
+	return filepath.WalkDir(f.Root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if !bytes.Contains(b, []byte("@@")) {
+			return nil
+		}
+		var ferr error
+		out := placeholder.ReplaceAllFunc(b, func(m []byte) []byte {
+			g := placeholder.FindSubmatch(m)
+			kind, e, name := string(g[1]), model.EnclaveName(g[2]), string(g[3])
+			ring, ok := f.Rings[e]
+			if !ok {
+				ferr = fmt.Errorf("%s: unknown enclave %q", p, e)
+				return m
+			}
+			dir := map[string]string{"SEAL": "value-plain", "REGION": "region-plain"}[kind]
+			plain, err := os.ReadFile(filepath.Join(Dir(), dir, string(e), name))
+			if err != nil {
+				ferr = err
+				return m
+			}
+			var tok string
+			if kind == "SEAL" {
+				tok, err = ring.SealValue(name, f.Plaintext(e, plain))
+			} else {
+				tok, err = ring.SealRegion(name, f.Plaintext(e, plain))
+				tok = "# " + tok
+			}
+			if err != nil {
+				ferr = err
+				return m
+			}
+			return []byte(tok)
+		})
+		if ferr != nil {
+			return ferr
+		}
+		if bytes.Contains(out, []byte("@@")) {
+			return fmt.Errorf("%s: unresolved placeholder", p)
+		}
+		return os.WriteFile(p, out, 0o644)
+	})
+}
+
+func writeFile(p string, b []byte) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o644)
+}
+
+// PinAll writes a pin at each enclave's head into stateDir, as a machine has
+// after create, add or `enclave join --expect`. crypt.LoadSet opens no
+// keyring for an unpinned enclave.
+func (f *Fixture) PinAll(stateDir string) error {
+	pins := crypt.FilePins(stateDir)
+	for e, log := range f.Logs {
+		p, err := crypt.PinOf(log[len(log)-1])
+		if err != nil {
+			return err
+		}
+		if err := pins.Set(e, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Plaintext returns an input with @@CANARY@@ replaced by the enclave's canary.

@@ -15,5 +15,9 @@
 // test can prove with package secrecytest that the plaintext stays inside
 // the enclave.
 //
-// Build needs package crypt. Until crypt is implemented, Build skips the test.
+// Build generates fresh identities for every fixture machine and the recovery
+// identity, writes each enclave's key log under keys/<enclave>/ (created by
+// the enclave's first member, which adds the others), seals the enclave
+// inputs into sealed/<enclave>/ and replaces the placeholders. Canary
+// plaintext exists only in memory; nothing under Root holds it.
 package fixture

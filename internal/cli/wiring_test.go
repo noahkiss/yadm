@@ -69,8 +69,9 @@ func TestContractsCompose(t *testing.T) {
 	}
 	_, err = rules.ToTarget(nil, nil, rules.Spec{}, keys)
 	ni("rules.ToTarget", err)
-	_, err = crypt.LoadIdentity(t.TempDir())
-	ni("crypt.LoadIdentity", err)
+	if _, err = crypt.LoadIdentity(t.TempDir()); err == nil || errors.Is(err, model.ErrNotImplemented) {
+		t.Errorf("crypt.LoadIdentity on an empty state dir: want a missing-file error, got %v", err)
+	}
 	_, err = runner.Run(ctx, extexec.Spec{}, extexec.Request{})
 	ni("extexec.Run", err)
 	_, err = importer.Import(ctx, importer.Options{})
@@ -91,8 +92,9 @@ func TestContractsCompose(t *testing.T) {
 	ni("apply.Scan", err)
 	_, _, err = ae.MergeSealed(ctx, &apply.Snapshot{Keys: keys}, store.Conflict{})
 	ni("apply.MergeSealed", err)
-	_, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil)
-	ni("crypt.LoadSet", err)
+	if _, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil); err != nil {
+		t.Errorf("crypt.LoadSet with no logs: %v", err)
+	}
 	_, _, err = textmerge.Merge3(nil, nil, nil)
 	ni("textmerge.Merge3", err)
 	_, err = tasks.DefinitionHash(manifest.TaskDef{})
