@@ -508,7 +508,7 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
 		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: true,
-	}, hooks.lockWait)
+	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
 		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil
 	}

@@ -20,7 +20,7 @@ var MinGitVersion = [3]int{2, 40, 0}
 // Default timeouts for one git call when the caller's context has no deadline.
 const (
 	localTimeout   = 2 * time.Minute
-	networkTimeout = 10 * time.Minute
+	networkTimeout = 3 * time.Minute
 )
 
 // secrecyArgs go before every git subcommand. Hooks of the clone never run,
@@ -99,6 +99,7 @@ func run(ctx context.Context, c call) ([]byte, error) {
 	}
 	args = append(args, c.args...)
 	cmd := exec.CommandContext(ctx, "git", args...)
+	killGroup(cmd)
 	if c.base != nil {
 		cmd.Env = append(c.base[:len(c.base):len(c.base)], c.env...)
 	} else {
