@@ -539,7 +539,7 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	cancel()
 	switch {
 	case errors.Is(err, sync.ErrLocked):
-		lines = append(lines, "yadm: a sync is running; the source may be a moment behind")
+		lines = append(lines, "yadm: another yadm process holds the sync lock; the source may be a moment behind")
 	case err != nil:
 		lines = append(lines, "yadm: sync failed: "+oneLine(err.Error()))
 	case !rep.Skipped && rep.Applied != "":

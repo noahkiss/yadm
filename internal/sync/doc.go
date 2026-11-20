@@ -52,8 +52,9 @@
 //     reviewed refs atomically under the network lock. A rejection is not
 //     an error: go back to 4 (fetch, then 5 to 7 under the sync lock again),
 //     up to MaxRetries rounds with backoff (negative: none), then leave it to
-//     the next sync. Only a push that went out records a full sync for the
-//     quick check, so unpushed commits trigger the next one. Never force.
+//     the next sync. Only a run that fetched and whose push went out records
+//     a full sync for the quick check, so unpushed commits trigger the next
+//     one. Never force.
 //     A fetched reviewed ref moves the local one only when it skips no
 //     commit of its scope; otherwise it is refused with an alert
 //     (AlertReviewedSkip). SeedReviewed seeds empty local refs at init.

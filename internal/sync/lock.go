@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -119,9 +120,13 @@ func readHolder(path string) *Holder {
 	return &h
 }
 
+// commandWord matches a subcommand or a bare flag: lower-case letters and
+// dashes, nothing that could be a path, a value or file content.
+var commandWord = regexp.MustCompile(`^-{0,2}[a-z][a-z-]*$`)
+
 // selfCommand names this process for a holder record: the binary's base
 // name and the words of its command line that are subcommands or bare
-// flags. Anything with a path separator or a value is left out.
+// flags. Paths, values and messages are left out.
 func selfCommand() string {
 	if len(os.Args) == 0 {
 		return "?"
@@ -131,10 +136,9 @@ func selfCommand() string {
 		if len(words) >= 5 {
 			break
 		}
-		if a == "" || strings.ContainsAny(a, "/\\=:~ ") || len(a) > 24 {
-			continue
+		if len(a) <= 24 && commandWord.MatchString(a) {
+			words = append(words, a)
 		}
-		words = append(words, a)
 	}
 	return strings.Join(words, " ")
 }

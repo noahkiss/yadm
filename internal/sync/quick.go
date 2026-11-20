@@ -95,11 +95,16 @@ func (s *Syncer) loadQuick() quickState {
 func (s *Syncer) quickDue(ctx context.Context, rep *Report) (string, error) {
 	now := s.now()
 	q := s.loadQuick()
+	failures, retryAt := q.NetFailures, q.NetRetryAt
 	defer func() {
-		// Keep what a full sync recorded meanwhile; this check owns only
-		// the check time and the backoff.
+		// Keep what a full sync recorded meanwhile (it may have cleared the
+		// backoff); this check writes the check time, and the backoff only
+		// when its own remote check changed it.
 		cur := s.loadQuick()
-		cur.LastCheck, cur.NetFailures, cur.NetRetryAt = now, q.NetFailures, q.NetRetryAt
+		cur.LastCheck = now
+		if q.NetFailures != failures || !q.NetRetryAt.Equal(retryAt) {
+			cur.NetFailures, cur.NetRetryAt = q.NetFailures, q.NetRetryAt
+		}
 		_ = writeJSON(s.quickPath(), cur)
 	}()
 	switch {

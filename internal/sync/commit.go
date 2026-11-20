@@ -680,9 +680,11 @@ func (s *Syncer) holdBaseline(drift []apply.Drift, cp apply.Capture) error {
 	return s.Apply.State.Save(st)
 }
 
-// ExchangeError wraps a failure after Commit's own commit step: fetch,
-// replay, apply or push. The commits in the report stand; the next sync
-// pushes them.
+// ExchangeError wraps a failure of Commit's network or exchange steps: a
+// fetch that failed before the commit (reported after it), or the replay,
+// apply or push after it, or a push left to the next sync
+// (ErrPushDeferred). The commits in the report stand; the next sync pushes
+// them.
 type ExchangeError struct{ Err error }
 
 func (e *ExchangeError) Error() string { return "after the commit: " + e.Err.Error() }

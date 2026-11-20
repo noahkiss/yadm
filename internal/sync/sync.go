@@ -576,7 +576,11 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 			if rep.Pushed && pushTip != "" && pushTip != remote {
 				s.nudge(ctx, pushTip)
 			}
-			s.recordFull(ctx, left)
+			if !f.skipped {
+				// A run that never reached the remote for its fetch does
+				// not count as a full sync, nor clear the backoff.
+				s.recordFull(ctx, left)
+			}
 			return s.finish(ctx, rep, captured, committed)
 		case errors.Is(err, ErrNetBusy):
 			rep.note("push skipped: " + err.Error())
@@ -601,7 +605,14 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 			return s.finish(ctx, rep, captured, committed)
 		}
 		if err := lk.acquire(ctx); err != nil {
-			return s.finishErr(rep, captured, committed, err)
+			if !errors.Is(err, ErrLocked) {
+				return s.finishErr(rep, captured, committed, err)
+			}
+			// Another process holds the sync lock: it replays, or the
+			// next sync does. This run's own work has landed.
+			rep.note("replay skipped: " + err.Error())
+			rep.deferred = true
+			return s.finish(ctx, rep, captured, committed)
 		}
 		s.applied = "" // other processes may have applied since
 	}

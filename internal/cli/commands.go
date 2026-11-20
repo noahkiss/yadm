@@ -334,7 +334,7 @@ func scheduleSpec() schedule.Spec {
 // lockedResult suggests a retry when err is the lock timeout.
 func lockedResult(err error) result {
 	if errors.Is(err, sync.ErrLocked) {
-		return result{next: []string{"retry in a moment: a sync is running"}}
+		return result{next: []string{"retry in a moment: another yadm process holds the sync lock"}}
 	}
 	return result{}
 }
@@ -759,6 +759,9 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	var next []string
 	if len(rep.Holds) > 0 {
 		next = []string{"yadm hold list"}
+	}
+	if rep.Network != "" {
+		next = append(next, "yadm sync") // the timer does it on its next tick
 	}
 	return result{data: rep, next: next}, attention(rep.Holds)
 }
