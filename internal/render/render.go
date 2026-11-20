@@ -164,6 +164,9 @@ func parse(name string, src []byte, v cond.Vocabulary) ([]node, error) {
 			for k < len(src) && isBlank(src[k]) {
 				k++
 			}
+			if k+1 < len(src) && src[k] == '\r' && src[k+1] == '\n' {
+				k++ // a CRLF line ending goes with the line
+			}
 			if alone && (k == len(src) || src[k] == '\n') {
 				textEnd = ls
 				if k < len(src) {

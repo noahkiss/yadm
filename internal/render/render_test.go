@@ -62,6 +62,7 @@ func TestRender(t *testing.T) {
 		{"tag at eof", "a\n{% if true %}\nb\n{% endif %}", "a\nb\n"},
 		{"untaken branch may name a missing fact", "{% if fact:proxy %}\n{{ machine.facts.proxy }}\n{% endif %}\nok\n", "ok\n"},
 		{"crlf text kept", "a\r\nb\r\n", "a\r\nb\r\n"},
+		{"crlf block line removed", "a\r\n{% if true %}\r\nb\r\n{% endif %}\r\nc\r\n", "a\r\nb\r\nc\r\n"},
 	}
 	eng := New(vocab())
 	for _, tc := range cases {
