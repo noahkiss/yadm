@@ -278,6 +278,15 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	for t := range st.Ignored {
 		ignored[t] = true
 	}
+	// A baseline walk resolves a root that is itself a symlink to a
+	// directory: the files behind it are on disk when the root is accepted,
+	// and a later adopt copies them into a real directory there.
+	start := abs
+	if all {
+		if li, err := e.fs.Lstat(abs); err == nil && li.Mode()&fs.ModeSymlink != 0 {
+			start = abs + string(filepath.Separator)
+		}
+	}
 	var (
 		mu    sync.Mutex
 		found []Drift
@@ -286,7 +295,7 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	)
 	go func() {
 		defer close(done)
-		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 			select {
 			case <-stop:
 				return filepath.SkipAll

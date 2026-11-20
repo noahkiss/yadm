@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
@@ -107,62 +109,104 @@ func within(dir, p string) bool {
 // materializeDirLinks replaces each directory link dirLinks finds with a
 // real directory holding a copy of its content, outermost first. A link
 // below one already materialized is found again inside the copy. It
-// returns the links it replaced (or would replace, with dry).
-func (e *Engine) materializeDirLinks(snap *Snapshot, dry bool) ([]model.Target, error) {
-	var done []model.Target
+// returns the links it replaced (or would replace, with dry), and the
+// regular files it copied in.
+func (e *Engine) materializeDirLinks(snap *Snapshot, dry bool) ([]model.Target, []model.Target, error) {
+	var done, files []model.Target
 	for range 8 { // nested links: each round exposes the next level
 		links := e.dirLinks(snap)
 		if len(links) == 0 {
 			break
 		}
 		if dry {
-			return append(done, links...), nil
+			return append(done, links...), files, nil
 		}
 		for _, p := range links {
-			if err := e.materializeDir(p); err != nil {
-				return done, fmt.Errorf("materialize %s: %w", p, err)
+			copied, err := e.materializeDir(p)
+			files = append(files, copied...)
+			if err != nil {
+				return done, files, fmt.Errorf("materialize %s: %w", p, err)
 			}
 			done = append(done, p)
 		}
 	}
-	return done, nil
+	return done, files, nil
+}
+
+// baselineCopies records in the baseline each copied file that no plan
+// target names and the state does not manage. Those files were on disk
+// behind the link; an owned root over them must not capture them as new.
+func (e *Engine) baselineCopies(snap *Snapshot, copied []model.Target) error {
+	if len(copied) == 0 {
+		return nil
+	}
+	st, err := e.loadState()
+	if err != nil {
+		return err
+	}
+	if st.Baseline == nil {
+		st.Baseline = map[model.Target]time.Time{}
+	}
+	now := e.Now()
+	for _, t := range copied {
+		if _, planned := snap.Plan.Targets[t]; planned {
+			continue
+		}
+		if _, managed := st.Targets[t]; managed {
+			continue
+		}
+		if _, ok := st.Baseline[t]; !ok {
+			st.Baseline[t] = now
+		}
+	}
+	return e.State.Save(st)
 }
 
 // materializeDir copies what the link at p points to into a temporary
-// sibling, then swaps it in for the link. The original directory stays.
-func (e *Engine) materializeDir(p model.Target) error {
+// sibling, then swaps it in for the link. The original directory stays. It
+// returns the regular files it copied, as targets.
+func (e *Engine) materializeDir(p model.Target) ([]model.Target, error) {
 	abs := filepath.Join(e.Home, filepath.FromSlash(string(p)))
 	from, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	info, err := os.Stat(from)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	tmp := abs + ".yadm-materialize"
 	if err := os.RemoveAll(tmp); err != nil {
-		return err
+		return nil, err
 	}
-	if err := copyTree(from, tmp, info.Mode().Perm()); err != nil {
+	var rels []string
+	if err := copyTree(from, tmp, info.Mode().Perm(), "", &rels); err != nil {
 		_ = os.RemoveAll(tmp)
-		return err
+		return nil, err
 	}
 	li, err := os.Lstat(abs)
 	if err != nil || li.Mode()&fs.ModeSymlink == 0 {
 		_ = os.RemoveAll(tmp)
-		return errors.New("no longer a symlink")
+		return nil, errors.New("no longer a symlink")
 	}
 	if err := os.Remove(abs); err != nil {
 		_ = os.RemoveAll(tmp)
-		return err
+		return nil, err
 	}
-	return os.Rename(tmp, abs)
+	if err := os.Rename(tmp, abs); err != nil {
+		return nil, err
+	}
+	out := make([]model.Target, len(rels))
+	for i, r := range rels {
+		out[i] = model.Target(string(p) + "/" + r)
+	}
+	return out, nil
 }
 
 // copyTree copies a directory: regular files with their modes, symlinks as
-// symlinks with the same text, directories recursively.
-func copyTree(from, to string, mode fs.FileMode) error {
+// symlinks with the same text, directories recursively. It appends the
+// slash path of each regular file it copied, relative to the top, to files.
+func copyTree(from, to string, mode fs.FileMode, rel string, files *[]string) error {
 	if err := os.Mkdir(to, mode|0o700); err != nil {
 		return err
 	}
@@ -186,7 +230,7 @@ func copyTree(from, to string, mode fs.FileMode) error {
 				return err
 			}
 		case info.IsDir():
-			if err := copyTree(src, dst, info.Mode().Perm()); err != nil {
+			if err := copyTree(src, dst, info.Mode().Perm(), path.Join(rel, de.Name()), files); err != nil {
 				return err
 			}
 		case info.Mode().IsRegular():
@@ -197,6 +241,7 @@ func copyTree(from, to string, mode fs.FileMode) error {
 			if err := os.WriteFile(dst, b, info.Mode().Perm()); err != nil {
 				return err
 			}
+			*files = append(*files, path.Join(rel, de.Name()))
 		}
 	}
 	return os.Chmod(to, mode)

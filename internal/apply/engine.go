@@ -760,7 +760,10 @@ func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOption
 	if err != nil {
 		return Result{}, err
 	}
-	links, err := e.materializeDirLinks(snap, opts.DryRun)
+	links, copied, err := e.materializeDirLinks(snap, opts.DryRun)
+	if berr := e.baselineCopies(snap, copied); err == nil {
+		err = berr
+	}
 	if err != nil {
 		return Result{}, err
 	}
