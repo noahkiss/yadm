@@ -61,6 +61,7 @@
 //	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
+//	func ExpandRoots(man, plan, tree); const RootIndex // owned roots share their entry-less source files; Load calls it
 //	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
 //	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
 //	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write

@@ -531,7 +531,7 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		return out, nil
 	}
 	if in.tip != local {
-		if err := s.setMain(ctx, in.tip, local); err != nil {
+		if out.dirty, err = s.setMain(ctx, in.tip, local); err != nil || out.dirty {
 			return out, err
 		}
 	}
@@ -544,14 +544,31 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 // clone of a remote that was empty), the worktree moves to tip first: the
 // store measures local edits against HEAD, and once main exists HEAD names
 // it, so an empty index would read as every file staged for deletion. A
-// worktree that does not move here is left to moveAndApply, which holds it.
-func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) error {
+// worktree with local edits stops the sync with a source_dirty hold and
+// main stays unborn.
+func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) (dirty bool, err error) {
 	if old == "" {
-		if err := s.Store.SyncWorktree(ctx, tip); err != nil && !errors.Is(err, store.ErrDirty) {
-			return err
+		if err := s.Store.SyncWorktree(ctx, tip); err != nil {
+			if !errors.Is(err, store.ErrDirty) {
+				return false, err
+			}
+			return true, s.holdDirty(err)
 		}
 	}
-	return s.Store.UpdateRef(ctx, store.RefMain, tip, old)
+	return false, s.Store.UpdateRef(ctx, store.RefMain, tip, old)
+}
+
+// holdDirty records the source_dirty hold for a worktree that did not move.
+func (s *Syncer) holdDirty(cause error) error {
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
+		Detail: "the source clone has local edits: " + cause.Error()}, s.now())
+	h.Next = []string{"yadm git status", "yadm git restore ."}
+	putHold(st, h)
+	return s.Apply.State.Save(st)
 }
 
 // moveAndApply moves the source worktree to tip and applies it. A worktree
@@ -561,15 +578,7 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 		if !errors.Is(err, store.ErrDirty) {
 			return false, err
 		}
-		st, lerr := s.Apply.State.Load()
-		if lerr != nil {
-			return false, lerr
-		}
-		h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
-			Detail: "the source clone has local edits: " + err.Error()}, s.now())
-		h.Next = []string{"yadm git status", "yadm git restore ."}
-		putHold(st, h)
-		return true, s.Apply.State.Save(st)
+		return true, s.holdDirty(err)
 	}
 	if err := s.clearSourceDirty(); err != nil {
 		return false, err

@@ -92,7 +92,11 @@ func (a *app) cmdWhy(cmd *cobra.Command, args []string) (result, error) {
 	}
 	text := fmt.Sprintf("%s: managed=%v protected=%v", t, ex.Managed, ex.Protected)
 	if ex.Resolved != nil {
-		text += fmt.Sprintf(" source=%s entry=#%d", ex.Resolved.Source, ex.Resolved.Index)
+		if ex.Resolved.Index == apply.RootIndex {
+			text += fmt.Sprintf(" source=%s owned root", ex.Resolved.Source)
+		} else {
+			text += fmt.Sprintf(" source=%s entry=#%d", ex.Resolved.Source, ex.Resolved.Index)
+		}
 		if ex.WhenExpanded != "" {
 			text += fmt.Sprintf("\n  when %s = %s", ex.Resolved.Entry.When, ex.WhenExpanded)
 		}

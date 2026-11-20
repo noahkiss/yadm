@@ -306,7 +306,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	if tip == head {
 		return out, nil
 	}
-	if err := s.setMain(ctx, tip, head); err != nil {
+	if out.dirty, err = s.setMain(ctx, tip, head); err != nil || out.dirty {
 		return out, err
 	}
 	dirty, err := s.moveAndApply(ctx, rep, tip)
