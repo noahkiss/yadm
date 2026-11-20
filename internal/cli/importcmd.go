@@ -174,7 +174,7 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 				return result{data: d}, err
 			}
 			if old != nil && *old != pin {
-				next = append(next, fmt.Sprintf("this machine already pins another %s key log; after switching to the new repository: yadm enclave join %s --expect %s", e, e, fps[e]))
+				next = append(next, fmt.Sprintf("this machine already pins another %s key log; after switching to the new repository: yadm enclave join %s --expect %s", e, model.ShellQuote(string(e)), model.ShellQuote(fps[e])))
 				continue
 			}
 			if err := pins.Set(e, pin); err != nil {

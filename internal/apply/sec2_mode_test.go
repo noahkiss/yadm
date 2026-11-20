@@ -73,4 +73,13 @@ func TestSec2EnclaveModeWidenedAgainstState(t *testing.T) {
 	if info, _ := os.Stat(w.path(".netrc")); info.Mode().Perm() != 0o644 {
 		t.Fatalf("default mode %v", info.Mode().Perm())
 	}
+	// A source that gains the executable bit still sets the default mode.
+	c := w.commit(files, manifest.Entry{Target: ".netrc", Enclave: "personal"})
+	w.setMode(c, "sealed/personal/.netrc", gitModeExec)
+	if a := actionOf(w.apply(c), ".netrc"); a.Kind == ActHold {
+		t.Fatalf("default mode change held: %+v", a)
+	}
+	if info, _ := os.Stat(w.path(".netrc")); info.Mode().Perm() != 0o755 {
+		t.Fatalf("default mode after exec bit %v", info.Mode().Perm())
+	}
 }

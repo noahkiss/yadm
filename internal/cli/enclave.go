@@ -317,7 +317,7 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
-	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --expect %s", who, e, d.Fingerprint)}
+	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --expect %s", who, model.ShellQuote(string(e)), model.ShellQuote(d.Fingerprint))}
 	return result{data: d, next: next, text: "fingerprint " + d.Fingerprint}, err
 }
 

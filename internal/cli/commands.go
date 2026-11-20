@@ -276,7 +276,7 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 		next = append(next, fmt.Sprintf("add [machines.%s] with name = %q, types, os and arch to %s, then commit it", d.Machine, name, fleet.FileName))
 	}
 	if fl != nil && len(fl.Enclaves()) > 0 {
-		next = append(next, fmt.Sprintf("on a member machine: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s", d.Machine, d.Recipient, d.SignKey),
+		next = append(next, fmt.Sprintf("on a member machine: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s", model.ShellQuote(string(d.Machine)), model.ShellQuote(d.Recipient), model.ShellQuote(d.SignKey)),
 			"then here: yadm enclave join <enclave> --expect <fingerprint>")
 	}
 	next = append(next, "yadm adopt --dry-run", "yadm apply")

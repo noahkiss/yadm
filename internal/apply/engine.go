@@ -265,16 +265,16 @@ func hasPlaintext(en manifest.Entry) bool {
 	return en.Enclave != "" || len(en.Seal) > 0 || en.Regions
 }
 
-// modeWidenedSince reports, for a target with enclave plaintext that this
-// machine wrote before, a mode that grants a permission bit the mode
-// recorded at the last apply lacks: a pusher who drops an owner's explicit
-// `mode = 0o600`, or sets a wider one. It holds until allowed here
-// (`yadm protection allow`).
+// modeWidenedSince reports, for a target with enclave plaintext whose last
+// apply used an explicit `mode`, a mode that grants a permission bit that
+// explicit mode lacks: a pusher who drops an owner's `mode = 0o600`, or sets
+// a wider one. It holds until allowed here (`yadm protection allow`). A
+// mode that followed the source still follows it.
 func (e *Engine) modeWidenedSince(snap *Snapshot, r manifest.Resolved, ts TargetState, have bool) (string, bool) {
-	if !have || ts.Mode == 0 || !hasPlaintext(r.Entry) {
+	if !have || ts.ExplicitMode == 0 || !hasPlaintext(r.Entry) {
 		return "", false
 	}
-	want, was := modeOf(snap, r), fs.FileMode(ts.Mode).Perm()
+	want, was := modeOf(snap, r), fs.FileMode(ts.ExplicitMode).Perm()
 	if want&^was == 0 || e.allowed(KindMode, string(r.Target), modeHash(r.Target, want)) {
 		return "", false
 	}
@@ -1036,6 +1036,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 	}
 	ts.Enclave, ts.Seal, ts.Regions = prot.Enclave, prot.Seal, prot.Regions
 	ts.Keep, ts.Drop, ts.Volatile = prot.Keep, prot.Drop, prot.Volatile
+	ts.ExplicitMode = uint32(s.d.res.Entry.Mode.Perm())
 	for k := range prot.Seal {
 		ts.SealSet = append(ts.SealSet, k)
 	}
