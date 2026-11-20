@@ -72,6 +72,8 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 			continue
 		case leased(leases, t, now):
 			continue
+		case p.MergeFor != nil && (p.MergeFor(t) == MergeGenerated || p.MergeFor(t) == MergeRegenerate):
+			continue // generated files are never auto-committed
 		}
 		q := p.Quiet
 		if p.QuietFor != nil {

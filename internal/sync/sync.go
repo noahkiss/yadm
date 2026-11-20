@@ -90,6 +90,7 @@ type Policy struct {
 	Protect     func(model.Target) bool                  // manifest `protected` globs and `review = true`
 	LastChange  func(model.Target) time.Time             // the target's last change (its mtime)
 	MergeFor    func(model.Target) MergePolicy           // per-file merge policy; "" means MergeText
+	VolatileFor func(model.Target) []string              // key paths resolved locally, never merged from the remote
 	PreExisting func(model.Target) bool                  // a new file that predates its owned root; never auto-commits
 }
 

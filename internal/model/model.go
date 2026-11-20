@@ -195,10 +195,10 @@ type Status struct {
 	Conflicts  int                     `json:"conflicts"`
 	OldestHeld *time.Time              `json:"oldest_held,omitempty"`
 	Epochs     map[EnclaveName]Epoch   `json:"epochs,omitempty"`
-	Observed   map[string]ObservedFact `json:"observed,omitempty"` // only collectors with publish = "plain"
-	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`   // sealed observed facts, per enclave
-	Tasks      []TaskResult            `json:"tasks,omitempty"`    // last result per task
-	Alerts     []Alert                 `json:"alerts,omitempty"`   // recent sync alerts, newest last
+	Observed   map[string]ObservedFact `json:"observed,omitempty"`  // only collectors with publish = "plain"
+	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`    // sealed observed facts, per enclave
+	Tasks      []TaskResult            `json:"tasks,omitempty"`     // last result per task
+	Alerts     []Alert                 `json:"alerts,omitempty"`    // recent sync alerts, newest last
 	KeyHeads   map[EnclaveName]KeyHead `json:"key_heads,omitempty"` // the key-log head this machine has pinned, per enclave
 }
 

@@ -19,14 +19,20 @@ import (
 // is not wanted. It is read per target through Policy.MergeFor.
 type MergePolicy string
 
-// Merge policies.
+// Merge policies. The manifest is expected to set them per entry (contract
+// request: manifest.Entry.Merge and Entry.Volatile); Policy.MergeFor and
+// Policy.VolatileFor read them.
 const (
-	MergeText       MergePolicy = "text"       // default: structural merge for json/jsonc/toml, else a line merge
-	MergeStructural MergePolicy = "structural" // key-level merge only; a failure holds
-	MergeUnion      MergePolicy = "union"      // line-set files: keep the lines either side added, drop lines either side removed
+	MergeText       MergePolicy = "text"       // default: key-level merge for json, jsonc and toml, else a line merge
+	MergeStructural MergePolicy = "structural" // key-level merge in the target's format only; a failure holds
+	MergeJSONKeys   MergePolicy = "json-keys"  // key-level merge as JSON (JSONC accepted); a failure holds
+	MergeTOMLKeys   MergePolicy = "toml-keys"  // key-level merge as TOML; a failure holds
+	MergeUnion      MergePolicy = "union"      // line-set files: keep lines either side added, drop lines either side removed, dedupe
+	MergeAddOnly    MergePolicy = "add-only"   // lines are only ever added: union of additions; any modify or delete holds
 	MergeTheirs     MergePolicy = "theirs"     // take the remote side (app-churn files)
 	MergeOurs       MergePolicy = "ours"       // take this machine's side
-	MergeRegenerate MergePolicy = "regenerate" // take the remote side; the app or a task rewrites the file
+	MergeGenerated  MergePolicy = "generated"  // a tool writes it: never auto-committed; conflicts take the remote side
+	MergeRegenerate MergePolicy = "regenerate" // older name of MergeGenerated
 )
 
 // Rungs of the resolution ladder, recorded in the Yadm-Resolved trailer.
@@ -35,9 +41,10 @@ const (
 	RungStructural = "structural" // key-level merge of json, jsonc or toml
 	RungText       = "text"       // in-process line merge
 	RungUnion      = "union"
+	RungAddOnly    = "add-only"
 	RungTheirs     = "theirs"
 	RungOurs       = "ours"
-	RungRegenerate = "regenerate"
+	RungGenerated  = "generated"
 	RungHold       = "hold" // no rung resolved it; an agent or the user resolves the hold
 )
 
@@ -45,17 +52,19 @@ const (
 const TrailerResolved = "Yadm-Resolved"
 
 // Structural merges a structured file key by key: edits to different keys
-// never conflict. ok is false when it cannot decide (unsupported format,
-// a parse failure, or both sides changed one key differently).
+// never conflict. Volatile key paths are machine-local: the merge keeps this
+// machine's (ours) value for them. ok is false when it cannot decide
+// (unsupported format, a parse failure, or both sides changed one key
+// differently).
 type Structural interface {
-	Merge3(format string, base, ours, theirs []byte) (merged []byte, ok bool, err error)
+	Merge3(format string, volatile []string, base, ours, theirs []byte) (merged []byte, ok bool, err error)
 }
 
 // noStructural is the default Structural: it decides nothing, so the ladder
 // falls through to the per-file policy.
 type noStructural struct{}
 
-func (noStructural) Merge3(string, []byte, []byte, []byte) ([]byte, bool, error) {
+func (noStructural) Merge3(string, []string, []byte, []byte, []byte) ([]byte, bool, error) {
 	return nil, false, nil
 }
 
@@ -228,8 +237,8 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 		return out(ours, c.Ours == "", RungOurs)
 	case MergeTheirs:
 		return out(theirs, c.Theirs == "", RungTheirs)
-	case MergeRegenerate:
-		return out(theirs, c.Theirs == "", RungRegenerate)
+	case MergeGenerated, MergeRegenerate:
+		return out(theirs, c.Theirs == "", RungGenerated)
 	}
 	if c.Ours == "" || c.Theirs == "" {
 		return hold("one side deleted the file and the other changed it")
@@ -237,23 +246,42 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 	if textmerge.IsBinary(base) || textmerge.IsBinary(ours) || textmerge.IsBinary(theirs) {
 		return hold("binary file changed on both sides")
 	}
-	if format != "" && (pol == MergeText || pol == MergeStructural) {
+	switch pol {
+	case MergeJSONKeys:
+		format = "json"
+	case MergeTOMLKeys:
+		format = "toml"
+	}
+	keyed := pol == MergeStructural || pol == MergeJSONKeys || pol == MergeTOMLKeys
+	if format != "" && (pol == MergeText || keyed) {
 		st := r.s.Structural
 		if st == nil {
 			st = noStructural{}
 		}
-		merged, ok, err := st.Merge3(format, base, ours, theirs)
+		var volatile []string
+		if r.s.Policy.VolatileFor != nil {
+			volatile = r.s.Policy.VolatileFor(t)
+		}
+		merged, ok, err := st.Merge3(format, volatile, base, ours, theirs)
 		if err == nil && ok {
 			return out(merged, false, RungStructural)
 		}
-		if pol == MergeStructural {
-			return hold("structural " + format + " merge could not resolve the file")
+		if keyed {
+			return hold("key-level " + format + " merge could not resolve the file")
 		}
+	} else if keyed {
+		return hold("key-level merge needs a json, jsonc or toml file")
 	}
 	switch pol {
 	case MergeUnion:
 		return out(unionLines(base, ours, theirs), false, RungUnion)
-	case MergeText, MergeStructural:
+	case MergeAddOnly:
+		merged, ok := addOnly(base, ours, theirs)
+		if !ok {
+			return hold("add-only file: a line was changed or removed on one side")
+		}
+		return out(merged, false, RungAddOnly)
+	case MergeText:
 		merged, regions, err := textmerge.Merge3(base, ours, theirs)
 		if errors.Is(err, textmerge.ErrBinary) {
 			return hold("binary file changed on both sides")
@@ -317,4 +345,48 @@ func unionLines(base, ours, theirs []byte) []byte {
 	buf.WriteString(strings.Join(out, "\n"))
 	buf.WriteByte('\n')
 	return buf.Bytes()
+}
+
+// addOnly merges files whose lines are only ever added: both sides must keep
+// every base line in order. The result is base, then lines ours added, then
+// lines theirs added that ours lacks.
+func addOnly(base, ours, theirs []byte) ([]byte, bool) {
+	split := func(b []byte) []string {
+		s := strings.TrimSuffix(string(b), "\n")
+		if s == "" {
+			return nil
+		}
+		return strings.Split(s, "\n")
+	}
+	b, o, th := split(base), split(ours), split(theirs)
+	added := func(side []string) ([]string, bool) {
+		i := 0
+		var extra []string
+		for _, l := range side {
+			if i < len(b) && l == b[i] {
+				i++
+				continue
+			}
+			extra = append(extra, l)
+		}
+		return extra, i == len(b)
+	}
+	oa, ok1 := added(o)
+	ta, ok2 := added(th)
+	if !ok1 || !ok2 {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range append(append(append([]string(nil), b...), oa...), ta...) {
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	if len(out) == 0 {
+		return []byte{}, true
+	}
+	return []byte(strings.Join(out, "\n") + "\n"), true
 }
