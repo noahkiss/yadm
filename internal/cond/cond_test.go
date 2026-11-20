@@ -11,7 +11,7 @@ import (
 func vocab() Vocabulary {
 	return Vocabulary{
 		Types:      map[string]bool{"personal": true, "work": true, "client": true},
-		FactKeys:   map[string]bool{"editor": true, "proxy": true, "shell": true},
+		FactKeys:   map[string]bool{"editor": true, "proxy": true, "shell": true, "hostname": true},
 		Collectors: map[string]bool{"packages": true},
 	}
 }
@@ -21,7 +21,7 @@ func hostA() model.Context {
 		Machine: model.Machine{
 			ID: "m-a", Name: "host-a", Nicknames: []string{"laptop-a"},
 			Types: []model.TypeName{"personal"}, OS: "darwin", Arch: "arm64",
-			Facts: map[string]string{"editor": "editor-one", "shell": "zsh"},
+			Facts: map[string]string{"editor": "editor-one", "shell": "zsh", "hostname": "Host-A.example-lan"},
 		},
 		Observed: map[string]model.ObservedFact{"packages": {Collector: "packages", Items: []string{"tool-one", "tool-two"}}},
 	}
@@ -54,7 +54,13 @@ func TestEval(t *testing.T) {
 		{"fact:editor=editor-one", true, true},
 		{"fact:shell=bash", false, false},
 		{"fact:proxy=proxy.example.invalid:3128", false, true},
+		{"fact:hostname=Host-A.example-lan", true, false},
+		{"fact:hostname=host-a.example-lan", true, false}, // case-insensitive
+		{"fact:hostname=HOST-A.EXAMPLE-LAN&type:personal", true, false},
+		{"fact:hostname=host-a", false, false},
+		{"fact:shell=ZSH", true, false},
 		{"observed:packages=tool-one", true, false},
+		{"observed:packages=TOOL-ONE", false, false}, // items compare exactly
 		{"observed:packages=tool-three", false, false},
 		{"!type:work", true, false},
 		{"!!type:work", false, true},

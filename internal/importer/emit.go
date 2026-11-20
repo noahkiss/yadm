@@ -7,8 +7,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/pelletier/go-toml/v2"
-
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
@@ -106,8 +104,8 @@ func encodeManifest(entries []manifest.Entry) ([]byte, error) {
 		return nil, w.err
 	}
 	out := []byte(w.b.String())
-	var back manifest.Manifest
-	if err := toml.Unmarshal(out, &back); err != nil {
+	back, err := manifest.Parse(out)
+	if err != nil {
 		return nil, fmt.Errorf("generated manifest does not parse: %w", err)
 	}
 	if len(back.Entries) != len(entries) {
@@ -190,8 +188,8 @@ func encodeFleet(f *fleet.File) ([]byte, error) {
 		return nil, w.err
 	}
 	out := []byte(w.b.String())
-	var back fleet.File
-	if err := toml.Unmarshal(out, &back); err != nil {
+	back, err := fleet.Parse(out)
+	if err != nil {
 		return nil, fmt.Errorf("generated fleet does not parse: %w", err)
 	}
 	if len(back.Machines) != len(f.Machines) || len(back.Types) != len(f.Types) {

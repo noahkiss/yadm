@@ -182,10 +182,10 @@ func TestImportEndToEnd(t *testing.T) {
 	cases := map[string]map[string]want{
 		"host-a": {
 			".gitconfig":                 {"os-keychain", 0o644},
-			".config/notes/private.md":   {lf.Canary.String(), 0o600},
-			".config/notes/latest":       {lf.Canary.String(), 0o600},
-			".config/notes/run.sh":       {lf.Canary.String(), 0o700},
-			".config/notes/combined":     {"head\n# Private notes\nMarker: " + lf.Canary.String(), 0o600},
+			".config/notes/private.md":   {lf.Canary.String(), 0o644}, // sealed files keep the source mode
+			".config/notes/latest":       {lf.Canary.String(), 0o644},
+			".config/notes/run.sh":       {lf.Canary.String(), 0o755},
+			".config/notes/combined":     {"head\n# Private notes\nMarker: " + lf.Canary.String(), 0o644},
 			".config/tool/config.toml":   {"", 0},
 			".config/shell/proxy.conf":   {"proxy = laptop-a.example.invalid\n", 0o644},
 			"bin/hi":                     {"echo hello", 0o755},
@@ -211,7 +211,7 @@ func TestImportEndToEnd(t *testing.T) {
 	for name, targets := range cases {
 		m := fleetMachine(t, conv, name)
 		member := func(e model.EnclaveName) bool { return m.HasType(model.TypeName(e)) }
-		got, probs, err := refResolve(conv, sealer, model.Context{Machine: m, Home: "HOMEDIR", User: "test"}, member)
+		got, probs, err := resolveFor(conv, sealer, model.Context{Machine: m, Home: "HOMEDIR", User: "test"}, nil, member)
 		if err != nil || len(probs) > 0 {
 			t.Fatalf("%s: %v %v", name, err, probs)
 		}

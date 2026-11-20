@@ -514,7 +514,9 @@ func TestFileMode(t *testing.T) {
 	}{
 		{Entry{}, false, 0o644},
 		{Entry{}, true, 0o755},
-		{Entry{Enclave: "personal"}, true, 0o600},
+		{Entry{Enclave: "personal"}, true, 0o755},
+		{Entry{Enclave: "personal"}, false, 0o644},
+		{Entry{Mode: 0o600, Enclave: "personal"}, false, 0o600},
 		{Entry{Mode: 0o640}, true, 0o640},
 		{Entry{Mode: 0o700, Enclave: "personal"}, false, 0o700},
 	}

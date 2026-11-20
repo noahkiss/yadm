@@ -91,8 +91,30 @@ type ifNode struct {
 	at       pos
 }
 
-// literals are the only strings {{ "..." }} may hold: the delimiters themselves.
-var literals = map[string]bool{"{{": true, "}}": true, "{%": true, "%}": true, "{#": true, "#}": true}
+// literals are the only strings {{ "..." }} may hold: the delimiters
+// themselves, and a lone "{" for a brace that directly precedes a tag.
+var literals = map[string]bool{"{{": true, "}}": true, "{%": true, "%}": true, "{#": true, "#}": true, "{": true}
+
+// Escape returns s written so that it renders as itself: each tag opener
+// ({{, {% and {#) becomes {{ "{{" }}, {{ "{%" }} or {{ "{#" }}. Openers are
+// matched left to right, so "{{{" escapes its first two braces. A "{" that
+// ends s stays as is: when a tag follows it in the template, write it as
+// {{ "{" }} instead, or the two would read as one opener.
+func Escape(s string) string {
+	if !strings.Contains(s, "{") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '{' && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '%' || s[i+1] == '#') {
+			b.WriteString(`{{ "` + s[i:i+2] + `" }}`)
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
 
 type parser struct {
 	name string
@@ -321,7 +343,7 @@ func (p *parser) variable(body string, off int) (node, error) {
 	case strings.HasPrefix(s, `"`):
 		lit, ok := strings.CutSuffix(s[1:], `"`)
 		if !ok || !literals[lit] {
-			return nil, p.errAt(off+lead, "a string may only be one of the delimiters, such as \"{{\"")
+			return nil, p.errAt(off+lead, "a string may only be a delimiter, such as \"{{\", or \"{\"")
 		}
 		n.kind, n.arg = varLiteral, lit
 	case s == "home":

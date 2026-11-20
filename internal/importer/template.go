@@ -5,6 +5,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/noahkiss/yadm/internal/render"
 )
 
 // Upstream's built-in template processor recognises only these whole-line
@@ -141,27 +143,26 @@ func (c *tmplConv) line(name string, n int, line string) {
 	var b strings.Builder
 	last := 0
 	for _, loc := range reVar.FindAllStringSubmatchIndex(line, -1) {
-		c.literal(name, n, line[last:loc[0]], &b)
 		ref, ok := c.reference(name, n, line[loc[2]:loc[3]])
+		literal(line[last:loc[0]], ok, &b)
 		if ok {
 			b.WriteString(ref)
 		}
 		last = loc[1]
 	}
-	c.literal(name, n, line[last:], &b)
+	literal(line[last:], false, &b)
 	c.out.WriteString(b.String() + "\n")
 }
 
-// literal copies text that upstream prints as is. The new syntax has no
-// escape, so text that would open a tag cannot be converted.
-func (c *tmplConv) literal(name string, n int, s string, b *strings.Builder) {
-	for _, open := range []string{"{{", "{%", "{#"} {
-		if strings.Contains(s, open) {
-			c.problem(name, n, fmt.Sprintf("literal %q has no escape in the new template syntax", open))
-			return
-		}
+// literal copies text that upstream prints as is, escaping every tag opener
+// with render.Escape. When a tag follows, a trailing "{" is escaped too, or
+// it would join the tag's own "{{".
+func literal(s string, tagFollows bool, b *strings.Builder) {
+	e := render.Escape(s)
+	if tagFollows && strings.HasSuffix(e, "{") {
+		e = e[:len(e)-1] + `{{ "{" }}`
 	}
-	b.WriteString(s)
+	b.WriteString(e)
 }
 
 // reference maps one upstream variable to a section 5.2 reference.

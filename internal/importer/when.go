@@ -1,9 +1,49 @@
 package importer
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/noahkiss/yadm/internal/fleet"
+	"github.com/noahkiss/yadm/internal/manifest"
+	"github.com/noahkiss/yadm/internal/model"
 )
+
+// checkExclusive checks the generated manifest against the generated fleet:
+// every condition names only declared types and facts, and no fleet machine
+// gets two entries for one target. The manifest has no precedence, so any
+// overlap would be a collision on that machine.
+func checkExclusive(man []byte, fl *fleet.File) []Problem {
+	m, err := manifest.Parse(man)
+	if err != nil {
+		return []Problem{{Path: manifest.FileName, Reason: err.Error()}}
+	}
+	voc := fl.Vocabulary()
+	if err := m.Validate(voc); err != nil {
+		return []Problem{{Path: manifest.FileName, Reason: err.Error()}}
+	}
+	var ms []model.Machine
+	for _, mc := range fl.Machines {
+		ms = append(ms, mc)
+	}
+	sort.Slice(ms, func(i, j int) bool { return ms[i].Name < ms[j].Name })
+	var out []Problem
+	for _, mc := range ms {
+		_, err := m.Resolve(model.Context{Machine: mc}, nil, voc)
+		var ce *manifest.CollisionError
+		switch {
+		case errors.As(err, &ce):
+			for _, c := range ce.Collisions {
+				out = append(out, Problem{Path: string(c.Target), Reason: fmt.Sprintf("conditions overlap on machine %s", mc.Name)})
+			}
+		case err != nil:
+			out = append(out, Problem{Path: manifest.FileName, Reason: fmt.Sprintf("machine %s: %v", mc.Name, err)})
+		}
+	}
+	return out
+}
 
 // atom is one positive condition term in the new condition language:
 // type:X, os:X, arch:X or fact:K=V.

@@ -12,8 +12,11 @@
 //	       | "true" | "false"
 //
 // `machine:` matches a machine name or nickname. `fact:k` is true when the
-// machine declares k; `fact:k=v` compares the declared value. `observed:c=i`
-// is true when collector c reported item i on this machine.
+// machine declares k; `fact:k=v` compares the declared value without regard
+// to case, so `fact:hostname=Host-A.example` matches `host-a.example`. A
+// VALUE is any run of characters other than blanks and `!&|()`, so it may
+// hold `.`, `-` and `=`. `observed:c=i` is true when collector c reported
+// item i on this machine; items compare exactly.
 //
 // Parsing is strict. Parse checks every type, fact key and collector name
 // against a Vocabulary built from the fleet file, so a typo fails at load time
