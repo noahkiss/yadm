@@ -33,6 +33,7 @@ func TestContractsCompose(t *testing.T) {
 			t.Errorf("%s: want ErrNotImplemented, got %v", name, err)
 		}
 	}
+	_ = ni // every stub this test covered is implemented now
 
 	var (
 		repo     *store.Repo
@@ -110,8 +111,11 @@ func TestContractsCompose(t *testing.T) {
 
 	s := &sync.Syncer{Deps: sync.Deps{Store: st, Apply: ae, Fleet: fl, Status: statusDB, Keys: keys, Exec: runner, Gate: gate,
 		Lock: sync.FileLock(stateDir), Leases: sync.FileLeases(stateDir)}}
-	_, err = s.Run(ctx, sync.Options{})
-	ni("sync.Run", err)
+	// sync is implemented: an unwired Syncer (no machine identity) refuses
+	// to run instead of touching the nil store.
+	if _, err = s.Run(ctx, sync.Options{}); err == nil || errors.Is(err, model.ErrNotImplemented) {
+		t.Errorf("sync.Run without an identity: want a wiring error, got %v", err)
+	}
 
 	pass, holds, _ := gate.Check(ctx, []tasks.Staged{{Target: ".x", Scope: model.ScopeShared}}, extexec.Request{})
 	if len(pass) != 0 || len(holds) != 1 || holds[0].Reason != model.HoldCheckFailed {

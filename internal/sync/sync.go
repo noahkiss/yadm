@@ -149,15 +149,7 @@ func (s *Syncer) now() time.Time {
 	return time.Now()
 }
 
-func (s *Syncer) self() model.MachineID {
-	if s.Identity.Machine != "" {
-		return s.Identity.Machine
-	}
-	if s.Apply != nil {
-		return s.Apply.Self
-	}
-	return ""
-}
+func (s *Syncer) self() model.MachineID { return s.Identity.Machine }
 
 // check refuses a Syncer that is not wired.
 func (s *Syncer) check() error {
@@ -168,6 +160,8 @@ func (s *Syncer) check() error {
 		return errors.New("sync: no apply engine")
 	case s.self() == "":
 		return errors.New("sync: no machine identity")
+	case s.Apply.Self != "" && s.Apply.Self != s.self():
+		return fmt.Errorf("sync: identity %s and apply engine %s disagree", s.self(), s.Apply.Self)
 	case s.Lock == nil:
 		return errors.New("sync: no lock")
 	}
