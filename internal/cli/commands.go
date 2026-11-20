@@ -498,7 +498,12 @@ func (a *app) cmdApply(cmd *cobra.Command, args []string) (result, error) {
 	if dry {
 		err = run()
 	} else {
-		err = m.locked(ctx, run)
+		err = m.locked(ctx, func() error {
+			if _, err := m.reload(ctx); err != nil {
+				return err
+			}
+			return run()
+		})
 	}
 	if err != nil {
 		return lockedResult(err), err
@@ -919,6 +924,9 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 	var res apply.Result
 	fetched := false
 	if err := m.locked(ctx, func() error {
+		if _, err := m.reload(ctx); err != nil {
+			return err
+		}
 		rev := m.allowRev(ctx)
 		fetched = rev != m.snap.Commit
 		if err := allow(m, rev, t); err != nil {

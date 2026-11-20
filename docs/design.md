@@ -484,7 +484,7 @@ A **decision packet** says what happened, the diff size (line counts, never cont
 
 ## 10. Sync
 
-`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout. Apply, capture, collect, hold resolve, retag and enclave writes take the same lock, and every commit goes through `sync.Commit`.
+`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout. Apply, capture, collect, hold resolve, retag, enclave writes and the local allows (`task allow`, `root allow`, `protection allow`) take the same lock, and every commit goes through `sync.Commit`. A command that waited for the lock reads `main` again once it holds it, since the sync it waited for may have moved it.
 
 A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them.
 

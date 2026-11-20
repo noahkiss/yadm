@@ -224,6 +224,13 @@ func (m *machineEnv) load(ctx context.Context) (*apply.Snapshot, error) {
 	return s, nil
 }
 
+// reload reads the snapshot at local main again. A writer calls it once it
+// holds the lock: a sync it waited for may have moved main.
+func (m *machineEnv) reload(ctx context.Context) (*apply.Snapshot, error) {
+	m.snap = nil
+	return m.load(ctx)
+}
+
 // request is the shared exec-contract context for this machine.
 func (m *machineEnv) request(kind extexec.Kind, name string, asJSON bool) extexec.Request {
 	req := extexec.Request{Schema: extexec.Schema, Kind: kind, Name: name, Home: m.home, Source: m.paths.Source, JSON: asJSON}
