@@ -242,7 +242,9 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 	for _, r := range snap.Plan.Roots {
 		o, had := old[r.Path]
 		if had && o.Enclave == r.Enclave {
-			roots = append(roots, o)
+			// The allow covers path and enclave; `when` and the ignore
+			// globs only narrow what is captured, so they follow the plan.
+			roots = append(roots, r)
 			continue
 		}
 		if !e.allowed(KindRoot, string(r.Path), rootHash(r)) {

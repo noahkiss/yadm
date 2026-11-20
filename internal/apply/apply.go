@@ -68,6 +68,10 @@ type State struct {
 	// or stayed on disk when they left management. They are never reported
 	// as new or captured automatically.
 	Baseline map[model.Target]time.Time `json:"baseline,omitempty"`
+	// Ignored lists unmanaged files the user left untracked on purpose
+	// (`yadm hold ignore`). Scan never reports them; naming one in a
+	// commit tracks it and drops it from this list.
+	Ignored map[model.Target]time.Time `json:"ignored,omitempty"`
 }
 
 // StateDB loads and saves State atomically.

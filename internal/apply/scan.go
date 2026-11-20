@@ -258,6 +258,11 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	for t := range st.Baseline {
 		baseline[t] = true
 	}
+	// Ignored files (hold ignore, or the root's ignore globs) are never new.
+	ignored := make(map[model.Target]bool, len(st.Ignored))
+	for t := range st.Ignored {
+		ignored[t] = true
+	}
 	var (
 		mu    sync.Mutex
 		found []Drift
@@ -283,7 +288,7 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 				return nil
 			}
 			t := model.Target(filepath.ToSlash(rel))
-			if managed[t] {
+			if managed[t] || ignored[t] || root.Ignored(t) {
 				return nil
 			}
 			mu.Lock()

@@ -823,6 +823,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 	st.Targets[s.Target] = ts
 	delete(st.Seen, s.Target)
 	delete(st.Baseline, s.Target)
+	delete(st.Ignored, s.Target)
 	clearFileHolds(st, s.Target)
 	return nil
 }
