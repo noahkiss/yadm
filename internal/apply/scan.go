@@ -69,6 +69,9 @@ func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
 		out = append(out, d.Drift)
 	}
 
+	if len(opts.Paths) > 0 {
+		out = append(out, e.scanNamedNew(st, opts.Paths, now)...)
+	}
 	if len(opts.Paths) == 0 {
 		news, ok := e.scanRoots(ctx, st, deadline)
 		if !ok {
@@ -167,6 +170,40 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 	return d, false, nil
 }
 
+// scanNamedNew reports each named path that is an unmanaged regular file
+// inside an accepted owned root, baseline files included, as DriftNew with
+// Named set. A walk of the roots does not run when paths are named.
+func (e *Engine) scanNamedNew(st *State, paths []model.Target, now time.Time) []Drift {
+	var out []Drift
+	for _, t := range paths {
+		if _, managed := st.Targets[t]; managed {
+			continue
+		}
+		root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t)
+		if !ok {
+			continue
+		}
+		abs, err := e.abs(t)
+		if err != nil {
+			continue
+		}
+		info, err := e.fs.Lstat(abs)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		scope := model.ScopeShared
+		if root.Enclave != "" {
+			scope = model.Scope(root.Enclave)
+		}
+		since, ok := st.Seen[t]
+		if !ok {
+			since = now
+		}
+		out = append(out, Drift{Target: t, Kind: DriftNew, Scope: scope, Since: since, Baseline: inBaseline(st, t), Named: true})
+	}
+	return out
+}
+
 // scanRoots walks each owned root for regular files the state does not
 // manage. It reports ok false if the budget ran out before every walk ended.
 func (e *Engine) scanRoots(ctx context.Context, st *State, deadline time.Time) ([]Drift, bool) {
@@ -209,14 +246,17 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	if root.Enclave != "" {
 		scope = model.Scope(root.Enclave)
 	}
-	// Managed files and the baseline (files that predate their root) are
-	// never new. Both maps are copied: the walk may outlive this call.
-	managed := make(map[model.Target]bool, len(st.Targets)+len(st.Baseline))
+	// Managed files are never new. Baseline files (they predate their root)
+	// are reported with Baseline set, so callers can show them; capture
+	// skips them unless named. Both maps are copied: the walk may outlive
+	// this call.
+	managed := make(map[model.Target]bool, len(st.Targets))
 	for t := range st.Targets {
 		managed[t] = true
 	}
+	baseline := make(map[model.Target]bool, len(st.Baseline))
 	for t := range st.Baseline {
-		managed[t] = true
+		baseline[t] = true
 	}
 	var (
 		mu    sync.Mutex
@@ -247,7 +287,7 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 				return nil
 			}
 			mu.Lock()
-			found = append(found, Drift{Target: t, Kind: DriftNew, Scope: scope})
+			found = append(found, Drift{Target: t, Kind: DriftNew, Scope: scope, Baseline: baseline[t]})
 			mu.Unlock()
 			return nil
 		})

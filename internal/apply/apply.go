@@ -102,6 +102,12 @@ type Drift struct {
 	Since  time.Time    `json:"since"`
 	Hash   string       `json:"hash,omitempty"`
 	Detail string       `json:"detail,omitempty"`
+	// Baseline marks a new file that was in its owned root when the root
+	// was accepted here. Capture skips it unless Named.
+	Baseline bool `json:"baseline,omitempty"`
+	// Named is set when ScanOptions.Paths named the file: the caller asked
+	// for it by name, so capture takes a baseline file too.
+	Named bool `json:"-"`
 }
 
 // ScanOptions tunes Scan.

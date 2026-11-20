@@ -96,7 +96,6 @@ type Policy struct {
 	LastChange  func(model.Target) time.Time             // the target's last change (its mtime)
 	MergeFor    func(model.Target) MergePolicy           // per-file merge policy; "" means MergeText
 	VolatileFor func(model.Target) []string              // key paths resolved locally, never merged from the remote
-	PreExisting func(model.Target) bool                  // a new file that predates its owned root; never auto-commits
 }
 
 // PlannedCommit is one auto-commit to make. Targets[i] is the target of Changes[i].
@@ -261,6 +260,11 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, fmt.Errorf("capture: %w", err)
 	}
 	rep.Captured = cp.Paths
+	if !opts.DryRun {
+		if err := s.holdBaseline(drift, cp); err != nil {
+			return rep, err
+		}
+	}
 
 	// 2. Auto-commit by policy.
 	committed := map[model.Target]bool{}
@@ -274,9 +278,6 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 			return rep, err
 		}
 		pol := s.policyFor(snap)
-		if pol.PreExisting == nil {
-			pol.PreExisting = s.preExisting(st)
-		}
 		leases, err := s.leases(ctx, snap, start)
 		if err != nil {
 			return rep, err
@@ -446,15 +447,20 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 	if err != nil {
 		return out, err
 	}
+	// The key-log rule runs even when the fetched source does not load: a
+	// key-log entry anyone pushed in a form that does not parse must refuse
+	// that source with a hold and an alert, not stop every machine's sync.
 	var snap *apply.Snapshot
+	var loadErr error
 	if remote != "" {
-		if snap, err = s.load(ctx, remote); err != nil {
-			return out, fmt.Errorf("load %s: %w", remote, err)
-		}
+		snap, loadErr = s.load(ctx, remote)
 	}
 	ref, err := s.checkRemote(ctx, base, local, remote, snap)
 	if err != nil {
 		return out, err
+	}
+	if ref == nil && loadErr != nil {
+		return out, fmt.Errorf("load %s: %w", remote, loadErr)
 	}
 	fresh, err := s.setRefusal(ref)
 	if err != nil {
@@ -559,9 +565,6 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 	}
 	rep.Applied = tip
 	rep.Tasks = append(rep.Tasks, res.Tasks...)
-	if err := s.recordRoots(); err != nil {
-		return false, err
-	}
 	for _, t := range res.Tasks {
 		if t.ExitCode != 0 || t.Error != "" {
 			s.notify(ctx, model.Alert{Kind: "task_failed", Commit: tip, Detail: "task " + t.Task + " failed", At: s.now()})

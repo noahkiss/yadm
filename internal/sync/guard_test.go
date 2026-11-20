@@ -40,6 +40,45 @@ func holdTask(r Report, task string) *model.Hold {
 	return nil
 }
 
+// TestKeyLogNonCanonicalRefused: a pusher appends key-log bytes that do not
+// parse as a canonical entry. Sync refuses that source with a key-log hold
+// and one alert instead of failing every run, and resumes once it is gone.
+func TestKeyLogNonCanonicalRefused(t *testing.T) {
+	a, b := fixture.HostA, fixture.HostB
+	w := newWorld(t, nil, a, b)
+	w.syncAll(a, b)
+	A, B := w.machines[a], w.machines[b]
+	ctx := context.Background()
+	orig, err := B.st.ReadPath(ctx, B.main(), crypt.LogPath("personal", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	junk := append([]byte("# a comment makes it non-canonical\n"), orig...)
+	forged := pushRaw(t, B, []store.Change{
+		{Path: crypt.LogPath("personal", 2), Blob: junk, Mode: 0o100644},
+		{Path: "files/.config/shell/aliases.sh", Blob: []byte("alias evil=\"x\"\n"), Mode: 0o100644},
+	})
+	before := A.main()
+	r, err := A.s.Run(ctx, Options{Auto: true, Push: true})
+	if err != nil {
+		t.Fatalf("a non-canonical key log stopped the sync: %v", err)
+	}
+	if holdTask(r, HoldTaskKeyLog) == nil {
+		t.Fatalf("no key-log hold: %+v", r.Holds)
+	}
+	if len(r.Alerts) != 1 || r.Alerts[0].Kind != AlertKeyLogRewrite || r.Alerts[0].Commit != forged {
+		t.Fatalf("alerts %+v", r.Alerts)
+	}
+	if strings.Contains(A.read(aliases), "evil") || A.main() != before {
+		t.Fatal("the refused source was applied")
+	}
+	git(t, w.remote, "update-ref", "refs/heads/main", string(before))
+	r = A.sync()
+	if holdTask(r, HoldTaskKeyLog) != nil {
+		t.Fatalf("after the fix: %+v", r.Holds)
+	}
+}
+
 func TestKeyLogRewriteRefused(t *testing.T) {
 	a, b := fixture.HostA, fixture.HostB
 	w := newWorld(t, nil, a, b)

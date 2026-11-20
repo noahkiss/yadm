@@ -276,6 +276,9 @@ func TestHookStopBlocksUntilDefer(t *testing.T) {
 	if code, _, stderr := hookRun(t, payload(payloadStop, "session-s", a.Home, ""), HookStop); code != HookBlock || !strings.Contains(stderr, "1 decision(s)") {
 		t.Fatalf("stop with an open decision: exit %d\n%s", code, stderr)
 	}
+	if code, stdout, stderr := hookRun(t, payload(payloadStop, "session-s", a.Home, ""), HookStop, "--format", "text"); code != HookBlock || stdout != "" || !strings.Contains(stderr, "yadm defer") {
+		t.Fatalf("text stop: exit %d stdout %q", code, stdout)
+	}
 	if code, _, _ := hookRun(t, payload(payloadSubagentStop, "session-s", a.Home, ""), HookStop); code != HookAllow {
 		t.Fatalf("subagent stop: exit %d", code)
 	}

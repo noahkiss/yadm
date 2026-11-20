@@ -36,20 +36,31 @@
 //  8. Push main, the status ref and advanced reviewed refs atomically. On
 //     rejection go back to 4, up to MaxRetries with backoff. Never force.
 //
+// A quick sync (Options.Quick) first stats the targets and lists the remote
+// heads with `git ls-remote`; it stops there unless the remote moved, a
+// target drifted, FullEvery passed since the last full sync, or WakeGap
+// passed since the last check. Commit with Push runs steps 3 to 8 right
+// after its commit, under the same lock. After a push that moved main,
+// Deps.Nudge runs so peers can sync now.
+//
 // Fetched commits that touch an enclave and whose Machine trailer names no
 // member of its key log are applied, alerted through the notify hook and
 // kept in the status record.
 //
 // Exported API:
 //
-//	type Options struct{ Auto, Push, DryRun bool; MaxRetries int }
+//	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick bool }
+//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries }
+//	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
+//	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
+//	const FullEvery, WakeGap
 //	type Report struct{ ... }
 //	type Syncer struct{ Deps }
 //	func (s *Syncer) Run(ctx, opts Options) (Report, error)
 //	func (s *Syncer) Commit(ctx, opts CommitOptions) (Report, error)
 //	type Lock interface{ Acquire(ctx context.Context) (release func(), err error) }
 //	func FileLock(stateDir string) Lock; func FileLockTimeout(stateDir string, d time.Duration) Lock
-//	type Policy struct{ Quiet; MassChange; Protected; Host; QuietFor; Protect; LastChange; MergeFor; VolatileFor; PreExisting }
+//	type Policy struct{ Quiet; MassChange; Protected; Host; QuietFor; Protect; LastChange; MergeFor; VolatileFor }
 //	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error)
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
 //	type RemoteGuard interface{ Allow(ctx, from, to *apply.Snapshot) (bool, string, error) }

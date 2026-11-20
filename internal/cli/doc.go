@@ -25,26 +25,31 @@
 //	apply                          apply.Engine.Load, Plan, Apply
 //	capture                        apply.Engine.Scan, Capture
 //	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff
-//	commit                         sync.Syncer.Commit (tasks.Gate inside)
-//	sync                           sync.Syncer.Run
+//	commit                         sync.Syncer.Commit (tasks.Gate inside), then push in the same call
+//	sync                           sync.Syncer.Run (--auto implies the quick check)
+//	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
+//	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md)
+//	defer                          deferred.json in the state directory; review list shows it
+//	protection allow, root allow   apply.Engine.AllowProtection / AllowRoot, then Apply
 //	log                            store.Log + crypt.Set + textmerge.Diff
-//	retag                          apply.Engine.Retag, one protected commit on main
+//	retag                          apply.Engine.Retag, committed through sync.Commit (Capture + Changes)
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status,
 //	                               git config (merge.*.driver, filter.*)
 //	fleet list|show|diff           store.StatusRefs.ReadAll, fleet.DiffObserved
-//	enclave create|add|remove|...  crypt.Create/Add/Remove/Rotate/Recover, crypt.MarshalLogEntry,
+//	enclave create|add|remove|retire|set-recovery
+//	                               crypt.Create/Add/Remove/Retire/SetRecovery, crypt.MarshalLogEntry, sync.Commit (Changes),
 //	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal
 //	review list|ok|revert          sync.Unreviewed, sync.Ack, store.CommitTree
-//	hold list|show|resolve         apply.Engine.Holds, ResolveHold
+//	hold list|show|resolve         apply.Engine.Holds, ResolveHold; conflicts through sync.Commit{Resolve}
 //	lease take|release|list        sync.FileLeases
 //	task list|allow|run            tasks.FileAllowList, tasks.DefinitionHash, tasks.Runner
 //	schedule install|...           schedule.ForOS
 //	import                         importer.Import; a cli sealer creates each enclave's key log
 //	                               and commits it on top of the import commit
 //	adopt                          apply.Engine.Adopt, schedule.ForOS().Install
-//	git                            git in the source clone with the secrecy overrides
+//	git                            store.Passthrough: git in the source clone with the secrecy overrides
 //	<other>                        extexec.FindSubcommand + extexec.Runner
 //
 // Exported API:

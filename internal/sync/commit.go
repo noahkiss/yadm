@@ -291,11 +291,31 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		if err != nil {
 			return rep, fmt.Errorf("scan: %w", err)
 		}
+		// A named path is scanned by name too, so a file that predates its
+		// owned root (a baseline file) is captured when asked for.
+		byName := map[model.Target]apply.Drift{}
+		if len(opts.Paths) > 0 {
+			nd, err := s.Apply.Scan(ctx, apply.ScanOptions{FullHash: opts.Resolve, Paths: opts.Paths})
+			if err != nil {
+				return rep, fmt.Errorf("scan: %w", err)
+			}
+			for _, d := range nd {
+				byName[d.Target] = d
+			}
+		}
 		for _, d := range all {
 			if len(opts.Paths) == 0 || named(opts.Paths, d.Target) {
+				if n, ok := byName[d.Target]; ok {
+					d = n
+					delete(byName, d.Target)
+				}
 				drift = append(drift, d)
 			}
 		}
+		for _, d := range byName {
+			drift = append(drift, d)
+		}
+		sort.Slice(drift, func(i, j int) bool { return drift[i].Target < drift[j].Target })
 		if cp, err = s.Apply.Capture(ctx, drift); err != nil {
 			return rep, fmt.Errorf("capture: %w", err)
 		}
@@ -344,9 +364,8 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		}
 		dropSyncHolds(st, func(x model.Target) bool { return x == t })
 		approved := isNamed && !opts.Unattended
-		pre := !approved && isNew(st, t) && s.preExisting(st)(t)
 		switch {
-		case !approved && (ch.Delete || protected(pol, t, ch.Path) || pre):
+		case !approved && (ch.Delete || protected(pol, t, ch.Path)):
 			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), "protected; commit it by name", "yadm commit "+string(t)))
 			continue
 		case opts.Unattended && isNew(st, t):
@@ -401,13 +420,6 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	}
 	rep.Committed = out.ids
 	rep.Resolutions = out.resolutions
-	var took []model.Target
-	for t := range out.committed {
-		took = append(took, t)
-	}
-	if err := s.forgetPreExisting(took); err != nil {
-		return rep, err
-	}
 	if a, err := s.Store.ResolveRef(ctx, store.RefMain); err == nil && len(out.ids) > 0 && !out.dirty {
 		rep.Applied = a
 	}
@@ -441,6 +453,54 @@ func (s *Syncer) rebaseOnto(ctx context.Context, head model.CommitID, paths []mo
 		ts.Written = ""
 		st.Targets[t] = ts
 		dropHolds(st, t, model.HoldConflict)
+	}
+	return s.Apply.State.Save(st)
+}
+
+// baselineDetail marks the protected holds holdBaseline owns.
+const baselineDetail = "existed before its owned root was accepted here; commit it by name if it belongs in the repository"
+
+// holdBaseline holds each file of a complete scan that predates its owned
+// root (apply reports it with Drift.Baseline and does not capture it), so
+// the user sees it, and drops such holds for files that are gone or
+// managed now.
+func (s *Syncer) holdBaseline(drift []apply.Drift, cp apply.Capture) error {
+	captured := map[model.Target]bool{}
+	for _, t := range cp.Paths {
+		captured[t] = true
+	}
+	base := map[model.Target]apply.Drift{}
+	for _, d := range drift {
+		if d.Baseline && !captured[d.Target] {
+			base[d.Target] = d
+		}
+	}
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	changed := false
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		if h.Reason == model.HoldProtected && h.Detail == baselineDetail {
+			if _, ok := base[h.Target]; !ok {
+				changed = true
+				continue
+			}
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
+	now := s.now()
+	for t, d := range base {
+		if hasHold(st, t, model.HoldProtected) {
+			continue
+		}
+		putHold(st, targetHold(st, now, t, d.Scope, model.HoldProtected, sinceOf(st, t, now), baselineDetail, "yadm commit "+string(t)))
+		changed = true
+	}
+	if !changed {
+		return nil
 	}
 	return s.Apply.State.Save(st)
 }

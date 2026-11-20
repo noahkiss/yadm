@@ -2,13 +2,11 @@ package sync
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/crypt"
@@ -301,148 +299,4 @@ func (s *Syncer) setAccepted(id model.CommitID) error {
 		return err
 	}
 	return os.Rename(p+".tmp", p)
-}
-
-// RootsFile records when this machine first applied each owned root.
-const RootsFile = "roots.json"
-
-func (s *Syncer) rootsPath() string { return filepath.Join(s.Apply.StateDir, RootsFile) }
-
-func (s *Syncer) loadRoots() map[model.Target]time.Time {
-	out := map[model.Target]time.Time{}
-	b, err := os.ReadFile(s.rootsPath())
-	if err == nil {
-		_ = json.Unmarshal(b, &out)
-	}
-	return out
-}
-
-// PreExistingFile lists the files found under each owned root when this
-// machine first applied it. They never auto-commit; a manual commit that
-// names one removes it from the list.
-const PreExistingFile = "pre-existing.json"
-
-// maxPreExisting bounds the walk of a new root.
-const maxPreExisting = 100000
-
-func (s *Syncer) preExistingPath() string { return filepath.Join(s.Apply.StateDir, PreExistingFile) }
-
-func (s *Syncer) loadPreExisting() map[model.Target]bool {
-	out := map[model.Target]bool{}
-	if b, err := os.ReadFile(s.preExistingPath()); err == nil {
-		_ = json.Unmarshal(b, &out)
-	}
-	return out
-}
-
-func writeJSON(p string, v any) error {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(p+".tmp", b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(p+".tmp", p)
-}
-
-// forgetPreExisting drops targets a manual commit took.
-func (s *Syncer) forgetPreExisting(ts []model.Target) error {
-	if s.Apply.StateDir == "" || len(ts) == 0 {
-		return nil
-	}
-	pre := s.loadPreExisting()
-	n := len(pre)
-	for _, t := range ts {
-		delete(pre, t)
-	}
-	if len(pre) == n {
-		return nil
-	}
-	return writeJSON(s.preExistingPath(), pre)
-}
-
-// recordRoots notes the first sighting of each owned root of the last apply,
-// with the files already under it. It uses the wall clock, because it is
-// compared with file mtimes.
-func (s *Syncer) recordRoots() error {
-	if s.Apply.StateDir == "" {
-		return nil
-	}
-	st, err := s.Apply.State.Load()
-	if err != nil {
-		return err
-	}
-	seen := s.loadRoots()
-	pre := s.loadPreExisting()
-	changed := false
-	for _, r := range st.Roots {
-		if _, ok := seen[r.Path]; ok {
-			continue
-		}
-		seen[r.Path] = time.Now()
-		changed = true
-		dir := filepath.Join(s.Apply.Home, filepath.FromSlash(string(r.Path)))
-		_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-			if err != nil || len(pre) >= maxPreExisting {
-				return nil
-			}
-			if !d.Type().IsRegular() {
-				return nil
-			}
-			rel, err := filepath.Rel(s.Apply.Home, p)
-			if err != nil {
-				return nil
-			}
-			t := model.Target(filepath.ToSlash(rel))
-			if _, managed := st.Targets[t]; !managed {
-				pre[t] = true
-			}
-			return nil
-		})
-	}
-	if !changed {
-		return nil
-	}
-	if err := writeJSON(s.preExistingPath(), pre); err != nil {
-		return err
-	}
-	return writeJSON(s.rootsPath(), seen)
-}
-
-// preExisting reports whether a new file in an owned root predates this
-// machine's first apply of that root: it was listed when the root arrived,
-// or its mtime is older than the root. Such a file was not made under the
-// root's policy, so it never auto-commits. An unknown root counts as new
-// here: the file is held, not swept in.
-func (s *Syncer) preExisting(st *apply.State) func(model.Target) bool {
-	roots := s.loadRoots()
-	pre := s.loadPreExisting()
-	home := s.Apply.Home
-	return func(t model.Target) bool {
-		if pre[t] {
-			return true
-		}
-		var best model.Target
-		found := false
-		for _, r := range st.Roots {
-			if t == r.Path || strings.HasPrefix(string(t), string(r.Path)+"/") {
-				if !found || len(r.Path) > len(best) {
-					best, found = r.Path, true
-				}
-			}
-		}
-		if !found {
-			return true
-		}
-		at, ok := roots[best]
-		if !ok {
-			return true
-		}
-		info, err := os.Lstat(filepath.Join(home, filepath.FromSlash(string(t))))
-		if err != nil {
-			return true
-		}
-		return info.ModTime().Before(at)
-	}
 }

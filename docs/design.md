@@ -93,7 +93,7 @@ Rules:
 schema = 1
 
 [defaults]
-quiet = "2h"                      # auto-commit quiet period
+quiet = "2m"                      # auto-commit quiet period
 
 [[file]]
 target = ".config/shell/aliases.sh"           # source: files/.config/shell/aliases.sh
@@ -381,39 +381,76 @@ Every commit operation builds its own fresh index file in the state directory, s
 
 Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit.
 
+Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
+
 ### 9.3 Auto-commit
 
 The timer runs `yadm sync --auto`. A captured path auto-commits when all hold:
 
-- its quiet period has passed since its last change (entry `quiet`, default 2 h; `0s` commits at once);
-- no lease names it (`yadm lease take`, used by agent hooks; leases expire);
+- its quiet period has passed since its last change, by mtime (entry `quiet`, default 2 min; `0s` commits at once);
+- no lease names it (`yadm lease take`; leases expire);
 - the busy probe, if configured, does not name it;
-- it is not protected: `manifest.toml`, `fleet.toml`, `keys/**`, manifest `protected` globs, entries with `review = true`, new files outside owned roots, deletions, retags, and more than 50 changed files in one scope;
+- it is not protected: `manifest.toml`, `fleet.toml`, `keys/**`, manifest `protected` globs, entries with `review = true`, new files outside owned roots, files that were in an owned root when it was accepted here (held `protected` until committed by name), deletions, retags, and more than 50 changed files in one scope;
 - the gate passes.
 
-Commits group by scope (`shared` or an enclave name), one commit per scope per run:
+Commits group by scope (`shared` or an enclave name), one commit per scope per run. Every commit the tool makes is followed in the same call, under the same lock, by fetch, replay, apply and push (section 10, steps 3 to 9). There is no "commit now, push on the next tick".
+
+### 9.4 Commit messages
+
+A tool commit reads like a human one. The subject is `<verb> <path>` for one file, `<verb> N files in <dir>` when they share a directory, and `<verb> N files` otherwise. The verb is `add`, `update` or `remove`. A commit whose only change was merged up the ladder is `merge <path> (<rung>)`. A caller's subject wins: `-m`, or the intent given with `--why` or by a harness hook. The body lists every path. Trailers:
+
+| Trailer | Value |
+|---|---|
+| `Machine` | the machine id |
+| `Yadm-Auto` | the trigger: `hook`, `stop`, `scan`, `manual` or `merge` |
+| `Yadm-Scope` | `shared` or the enclave |
+| `Yadm-Session` | the harness session id, when known |
+| `Yadm-Tool` | the tool that made the edit (an editor tool, a shell, an app), when known |
+| `Yadm-Resolved` | the ladder rung and path of each merged change |
 
 ```
-auto(host-a): 3 files [shared]
+update 3 files in .config/shell
 
 .config/shell/aliases.sh
-.config/editor/settings.json
-.gitconfig
+.config/shell/env.sh
+.config/shell/prompt.sh
 
 Machine: m-a1b2c3
-Yadm-Auto: 1
+Yadm-Auto: scan
 Yadm-Scope: shared
 ```
 
-`yadm commit [-m <subject>] [path...]` makes a manual commit. It bypasses the quiet period and leases, never the gate or the seal guard. Protected paths commit only when named.
+A message names paths only. No subject, body or trailer ever carries file content, so enclave plaintext never reaches a message. (Hidden paths, section 7.5, would also keep sealed paths out of the subject.)
 
-### 9.4 Review
+### 9.5 Manual commits
 
-Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. `yadm review list [scope] --json` lists commits in `reviewed/<scope>..main` that touch the scope, with plaintext diffs for scopes this machine can open. Agents act with `yadm review ok <scope> <commit>`, `yadm review revert <commit>` (a new commit), a fix-forward commit, or `yadm bisect --as <machine> -- <cmd>`, which renders each candidate commit into a sandbox and never touches `$HOME`.
+`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. Protected paths commit only when named. A named file that predates its owned root is captured too. With `--no-push`, the next sync pushes.
+
+### 9.6 Review
+
+Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. `yadm review list [scope] --json` lists commits in `reviewed/<scope>..main` that touch the scope, with plaintext diffs for scopes this machine can open, and `deferred`: the decisions agents moved here with `yadm defer` (section 9.7) whose holds are still open. Agents act with `yadm review ok <scope> <commit>`, `yadm review revert <commit>` (a new commit), a fix-forward commit, or `yadm bisect --as <machine> -- <cmd>`, which renders each candidate commit into a sandbox and never touches `$HOME`.
+
+### 9.7 Agent hooks
+
+Agents edit dotfiles; they must not have to remember to commit. `yadm hook <event>` is the harness side of that. A harness runs it from its hook configuration (an example is in `docs/hooks.md`, with the input and output schema). The file scan stays the primary trigger: editor hooks see only part of the changes (shell commands and apps write files too), so the timer still captures everything else.
+
+| Event | Harness moment | Does |
+|---|---|---|
+| `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, and pushes. Silent when clean; otherwise a decision packet. |
+| `stop` | the agent (or a subagent) ends its turn | Commits and pushes the session's recorded paths. Blocks the stop while a decision this session caused is open. |
+| `session-start` | a session starts | A quick sync, then at most 10 lines: holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
+
+A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the lock; if a sync holds it, the path stays recorded and `stop` or the timer commits it.
+
+A **decision packet** says what happened, the diff size (line counts, never content), which machines and types the file reaches, a proposed fix, and two to five options, each with its consequence and the exact command. Packets cover a new file in an owned root (with the types its neighbours go to), a `rendered_edit` hold (with its patch for a shared template), a gate failure, a `seal_guard` hold, a conflict with an incoming change, and any other hold through its suggested commands.
+
+"Decisions this session caused" are the open holds on the session's recorded paths (or on the owned roots that contain them), except plain drift and deferred ones. A subagent's stop considers only its own paths. `yadm defer <hold-id> --reason <why>` moves one to the review queue: the hold stays and the file stays uncommitted, but the session may end. Session records live under `hooks/` in the state directory as append-only lines (path, agent, tool), so parallel hooks never lose an update.
 
 ## 10. Sync
 
-`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout.
+`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout. Apply, capture, collect, hold resolve, retag and enclave writes take the same lock, and every commit goes through `sync.Commit`.
+
+A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw (this machine's own status ref is ignored). It stops there unless the remote moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip.
 
 1. Scan and capture.
 2. With `--auto`, auto-commit by policy (section 9.3).
@@ -427,7 +464,13 @@ Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. `yadm revie
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes).
 7. Apply.
 8. Publish this machine's status record (section 11).
-9. Push `main` and the status ref atomically. On rejection, go back to step 4, up to 5 retries with backoff. Never force.
+9. Push `main` and the status ref atomically. On rejection, go back to step 4, up to 5 retries with backoff. Never force. After a push that moved `main`, run the nudge (section 12.5).
+
+A manual or hook commit runs steps 3 to 9 right after its commit, in the same call.
+
+A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
+
+A conflict hold is settled with `yadm hold resolve <id>`: `--take target` (or `--take <file>`, written to the target first) commits this machine's file over the current source and pushes it; `--take source` drops the hold and rewrites the target from the source, backing up the replaced bytes.
 
 A fetched commit that touches `sealed/<enclave>/` or `keys/<enclave>/` from a machine (by `Machine:` trailer) that is not a member of that enclave is applied and reported through the notify hook. The trailer is not authenticated; key-log changes are, by signature.
 
@@ -515,11 +558,15 @@ One contract covers external subcommands, collectors, tasks, checks, the notify 
   Otherwise each non-empty stdout line is an item.
 - A non-zero exit, a timeout or invalid JSON is a failure. Stderr is kept (bounded) for the record and never parsed.
 
-External subcommands: `yadm foo args…` runs `yadm-foo` from `PATH` when `foo` is not built in, with `kind = "subcommand"` and `args`. Under `--json`, its response is wrapped in the normal envelope.
+External subcommands: `yadm foo args…` runs `yadm-foo` from `PATH` when `foo` is not built in, with `kind = "subcommand"` and `args`. Under `--json`, its response is wrapped in the normal envelope. A non-zero exit is reported with its code and stderr tail in `error.details`.
+
+### 12.5 Nudge
+
+Peers learn of a push on their next timer tick at the latest. To make it immediate, a user may install an executable `yadm-nudge` on `PATH`. After a push that moved `main`, sync runs it under the exec contract with `kind = "nudge"` and `event = {kind: "pushed", commit, machine}`, with a 10 s timeout; its failure never fails the sync. What it does is the user's: ping a notification service, or reach peers over their own network. A peer that receives a nudge runs `yadm sync --quick`. The core names no service.
 
 ## 13. Schedule
 
-`yadm init` and `yadm adopt` install the sync schedule unless given `--no-schedule`: a launchd user agent on macOS, a systemd user timer on Linux. It runs `yadm sync --auto` every 5 minutes and once at login or wake. A run missed during sleep is not queued; the next run catches up once and tolerates a network that returns late (fetch failures retry on the next tick). `yadm schedule install|uninstall|status` manage it directly.
+`yadm init` and `yadm adopt` install the sync schedule unless given `--no-schedule`: a launchd user agent on macOS, a systemd user timer on Linux. It runs `yadm sync --auto` every minute and once at login or wake; each run starts with the quick check (section 10), so a full sync runs only when something moved, at least every 15 minutes, and after a wake. A run missed during sleep is not queued; the next run catches up once and tolerates a network that returns late (fetch failures retry on the next tick). `yadm schedule install|uninstall|status` manage it directly.
 
 The unit names yadm by an absolute path; a path inside a Homebrew Cellar is mapped to the version-free link in `<prefix>/bin`, so an upgrade does not break it. The unit sets an explicit `PATH`: the binary's directory, the Homebrew prefixes (`/opt/homebrew`, `/usr/local`, `/home/linuxbrew/.linuxbrew`) and the system directories. The caller decides whether a command may change the real service manager; a test binary also needs `YADM_SCHEDULE_LIVE=1`.
 
@@ -553,6 +600,8 @@ On failure, `ok` is false and `error` is `{ "code": "…", "message": "…", "de
 | 5 | `not_implemented` | |
 | 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition |
 
+`yadm hook <event>` has its own contract, for harnesses: it prints one verdict object (not an envelope) or nothing, and exits 0 (allow), 2 (a decision blocks) or 1 (the hook failed; harnesses go on). See `docs/hooks.md`.
+
 Hold objects have a stable shape for external resolvers. Fields are only added within a schema version:
 
 ```json
@@ -580,17 +629,20 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff}]}` |
-| `commit [-m] [path…]` | Gate and commit now | `{commits[], holds[]}` |
-| `sync [--auto] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[]}` |
+| `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
+| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason}` |
 | `log [path]` | History, plaintext where openable | `{commits[]}` |
-| `retag <path> <types> [--enclave]` | Section 8.5 | `{commit, removed_on[]}` |
+| `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded, last sync age, holds, secrecy config |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff` |
-| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` | Section 7.3 | key-log heads and members |
-| `review list` / `ok` / `revert` | Section 9.4 | `{items[{commit, scope, diff}]}` |
-| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` | Holds | hold objects |
+| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
+| `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
+| `review list` / `ok` / `revert` | Section 9.6 | `{items[{commit, scope, diff}], deferred[]}` |
+| `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` | Holds; a take that captures commits and pushes | hold objects |
+| `hook post-edit` / `stop` / `session-start` | Section 9.7; harness JSON on stdin | a verdict (`docs/hooks.md`) |
+| `defer <hold-id> --reason <why>` | Move a decision to the review queue | the deferred record |
 | `lease take` / `release` / `list` | Leases | leases |
 | `task list` / `allow` / `run <name>` | Section 12 | definitions with allowed state, results |
 | `schedule install` / `uninstall` / `status` | Section 13 | `{installed, loaded, last_run, unit_path}` |

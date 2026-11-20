@@ -123,3 +123,15 @@ func (s *Syncer) recordFull(ctx context.Context) {
 	}
 	_ = writeJSON(s.quickPath(), q)
 }
+
+// writeJSON writes v to p atomically, mode 0600.
+func writeJSON(p string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(p+".tmp", b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
+}

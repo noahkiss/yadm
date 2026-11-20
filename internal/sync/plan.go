@@ -64,9 +64,6 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 		case protected(p, t, ch.Path):
 			hold(t, scope, "protected; commit it by name")
 			continue
-		case isNew(st, t) && p.PreExisting != nil && p.PreExisting(t):
-			hold(t, scope, "existed before its owned root was added here; commit it by name if it belongs in the repository")
-			continue
 		case perScope[scope] > mass:
 			hold(t, scope, fmt.Sprintf("%d changed files in scope %s exceed the limit of %d; commit them by name", perScope[scope], scope, mass))
 			continue

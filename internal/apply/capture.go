@@ -311,10 +311,11 @@ func (e *Engine) prevSource(ctx context.Context, snap *Snapshot, ts TargetState,
 // or sealed/<enclave>/<target> for an enclave root. Only roots this machine
 // accepted (st.Roots) count, never the manifest's own list: a pusher who
 // adds a root or strips its enclave changes nothing here until the user
-// allows it. A file that predates its root (st.Baseline) is never captured.
+// allows it. A file that predates its root (st.Baseline) is captured only
+// when the caller named it (Drift.Named).
 func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Drift) (*store.Change, *model.Hold, error) {
 	now := e.Now()
-	if inBaseline(st, d.Target) {
+	if inBaseline(st, d.Target) && !d.Named {
 		return nil, nil, nil
 	}
 	root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, d.Target)
