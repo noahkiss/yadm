@@ -561,7 +561,17 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	}
 	s.live = lv
 	if lv.exists && !lv.info.Mode().IsRegular() {
-		if adopt && !have && lv.info.Mode()&fs.ModeSymlink != 0 {
+		// A stock symlink yadm never recorded: adopt, and apply too (a
+		// member that adopted before it joined an enclave could not open
+		// the render then), materialize it when its content equals the
+		// render. A new keep, drop or volatile entry still needs a decision.
+		if !have && lv.info.Mode()&fs.ModeSymlink != 0 {
+			if !adopt && hasLocalKeys(r.Entry) {
+				h := fileHold(st, now, t, s.Scope, model.HoldNeedsDecision, ts.ChangedAt,
+					"a new entry with keep, drop or volatile covers a symlink yadm never wrote; not taken over until resolved")
+				s.Kind, s.Reason, s.hold = ActHold, string(model.HoldNeedsDecision), &h
+				return s, nil
+			}
 			return e.materializeLink(ctx, snap, r, s, ts, hold)
 		}
 		return hold("target is not a regular file (symlink or directory); not replaced")
@@ -606,9 +616,10 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 			}
 		case have && uint32(liveMode) == ts.Mode:
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
-		case adopt && !have && liveMode&0o222 == 0:
-			// A read-only render another tool left (0444): adopt takes
-			// it over at the source's mode.
+		case !have && liveMode&0o222 == 0:
+			// A read-only render another tool left (0444): adopt, and apply
+			// for a target adopt could not open yet, take it over at the
+			// source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
 		default:
 			return hold(fmt.Sprintf("bytes match but mode is %#o, want %#o", liveMode, d.mode))
