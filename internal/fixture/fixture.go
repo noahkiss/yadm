@@ -184,7 +184,7 @@ func (f *Fixture) replacePlaceholders() error {
 		if err != nil {
 			return err
 		}
-		if !bytes.Contains(b, []byte("@@")) {
+		if !placeholder.Match(b) {
 			return nil
 		}
 		var ferr error
@@ -218,7 +218,7 @@ func (f *Fixture) replacePlaceholders() error {
 		if ferr != nil {
 			return ferr
 		}
-		if bytes.Contains(out, []byte("@@")) {
+		if placeholder.Match(out) {
 			return fmt.Errorf("%s: unresolved placeholder", p)
 		}
 		return os.WriteFile(p, out, 0o644)

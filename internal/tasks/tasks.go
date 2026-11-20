@@ -274,7 +274,7 @@ func (r *Runner) Run(ctx context.Context, ev Event, sel []Selected, req extexec.
 			holds = append(holds, newHold(model.Hold{
 				Task: s.Name, Reason: model.HoldTaskUntrusted,
 				Detail: "task definition is not allowed on this machine",
-				Next:   []string{"yadm task allow " + s.Name},
+				Next:   []string{"yadm task allow " + model.ShellQuote(s.Name)},
 			}))
 			continue
 		}

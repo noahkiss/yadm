@@ -653,7 +653,7 @@ Hold objects have a stable shape for external resolvers. Fields are only added w
 
 A `rendered_edit` hold also carries `source`, `patch` and `patch_of` (section 8.4). A hold's `since` is its first sighting, so its `id` stays stable while the cause persists.
 
-Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `seal_guard`, `source_dirty`, `task_untrusted`, `check_failed`, `rendered_edit`, `root_untrusted`.
+Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `seal_guard`, `source_dirty`, `task_untrusted`, `check_failed`, `rendered_edit`, `root_untrusted`, `needs_decision`.
 
 ### 14.2 Command list
 
@@ -755,4 +755,4 @@ Git is the `git` binary (merge-tree `--write-tree` needs a current git), not a l
 
 ## 18. Out of scope
 
-Hooks run by the tool, encrypted archives, alternate template processors, a permissions command (`mode` per entry covers it), self-upgrade and an "enter the repo" shell. `yadm git` covers raw git access.
+Hooks run by the tool, encrypted archives, alternate template processors, a permissions command (`mode` per entry covers it), self-upgrade and an "enter the repo" shell. `yadm git` covers raw git access; it refuses verbs that move the source HEAD (pull, checkout, reset, switch, merge, rebase, cherry-pick, revert, am) and points to `yadm sync`.

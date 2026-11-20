@@ -474,7 +474,7 @@ func loadOne(name model.EnclaveName, entries []LogEntry, pins PinStore, id *Iden
 func notPinned(head LogEntry) error {
 	return fmt.Errorf("%w: enclave %s: get the fingerprint that `yadm enclave add` printed from the member who added this machine, "+
 		"then run `yadm enclave join %s --expect <fingerprint>`; never copy the fingerprint from this machine's own copy of the log",
-		ErrNotPinned, head.Enclave, head.Enclave)
+		ErrNotPinned, head.Enclave, model.ShellQuote(string(head.Enclave)))
 }
 
 func advance(pins PinStore, head LogEntry, old *Pin) error {

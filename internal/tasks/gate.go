@@ -229,7 +229,7 @@ func (g *gate) finish(staged []Staged, fails map[model.Target]*failure, verdicts
 		h := model.Hold{Target: s.Target, Scope: s.Scope, Reason: f.reason, Detail: detail}
 		if f.reason == model.HoldTaskUntrusted {
 			for _, c := range named {
-				h.Next = append(h.Next, "yadm task allow "+c)
+				h.Next = append(h.Next, "yadm task allow "+model.ShellQuote(c))
 			}
 		}
 		holds = append(holds, newHold(h))
