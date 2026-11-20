@@ -11,6 +11,11 @@
 //	{% if COND %} ... {% elif COND %} ... {% else %} ... {% endif %}
 //	{# comment #}
 //	{{ "{{" }}                         a literal delimiter: {{ }} {% %} {# #}
+//	{{ "{" }}                          a literal brace, for one right before a tag
+//
+// The literal form is the only escape. Escape applies it to plain text, so
+// "{{ x: string }}" becomes `{{ "{{" }} x: string }}` and "${#arr}" becomes
+// `${{ "{#" }}arr}`. A closer outside a tag (}}, %}, #}) is plain text.
 //
 // COND is the package cond language. A {% %} or {# #} tag alone on its line
 // (only blanks around it) removes the whole line, newline included. A tag
@@ -28,5 +33,6 @@
 //	type Engine interface{ Render(name string, src []byte, ctx model.Context) ([]byte, error) }
 //	func New(v cond.Vocabulary) Engine
 //	func Validate(name string, src []byte, v cond.Vocabulary) error
+//	func Escape(s string) string
 //	type Error struct{ Name string; Line, Col int; Msg string }
 package render

@@ -202,3 +202,59 @@ func FuzzRender(f *testing.F) {
 		}
 	})
 }
+
+func TestEscape(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{"no brace", "plain\n", "plain\n"},
+		{"ts literal type", "type T = {{ x: string }}\n", `type T = {{ "{{" }} x: string }}` + "\n"},
+		{"zsh length", "echo ${#arr}\n", `echo ${{ "{#" }}arr}` + "\n"},
+		{"block opener", "a {% b %}\n", `a {{ "{%" }} b %}` + "\n"},
+		{"three braces", "{{{\n", `{{ "{{" }}{` + "\n"},
+		{"mixed", "{%{#{{\n", `{{ "{%" }}{{ "{#" }}{{ "{{" }}` + "\n"},
+		{"single braces", "f() {\n}\n", "f() {\n}\n"},
+	}
+	eng := New(vocab())
+	for _, tc := range cases {
+		got := Escape(tc.src)
+		if got != tc.want {
+			t.Errorf("%s: Escape = %q, want %q", tc.name, got, tc.want)
+		}
+		out, err := eng.Render("t", []byte(got), ctxA())
+		if err != nil {
+			t.Errorf("%s: render: %v", tc.name, err)
+			continue
+		}
+		if string(out) != tc.src {
+			t.Errorf("%s: round trip %q, want %q", tc.name, out, tc.src)
+		}
+	}
+}
+
+func TestLoneBraceBeforeTag(t *testing.T) {
+	src := `{{ "{" }}{{ user }}}` + "\n"
+	out, err := New(vocab()).Render("t", []byte(src), ctxA())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != "{user-a}\n" {
+		t.Errorf("got %q", out)
+	}
+}
+
+// FuzzEscape checks that escaped text always renders back to itself.
+func FuzzEscape(f *testing.F) {
+	for _, s := range []string{"", "{{ x }}", "${#a}", "{%{#{{{", "a {\n} b", `{{ "{{" }}`, "{# c #}\n"} {
+		f.Add(s)
+	}
+	eng := New(vocab())
+	f.Fuzz(func(t *testing.T, s string) {
+		out, err := eng.Render("f", []byte(Escape(s)), ctxA())
+		if err != nil {
+			t.Fatalf("Escape(%q) does not render: %v", s, err)
+		}
+		want := strings.TrimRight(s, "\n") + "\n"
+		if string(out) != want {
+			t.Fatalf("Escape(%q) renders %q", s, out)
+		}
+	})
+}
