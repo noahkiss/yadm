@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"yadm/internal/oracle"
+	"github.com/noahkiss/yadm/internal/oracle"
 )
 
 func main() {
