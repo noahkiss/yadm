@@ -207,11 +207,7 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		clearFileHolds(st, t)
 		return nil, nil, nil
 	}
-	mode := uint32(gitModeFile)
-	if te, ok := snap.Tree[r.Source]; ok && te.Mode == gitModeExec && enc == "" {
-		mode = gitModeExec
-	}
-	return &store.Change{Path: r.Source, Blob: newRaw, Mode: mode}, nil, nil
+	return &store.Change{Path: r.Source, Blob: newRaw, Mode: sourceMode(snap, r.Source)}, nil, nil
 }
 
 // proposePatch attaches a proposed source patch to a rendered_edit hold, so
@@ -281,7 +277,7 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	if err != nil {
 		return nil, nil, err
 	}
-	return &store.Change{Path: model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target)), Blob: blob, Mode: gitModeFile}, nil, nil
+	return &store.Change{Path: model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target)), Blob: blob, Mode: mode}, nil, nil
 }
 
 func rootOf(p *manifest.Plan, t model.Target) (manifest.Root, bool) {

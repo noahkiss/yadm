@@ -123,7 +123,7 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 	}
 
 	mode := uint32(gitModeFile)
-	if te, ok := snap.Tree[oldSrc]; ok && te.Mode == gitModeExec && newEnc == "" {
+	if te, ok := snap.Tree[oldSrc]; ok && te.Mode == gitModeExec {
 		mode = gitModeExec
 	}
 	changes := []store.Change{{Path: manifest.FileName, Blob: nm, Mode: gitModeFile}}

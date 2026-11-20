@@ -95,7 +95,7 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 	if err != nil {
 		return nil, nil, fmt.Errorf("merge %s: seal: %w", c.Path, err)
 	}
-	return &store.Change{Path: c.Path, Blob: sealed, Mode: gitModeFile}, nil, nil
+	return &store.Change{Path: c.Path, Blob: sealed, Mode: sourceMode(snap, c.Path)}, nil, nil
 }
 
 // Reseal reseals every file, value and region of an enclave under its
@@ -124,7 +124,7 @@ func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.Encla
 	}
 	sort.Slice(paths, func(i, j int) bool { return paths[i] < paths[j] })
 	add := func(p model.SourcePath, t model.Target, b []byte) {
-		out.Changes = append(out.Changes, store.Change{Path: p, Blob: b, Mode: gitModeFile})
+		out.Changes = append(out.Changes, store.Change{Path: p, Blob: b, Mode: sourceMode(snap, p)})
 		out.Paths = append(out.Paths, t)
 		out.Scopes[t] = scope
 	}

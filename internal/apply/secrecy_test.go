@@ -101,8 +101,8 @@ func TestSecrecyMemberCaptureSealsBeforeTheStore(t *testing.T) {
 		t.Fatal("member did not get the plaintext")
 	}
 	info, _ := os.Stat(w.path(".config/notes/private.md"))
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("enclave file mode %v, want 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("enclave file mode %v, want 0644: modes follow the source", info.Mode().Perm())
 	}
 	// State holds hashes only.
 	secrecytest.AssertTreeClean(t, w.stateDir, canary)

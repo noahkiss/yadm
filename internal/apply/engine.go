@@ -203,18 +203,40 @@ func (e *Engine) readSource(ctx context.Context, snap *Snapshot, p model.SourceP
 	return b, "", err
 }
 
-// modeOf is an entry's target mode: explicit, else 0600 for an enclave file,
-// else 0755 for an executable source, else 0644.
+// modeOf is an entry's target mode. An explicit `mode` wins. Otherwise the
+// mode follows the source, sealed or not: 0755 for an executable source,
+// else 0644. Under a private directory (.ssh, .gnupg) group and other
+// access is removed: 0700 or 0600.
 func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
-	switch {
-	case r.Entry.Mode != 0:
+	if r.Entry.Mode != 0 {
 		return r.Entry.Mode.Perm()
-	case r.Entry.Enclave != "":
-		return 0o600
-	case snap.Tree[r.Source].Mode&0o111 != 0:
-		return 0o755
 	}
-	return 0o644
+	plain := r
+	plain.Entry.Enclave = "" // enclave files follow the source too
+	m := plain.FileMode(snap.Tree[r.Source].Mode&0o111 != 0).Perm()
+	if privateTarget(r.Target) {
+		m &^= 0o077
+	}
+	return m
+}
+
+// privateDirs are top-level directories whose files and subdirectories are
+// kept owner-only when the manifest sets no mode.
+var privateDirs = map[string]bool{".ssh": true, ".gnupg": true}
+
+// privateTarget reports whether a target lies under a private directory.
+func privateTarget(t model.Target) bool {
+	first, _, nested := strings.Cut(string(t), "/")
+	return nested && privateDirs[first]
+}
+
+// sourceMode is the git mode a change to an existing source path keeps: the
+// executable bit follows the path's current tree entry, sealed or not.
+func sourceMode(snap *Snapshot, p model.SourcePath) uint32 {
+	if te, ok := snap.Tree[p]; ok && te.Mode == gitModeExec {
+		return gitModeExec
+	}
+	return gitModeFile
 }
 
 // produce computes the target bytes for one resolved entry. lv is the live
