@@ -158,7 +158,8 @@ func measureSpawns(t *testing.T, n int) []spawnRun {
 }
 
 // TestSpawnsDoNotScaleWithFiles proves that a sync and a hook commit start
-// the same number of git processes whatever the number of managed files.
+// the same number of git processes, and read the same number of source
+// blobs, whatever the number of managed files.
 func TestSpawnsDoNotScaleWithFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds two large worlds")
@@ -170,6 +171,9 @@ func TestSpawnsDoNotScaleWithFiles(t *testing.T) {
 			small[i].spawns, small[i].reads, small[i].wall.Round(time.Millisecond), large[i].spawns, large[i].reads, large[i].wall.Round(time.Millisecond))
 		if large[i].spawns != small[i].spawns {
 			t.Errorf("%s: %d git spawns with 20 files, %d with 400", small[i].name, small[i].spawns, large[i].spawns)
+		}
+		if large[i].reads != small[i].reads {
+			t.Errorf("%s: %d source reads with 20 files, %d with 400", small[i].name, small[i].reads, large[i].reads)
 		}
 	}
 }

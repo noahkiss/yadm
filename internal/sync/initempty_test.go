@@ -1,6 +1,8 @@
 package sync
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -54,5 +56,87 @@ func TestInitAgainstEmptyRemoteThenFetch(t *testing.T) {
 	}
 	if st := git(t, A.repo.Dir(), "status", "--porcelain"); st != "" {
 		t.Fatalf("source clone not clean after the second sync:\n%s", st)
+	}
+}
+
+// TestCommitThenFetchFailsStillAppliesInFull: the apply after a commit
+// covers only the committed targets; when the fetch then fails (a late
+// network), the run still ends with a full apply of the new main.
+func TestCommitThenFetchFailsStillAppliesInFull(t *testing.T) {
+	a := fixture.HostA
+	w := newWorld(t, nil, a)
+	A := w.machines[a]
+	A.sync()
+	A.write(aliases, "alias ll=\"ls -la\"\nalias offline=\"yes\"\n")
+	w.clock.offset += 3 * time.Hour
+	moved := w.remote + ".away"
+	if err := os.Rename(w.remote, moved); err != nil {
+		t.Fatal(err)
+	}
+	r, err := A.s.Run(context.Background(), Options{Auto: true, Push: true})
+	if err == nil {
+		t.Fatal("sync with the remote gone did not fail")
+	}
+	if len(r.Committed) != 1 {
+		t.Fatalf("edit not committed locally: %+v", r)
+	}
+	st, err := A.eng.State.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Applied != A.main() {
+		t.Errorf("state applied %s, main %s: the full apply did not run", st.Applied, A.main())
+	}
+	if err := os.Rename(moved, w.remote); err != nil {
+		t.Fatal(err)
+	}
+	if r := A.sync(); !r.Pushed {
+		t.Errorf("next sync did not push: %+v", r)
+	}
+}
+
+// TestFullApplyOncePerRun: within one run, a second full apply of the
+// commit already applied in full does nothing, unless integrate raised
+// holds (again), which apply must see.
+func TestFullApplyOncePerRun(t *testing.T) {
+	a := fixture.HostA
+	w := newWorld(t, nil, a)
+	A := w.machines[a]
+	A.sync()
+	ctx := context.Background()
+	end := A.s.begin()
+	defer end()
+	tip := A.main()
+	var rep Report
+	if _, err := A.s.moveAndApply(ctx, &rep, tip, false); err != nil {
+		t.Fatal(err)
+	}
+	// A deleted target is held by any apply that runs.
+	if err := os.Remove(A.path(pkgList)); err != nil {
+		t.Fatal(err)
+	}
+	held := func() bool {
+		st, err := A.eng.State.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range st.Holds {
+			if h.Target == pkgList {
+				return true
+			}
+		}
+		return false
+	}
+	if _, err := A.s.moveAndApply(ctx, &rep, tip, false); err != nil {
+		t.Fatal(err)
+	}
+	if held() || rep.Applied != tip {
+		t.Fatalf("second full apply of %s in one run ran (held %v, applied %s)", tip, held(), rep.Applied)
+	}
+	if _, err := A.s.moveAndApply(ctx, &rep, tip, true); err != nil {
+		t.Fatal(err)
+	}
+	if !held() {
+		t.Fatal("apply after integrate holds did not run")
 	}
 }

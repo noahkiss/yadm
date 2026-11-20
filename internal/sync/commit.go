@@ -122,7 +122,12 @@ func (p perTarget) Check(ctx context.Context, staged []tasks.Staged, req extexec
 // the current source blob instead of going up the ladder again. A change in
 // direct is not a target (a key-log entry, a manifest edit): it skips the
 // gate, whose paths name targets, and commits against the current source.
-func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, planned []PlannedCommit, drift []apply.Drift, resolve map[model.Target]bool) (commitOut, error) {
+//
+// With partial set, the caller applies everything later in this run (the
+// exchange, or settle): the commit's own apply then covers only the targets
+// it touched, unless it changed a source that is not a target (a manifest
+// or key-log edit), which can change any target.
+func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, planned []PlannedCommit, drift []apply.Drift, resolve map[model.Target]bool, partial bool) (commitOut, error) {
 	out := commitOut{committed: map[model.Target]bool{}}
 	if len(planned) == 0 {
 		return out, nil
@@ -200,6 +205,8 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	r := &resolver{s: s, snap: snap, st: st}
 	tip := head
 	written := map[model.Target]string{}
+	var touched []model.Target // targets whose source the commits change
+	whole := false             // a commit changes a source that is not a target
 	for _, pc := range planned {
 		var changes []store.Change
 		var landed []model.Target
@@ -291,6 +298,18 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		for _, t := range landed {
 			out.committed[t] = true
 		}
+		for i, ch := range pc.Changes {
+			for _, c := range changes {
+				if c.Path != ch.Path {
+					continue
+				}
+				if pc.isDirect(i) {
+					whole = true
+				} else {
+					touched = append(touched, pc.Targets[i])
+				}
+			}
+		}
 	}
 	// A merged change lets apply replace the target only while it still holds
 	// the bytes that were captured.
@@ -309,7 +328,11 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	if out.dirty, err = s.setMain(ctx, tip, head); err != nil || out.dirty {
 		return out, err
 	}
-	dirty, err := s.moveAndApply(ctx, rep, tip)
+	if partial && !whole && len(touched) > 0 {
+		out.dirty, err = s.moveAndApplyPaths(ctx, rep, tip, touched)
+		return out, err
+	}
+	dirty, err := s.moveAndApply(ctx, rep, tip, false)
 	out.dirty = dirty
 	return out, err
 }
@@ -338,8 +361,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return rep, err
 	}
 	defer release()
-	s.snaps = nil
-	defer func() { s.snaps = nil }()
+	defer s.begin()()
 
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -485,9 +507,9 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err := s.Apply.State.Save(st); err != nil {
 		return rep, err
 	}
-	out, err := s.commit(ctx, &rep, snap, planned, drift, resolve)
+	out, err := s.commit(ctx, &rep, snap, planned, drift, resolve, opts.Push)
 	if err != nil {
-		return rep, err
+		return s.settle(ctx, rep, cp.Paths, out.committed, err)
 	}
 	rep.Committed = out.ids
 	rep.Resolutions = out.resolutions
@@ -496,6 +518,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	}
 	if opts.Push && !out.dirty {
 		r, err := s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
+		r, err = s.settle(ctx, r, cp.Paths, out.committed, err)
 		if err != nil {
 			return r, &ExchangeError{Err: err}
 		}
@@ -661,6 +684,9 @@ func (s *Syncer) collect(ctx context.Context, head model.CommitID) error {
 	for k, v := range facts {
 		st.Observed[k] = v
 	}
+	// New facts can change renders and task inputs: the next apply of
+	// even the same commit must run in full.
+	s.applied = ""
 	return s.Apply.State.Save(st)
 }
 
