@@ -415,7 +415,11 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	}
 	holds := append(res.Holds, rep.Holds...)
 	data["holds"] = withHoldNext(holds)
-	return result{data: data, text: actionsText(res)}, attention(holds)
+	text := actionsText(res)
+	if len(rep.Committed) > 0 {
+		text = fmt.Sprintf("resolved %s: committed %s", h.Target, short(rep.Committed[len(rep.Committed)-1]))
+	}
+	return result{data: data, text: text}, attention(holds)
 }
 
 // resolveConflict settles a conflict hold sync raised. Taking the target (or

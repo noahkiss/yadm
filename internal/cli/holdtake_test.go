@@ -2,6 +2,7 @@ package cli
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/noahkiss/yadm/internal/model"
@@ -69,13 +70,9 @@ func TestTakeTargetCapturesUnwrittenFile(t *testing.T) {
 	a, remote, h := takeTargetMachine(t, live, "adopt", model.HoldDrifted)
 	before := git(t, a.Source, "rev-parse", "main")
 
-	env := yadmOK(t, "hold", "resolve", h.ID, "--take", "target")
-	d := decode[struct {
-		Commits []string     `json:"commits"`
-		Holds   []model.Hold `json:"holds"`
-	}](t, env.Data)
-	if len(d.Commits) != 1 || len(d.Holds) != 0 {
-		t.Fatalf("resolve: %+v", d)
+	stdout, stderr, code := yadmRaw(t, "hold", "resolve", h.ID, "--take", "target")
+	if code != ExitOK || !strings.Contains(stdout, "resolved .config/app/settings.json: committed ") {
+		t.Fatalf("resolve: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	if got := git(t, remote, "show", "main:files/.config/app/settings.json"); got != "{\n  \"theme\": \"dark\",\n  \"window\": 1\n}" {
 		t.Fatalf("new source: %q", got)
