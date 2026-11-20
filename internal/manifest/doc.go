@@ -44,6 +44,7 @@
 //	func (p *Plan) Why(t model.Target) (Explanation, error)
 //	func (p *Plan) Protected(t model.Target) bool
 //	func (p *Plan) Root(t model.Target) *Root
+//	func Expand(e Entry, tree []model.SourcePath) []Resolved // every (target, source) pair of an entry
 //	func Match(pattern, name string) bool
 //	func ValidPattern(pattern string) error
 //	func IsGlob(s string) bool

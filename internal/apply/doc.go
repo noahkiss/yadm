@@ -30,16 +30,32 @@
 //     the state file, which never holds plaintext.
 //   - Every command starts with Scan; scanning is a stat pass that hashes only
 //     on a stat mismatch, plus a full hash pass at most once a day.
+//   - The manifest cannot weaken secrecy on its own (docs/design.md 7.4). The
+//     state records each target's protection (enclave, sealed keys, regions);
+//     a weaker manifest entry holds the target with model.HoldSealGuard in
+//     apply and capture until AllowProtection. An owned root that is new or
+//     changed its enclave takes effect only after AllowRoot
+//     (model.HoldRootUntrusted until then); files already in it go into
+//     State.Baseline and are never captured automatically.
+//   - Sealed content new to this machine opens only under the enclave's
+//     current epoch; content that does not open is held, never fatal. An
+//     explicit mode wider than an enclave file's source mode is held.
+//   - Backups of files with enclave plaintext go to
+//     backup/enclave/<enclaves>/ and are deleted when a verified key log no
+//     longer lists this machine.
 //
 // Exported API:
 //
-//	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen }
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; RenderHash; ChangedAt }
+//	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; RenderHash; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
-//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
+//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
-//	type Crypto interface{ rules.Sealer; SealFile; OpenFile }; func SetCrypto(*crypt.Set) Crypto
+//	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
+//	const KindProtection, KindRoot extexec.Kind // allow-list kinds
+//	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
+//	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error
 //	type Rules interface{ ToTarget; ToSource; Reseal } // default: package rules
 //	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
