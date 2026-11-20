@@ -73,6 +73,9 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 	if err != nil {
 		return nil, err
 	}
+	if err := man.LoadIncludes(func(p model.SourcePath) ([]byte, error) { return e.Store.ReadPath(ctx, rev, p) }); err != nil {
+		return nil, err
+	}
 
 	logs := map[model.EnclaveName][]crypt.LogEntry{}
 	for _, enc := range fl.Enclaves() {
@@ -96,7 +99,12 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 	if err != nil {
 		return nil, err
 	}
-	voc := fl.Vocabulary()
+	// The vocabulary carries the manifest's named conditions, so
+	// templates may say {% if cond:NAME %} as well.
+	voc, err := man.Vocabulary(fl.Vocabulary())
+	if err != nil {
+		return nil, err
+	}
 	plan, err := man.Resolve(mctx, paths, voc)
 	if err != nil {
 		return nil, err

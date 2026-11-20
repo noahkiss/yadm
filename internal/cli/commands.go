@@ -930,7 +930,7 @@ func losers(snap *apply.Snapshot, t model.Target, types []model.TypeName) []mode
 	}
 	expr := cond.Always()
 	if when != "" {
-		x, err := cond.Parse(when, snap.Fleet.Vocabulary())
+		x, err := cond.Parse(when, snapVocab(snap))
 		if err != nil {
 			return []model.MachineID{}
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/noahkiss/yadm/internal/apply"
+	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -92,9 +93,15 @@ func (a *app) cmdWhy(cmd *cobra.Command, args []string) (result, error) {
 	text := fmt.Sprintf("%s: managed=%v protected=%v", t, ex.Managed, ex.Protected)
 	if ex.Resolved != nil {
 		text += fmt.Sprintf(" source=%s entry=#%d", ex.Resolved.Source, ex.Resolved.Index)
+		if ex.WhenExpanded != "" {
+			text += fmt.Sprintf("\n  when %s = %s", ex.Resolved.Entry.When, ex.WhenExpanded)
+		}
 	}
 	for _, r := range ex.Rejected {
 		text += fmt.Sprintf("\n  entry #%d not applied: %s", r.Index, r.Reason)
+		if r.Expanded != "" {
+			text += fmt.Sprintf(" (= %s)", r.Expanded)
+		}
 	}
 	return result{data: ex, text: text}, nil
 }
@@ -219,4 +226,19 @@ func (a *app) cmdExplain(cmd *cobra.Command, args []string) (result, error) {
 		}
 	}
 	return result{data: data, text: b.String()}, nil
+}
+
+// snapVocab is the snapshot's condition vocabulary: the fleet's names plus
+// the manifest's named conditions. A manifest whose conditions do not
+// define cleanly yields the fleet's names alone, so a `cond:` term then
+// fails to parse.
+func snapVocab(snap *apply.Snapshot) cond.Vocabulary {
+	v := snap.Fleet.Vocabulary()
+	if snap.Manifest == nil {
+		return v
+	}
+	if nv, err := snap.Manifest.Vocabulary(v); err == nil {
+		return nv
+	}
+	return v
 }

@@ -22,6 +22,16 @@
 //     including entries that do not apply on this machine.
 //   - A unit attaches to its target only when the target is in the plan.
 //
+// Named conditions: a `[conditions]` table maps names to condition strings;
+// a `when` (of a file, root, unit, task or check) says `cond:NAME`. A dotted
+// key and a quoted key with dots name the same condition. The reserved key
+// `include` lists source files whose own `[conditions]` tables load too
+// (LoadIncludes); other tables in those files are ignored, and they cannot
+// include further. Resolve and Validate fail while a declared include is not
+// loaded, and on a cycle, an unknown name or a duplicate across files.
+// Explanation.WhenExpanded and Rejection.Expanded carry a `when` with every
+// named condition inlined.
+//
 // Parse is strict: unknown keys, unknown enum values, unsafe paths, sources
 // outside `files/` or the entry's own `sealed/<enclave>/`, and rule options
 // that do not fit the format are errors. Parse fills the defaults (quiet 2m,
@@ -52,4 +62,9 @@
 //	func ValidPattern(pattern string) error
 //	func IsGlob(s string) bool
 //	var BuiltinProtected []string
+//	func (m *Manifest) Includes() []string
+//	func (m *Manifest) LoadIncludes(read func(model.SourcePath) ([]byte, error)) error
+//	func (m *Manifest) Definitions() []cond.Definition
+//	func (m *Manifest) Vocabulary(v cond.Vocabulary) (cond.Vocabulary, error) // v plus the named conditions
+//	func (p *Plan) When(i int) cond.Expr // entry i's parsed when
 package manifest

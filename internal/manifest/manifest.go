@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"strings"
 
+	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -160,6 +161,11 @@ type Manifest struct {
 	Checks    map[string]CheckDef `toml:"checks" json:"checks,omitempty"`
 	Units     []Unit              `toml:"unit" json:"units,omitempty"`
 	Protected []string            `toml:"protected" json:"protected,omitempty"` // extra never-auto-commit globs
+	// Conditions is the raw `[conditions]` table: named conditions and
+	// `include`. Parse turns it into Definitions and Includes.
+	Conditions map[string]any `toml:"conditions" json:"-"`
+
+	named namedConds
 }
 
 // Resolved is one target's winning entry.
@@ -180,6 +186,7 @@ type Plan struct {
 
 	m     *Manifest
 	cands [][]candidate // per entry: what it would produce
+	conds []cond.Expr   // per entry: its parsed `when`
 	apply []bool        // per entry: its `when` is true here
 }
 
@@ -191,6 +198,9 @@ type Explanation struct {
 	Rejected  []Rejection  `json:"rejected,omitempty"` // entries that named the target but did not apply
 	Protected bool         `json:"protected"`
 	InRoot    *Root        `json:"in_root,omitempty"`
+	// WhenExpanded is the winning entry's `when` with every `cond:NAME`
+	// inlined. It is set only when the `when` names a condition.
+	WhenExpanded string `json:"when_expanded,omitempty"`
 }
 
 // Rejection says why one entry did not apply.
@@ -198,6 +208,9 @@ type Rejection struct {
 	Index  int    `json:"index"`
 	When   string `json:"when"`
 	Reason string `json:"reason"`
+	// Expanded is When with every `cond:NAME` inlined, set only when When
+	// names a condition.
+	Expanded string `json:"expanded,omitempty"`
 }
 
 // BuiltinProtected lists the paths that never auto-commit, whatever the manifest says.

@@ -74,6 +74,10 @@ type conds struct {
 }
 
 func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
+	v, err := m.Vocabulary(v)
+	if err != nil {
+		return nil, err
+	}
 	var errs []error
 	parse := func(where, src string) cond.Expr {
 		e, err := cond.Parse(src, v)
@@ -214,6 +218,7 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		cs := candidates(e, tree)
 		ok := c.entries[i].Eval(ctx)
 		p.cands = append(p.cands, cs)
+		p.conds = append(p.conds, c.entries[i])
 		p.apply = append(p.apply, ok)
 		if !ok {
 			continue
@@ -328,6 +333,7 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 	if r, ok := p.Targets[t]; ok {
 		x.Managed = true
 		x.Resolved = &r
+		x.WhenExpanded = p.expanded(r.Index)
 	}
 	if p.m == nil {
 		return x, nil
@@ -348,7 +354,7 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 		if !names {
 			continue
 		}
-		rej := Rejection{Index: i, When: e.When}
+		rej := Rejection{Index: i, When: e.When, Expanded: p.expanded(i)}
 		switch {
 		case !p.apply[i]:
 			rej.Reason = fmt.Sprintf("when %q is false on this machine", e.When)
@@ -362,6 +368,23 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 		x.Rejected = append(x.Rejected, rej)
 	}
 	return x, nil
+}
+
+// expanded returns entry i's `when` with named conditions inlined, or ""
+// when it names none.
+func (p *Plan) expanded(i int) string {
+	if i < 0 || i >= len(p.conds) || p.conds[i] == nil || len(cond.Names(p.conds[i])) == 0 {
+		return ""
+	}
+	return cond.Expand(p.conds[i])
+}
+
+// When returns entry i's parsed `when`, or nil when i is out of range.
+func (p *Plan) When(i int) cond.Expr {
+	if i < 0 || i >= len(p.conds) {
+		return nil
+	}
+	return p.conds[i]
 }
 
 func sortedKeys[V any](m map[string]V) []string {

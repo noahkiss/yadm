@@ -788,7 +788,7 @@ func reach(snap *apply.Snapshot, when string, enc model.EnclaveName) *Reach {
 	}
 	expr := cond.Always()
 	if when != "" {
-		x, err := cond.Parse(when, snap.Fleet.Vocabulary())
+		x, err := cond.Parse(when, snapVocab(snap))
 		if err != nil {
 			return r
 		}

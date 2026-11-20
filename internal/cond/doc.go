@@ -9,6 +9,7 @@
 //	unary  = "!" unary | "(" expr ")" | term
 //	term   = "type:" NAME | "os:" NAME | "arch:" NAME | "machine:" NAME
 //	       | "fact:" KEY [ "=" VALUE ] | "observed:" COLLECTOR "=" ITEM
+//	       | "cond:" NAME
 //	       | "true" | "false"
 //
 // `machine:` matches a machine name or nickname. `fact:k` is true when the
@@ -18,15 +19,29 @@
 // hold `.`, `-` and `=`. `observed:c=i` is true when collector c reported
 // item i on this machine; items compare exactly.
 //
+// `cond:NAME` stands for a named condition from the manifest's
+// `[conditions]` table (Vocabulary.Conditions). A NAME is dot-separated
+// segments of letters, digits, `_` and `-`. Define parses the definitions,
+// which may reference each other; a cycle, an unknown name or a duplicate is
+// an error naming the file and the condition. String keeps `cond:NAME`;
+// Expand inlines every definition.
+//
 // Parsing is strict. Parse checks every type, fact key and collector name
 // against a Vocabulary built from the fleet file, so a typo fails at load time
 // instead of silently evaluating to false.
 //
 // Exported API:
 //
-//	type Vocabulary struct{ Types, FactKeys, Collectors, Enclaves map[string]bool }
+//	type Vocabulary struct{ Types, FactKeys, Collectors, Enclaves map[string]bool; Conditions map[string]Expr }
 //	type Expr interface{ Eval(model.Context) bool; String() string }
 //	func Parse(src string, v Vocabulary) (Expr, error)
 //	func Always() Expr
 //	type Error struct{ Src string; Offset int; Msg string }
+//	type Definition struct{ Name, Src, File string }
+//	func Define(defs []Definition, v Vocabulary) (map[string]Expr, error) // *DefineError
+//	type DefineError struct{ Msgs []string }
+//	func ValidName(s string) bool
+//	func Expand(e Expr) string        // `cond:NAME` inlined
+//	func Names(e Expr) []string       // named conditions e references
+//	func Collectors(e Expr) []string  // collectors e reads through observed:
 package cond
