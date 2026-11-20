@@ -85,3 +85,37 @@ func splitLines(b []byte) []string {
 	}
 	return out
 }
+
+// TestReproInitEmptyRemote: a machine initialized against an empty remote
+// (as the importing machine must be) fetches its first main. Its source
+// clone must be clean and its sync must not hold source_dirty.
+func TestReproInitEmptyRemote(t *testing.T) {
+	if os.Getenv("YADM_E2E_REPRO") == "" {
+		t.Skip("set YADM_E2E_REPRO=1")
+	}
+	w := NewWorld(t)
+	a := w.NewMachine("host-a", "user")
+	if r := a.Init("host-a"); r.Code != 0 {
+		t.Fatalf("init on an empty remote: %s", r.Err())
+	}
+	pushSourceEdit(t, w, "seed", func(dir string) {
+		writeFiles(t, dir, map[string]string{
+			"fleet.toml":                     "schema = 1\n\n[types.home]\n\n[machines." + a.ID + "]\nname = \"host-a\"\ntypes = [\"home\"]\nos = \"darwin\"\narch = \"arm64\"\n",
+			"manifest.toml":                  "schema = 1\n\n[[file]]\ntarget = \".config/shell/aliases.sh\"\n",
+			"files/.config/shell/aliases.sh": "alias ll='ls -l'\n",
+		})
+	})
+	for i := 1; i <= 2; i++ {
+		r := a.Run("sync")
+		st, _ := w.GitErr(a.Source, nil, "status", "--porcelain")
+		var reasons []string
+		for _, h := range a.Holds() {
+			reasons = append(reasons, h.Reason)
+		}
+		n := 0
+		if st != "" {
+			n = len(splitLines([]byte(st)))
+		}
+		t.Logf("sync %d: %s; source clone status entries %d; holds %v; local main = remote main: %v", i, r.Err(), n, reasons, a.Main() == w.RemoteMain())
+	}
+}

@@ -33,7 +33,10 @@ type SoakSpec struct {
 	// Sealed are whole-file enclave targets the members have.
 	Sealed []string
 	// Root is a shared owned root; new files go there.
-	Root   string
+	Root string
+	// Types is the comma-separated type list a retag of a new root file
+	// names, so it reaches every machine.
+	Types  string
 	Rounds int
 	Seed   int64
 	// Extra canaries planted before the soak (setup secrets).
@@ -63,15 +66,17 @@ type SoakReport struct {
 	CommandErrors  []string
 	Leaks          []string
 	VolatileLeaks  int
-	NewFilesStuck  int // new owned-root files committed but never delivered to a peer
+	NewFilesStuck  int            // new owned-root files never delivered to a peer
+	NewFiles       map[string]int // new files by decision (commit, retag)
+	StuckBy        map[string]int
 	ConcurrentRuns int
 	Duration       time.Duration
 }
 
 func (r SoakReport) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "seed=%d rounds=%d edits=%d via=%v concurrent=%d resolved=%d explained=%v lost=%d unexplained=%d diverged=%d cmd_errors=%d leaks=%d volatile_leaks=%d newfiles_stuck=%d dur=%s",
-		r.Seed, r.Rounds, r.Edits, r.ByVia, r.ConcurrentRuns, r.Resolved, r.Explained, len(r.Lost), len(r.Unexplained), len(r.Diverged), len(r.CommandErrors), len(r.Leaks), r.VolatileLeaks, r.NewFilesStuck, r.Duration.Round(time.Second))
+	fmt.Fprintf(&b, "seed=%d rounds=%d edits=%d via=%v concurrent=%d resolved=%d explained=%v lost=%d unexplained=%d diverged=%d cmd_errors=%d leaks=%d volatile_leaks=%d newfiles=%v stuck=%v dur=%s",
+		r.Seed, r.Rounds, r.Edits, r.ByVia, r.ConcurrentRuns, r.Resolved, r.Explained, len(r.Lost), len(r.Unexplained), len(r.Diverged), len(r.CommandErrors), len(r.Leaks), r.VolatileLeaks, r.NewFiles, r.StuckBy, r.Duration.Round(time.Second))
 	return b.String()
 }
 
@@ -82,7 +87,7 @@ func Soak(t *testing.T, w *World, s SoakSpec) SoakReport {
 	start := time.Now()
 	rng := rand.New(rand.NewSource(s.Seed))
 	t.Logf("soak seed %d (rerun with YADM_SOAK_SEED=%d)", s.Seed, s.Seed)
-	rep := SoakReport{Seed: s.Seed, Rounds: s.Rounds, ByVia: map[string]int{}, Explained: map[string]int{}}
+	rep := SoakReport{Seed: s.Seed, Rounds: s.Rounds, ByVia: map[string]int{}, Explained: map[string]int{}, NewFiles: map[string]int{}, StuckBy: map[string]int{}}
 	var edits []soakEdit
 	canaries := append([]secrecytest.Canary{}, s.Canaries...)
 	byName := map[string]*Machine{}
@@ -155,17 +160,26 @@ func Soak(t *testing.T, w *World, s SoakSpec) SoakReport {
 					appendLine(m, e.Target, e.Token)
 				case "newfile":
 					e.Target = s.Root + "/f-" + e.Token
-					e.Via = "commit" // a new file waits for a named commit by design
+					// A new file waits for a decision by design: share it
+					// with a named commit, or track it with retag.
+					e.Via = "commit"
+					if s.Types != "" && rng.Intn(2) == 0 {
+						e.Via = "retag"
+					}
 					m.WriteHome(e.Target, []byte(e.Token+"\n"), 0)
 				}
 				if e.Via == "auto" {
 					ts := time.Now().Add(-10 * time.Minute)
 					_ = os.Chtimes(filepath.Join(m.Home, filepath.FromSlash(e.Target)), ts, ts)
 				}
-				rep.ByVia[e.Via]++
+				if e.Kind != "volatile" {
+					rep.ByVia[e.Kind+"/"+e.Via]++
+				}
 				switch e.Via {
 				case "commit":
 					cmdErr(round, m, m.Run("commit", e.Target))
+				case "retag":
+					cmdErr(round, m, m.Run("retag", e.Target, s.Types))
 				case "hook":
 					payload, _ := json.Marshal(map[string]any{
 						"session_id": fmt.Sprintf("soak-%d-%s", s.Seed, m.Name), "tool_name": "Edit", "cwd": m.Home,
@@ -285,7 +299,7 @@ func Soak(t *testing.T, w *World, s SoakSpec) SoakReport {
 		}
 		t.Logf("round %d: edits so far %d, lost now %d, diverged %d, unexplained %d, cmd errors %d", round, len(edits), lostNow, len(rep.Diverged), len(rep.Unexplained), len(rep.CommandErrors))
 	}
-	// New files: committed on their origin; delivered to a peer?
+	// New files: shared or retagged on their origin; delivered to a peer?
 	for _, e := range edits {
 		if e.Kind != "newfile" {
 			continue
@@ -296,9 +310,11 @@ func Soak(t *testing.T, w *World, s SoakSpec) SoakReport {
 			}
 			if _, ok := m.ReadHome(e.Target); !ok {
 				rep.NewFilesStuck++
+				rep.StuckBy[e.Via]++
 				break
 			}
 		}
+		rep.NewFiles[e.Via]++
 	}
 	rep.Edits = len(edits)
 	rep.Duration = time.Since(start)

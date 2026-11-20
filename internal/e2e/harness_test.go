@@ -263,8 +263,8 @@ func (m *Machine) RunIn(stdin []byte, args ...string) Result {
 func (m *Machine) RunEnv(extra []string, stdin []byte, args ...string) Result {
 	m.w.t.Helper()
 	full := append(append([]string{}, args...), "--json")
-	if len(args) > 0 && args[0] == "hook" {
-		full = args // hooks print a verdict, not an envelope
+	if len(args) > 0 && (args[0] == "hook" || args[0] == "git") {
+		full = args // hooks print a verdict and git passes through: no envelope
 	}
 	cmd := exec.Command(m.w.bin, full...)
 	cmd.Env = append(m.env(), extra...)

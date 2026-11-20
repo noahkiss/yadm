@@ -30,6 +30,27 @@ type corpus struct {
 	password string   // in memory; reaches only the import child's environment
 	report   *bytes.Buffer
 	seeded   map[string]map[string]fileStamp // machine -> stamps right after seeding
+	// noApply makes setup move the source with plain git instead of sync,
+	// so nothing is applied before adopt.
+	noApply bool
+}
+
+// syncOrPull fetches main: sync, or with noApply a fast-forward pull of the
+// source clone that applies nothing.
+func (c *corpus) syncOrPull(m *Machine) Result {
+	if c.noApply {
+		r := m.Run("git", "pull", "-q", "--ff-only", "origin", "main")
+		return r
+	}
+	return m.Run("sync")
+}
+
+// syncOrPush publishes local commits: sync, or with noApply a plain push.
+func (c *corpus) syncOrPush(m *Machine) Result {
+	if c.noApply {
+		return m.Run("git", "push", "-q", "origin", "main")
+	}
+	return m.Run("sync")
 }
 
 func loadCorpus(t *testing.T) *corpus {
@@ -130,6 +151,22 @@ func (c *corpus) readLegacySecrets(t *testing.T, w *World) {
 	}
 }
 
+// types is every legacy class, which the import turns into a type.
+func (c *corpus) types() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, g := range c.goldens {
+		for _, cl := range g.Profile.Classes {
+			if cl = strings.ToLower(cl); !seen[cl] {
+				seen[cl] = true
+				out = append(out, cl)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // machinesTSV writes the machines table from the profiles.
 func (c *corpus) machinesTSV(t *testing.T, dir string) string {
 	var b strings.Builder
@@ -222,7 +259,9 @@ func (c *corpus) importWorld(t *testing.T, w *World, seed bool) (*profileMachine
 	fp := d.KeyLogs[c.enclave]
 	out := filepath.Join(w.Root, "out")
 	w.Git(out, "push", "-q", w.Remote, "main")
-	if r := admin.Run("sync"); r.Code != 0 && r.Code != 3 {
+	if r := c.syncOrPull(admin); r.Code != 0 && r.Code != 3 && !strings.Contains(r.Err(), "not in fleet.toml") {
+		c.logf(t, "importer sync after push: %s", r.Err())
+	} else if r.Code != 0 && r.Code != 3 && strings.Contains(r.Err(), "not in fleet.toml") {
 		c.logf(t, "importer sync after push: %s", r.Err())
 		// The importing identity signed key-log entry 1 but the import put
 		// no fleet entry for it. A writer adds one by hand.
@@ -231,7 +270,7 @@ func (c *corpus) importWorld(t *testing.T, w *World, seed bool) (*profileMachine
 			fmt.Fprintf(f, "\n[machines.%s]\nname = \"importer\"\ntypes = [%q]\nos = %q\narch = %q\n", admin.ID, c.enclave, runtime.GOOS, runtime.GOARCH)
 			_ = f.Close()
 		})
-		if r := admin.Run("sync"); r.Code != 0 && r.Code != 3 {
+		if r := c.syncOrPull(admin); r.Code != 0 && r.Code != 3 {
 			c.logf(t, "importer sync after the fleet entry: %s", r.Err())
 		} else {
 			c.logf(t, "importer: synced after a hand-added fleet entry")
@@ -249,7 +288,7 @@ func (c *corpus) importWorld(t *testing.T, w *World, seed bool) (*profileMachine
 		c.logf(t, "importer source clone dirty after first fetch: %d entries; reset by the harness", len(strings.Split(st, "\n")))
 		w.Git(admin.Source, "reset", "-q", "--hard", "main")
 	}
-	if r := admin.Run("sync"); r.Code != 0 {
+	if r := c.syncOrPull(admin); r.Code != 0 {
 		c.logf(t, "importer sync: %s", r.Err())
 	}
 	return pm, fp, true
@@ -290,13 +329,13 @@ func (c *corpus) joinProfiles(t *testing.T, w *World, pa *profileMachine, seed b
 			if r.Code != 0 || r.Decode(&d) != nil {
 				t.Errorf("%s: enclave add: %s", g.Profile.Name, r.Err())
 			} else {
-				ra := admin.Run("sync")
+				ra := c.syncOrPush(admin)
 				if ra.Code == 3 {
 					for _, h := range admin.Holds() {
 						c.logf(t, "importer hold after enclave add %s: %s %s %s (%s)", g.Profile.Name, h.Reason, h.Target, h.Task, clip(h.Detail, 200))
 					}
 				}
-				rm := m.Run("sync")
+				rm := c.syncOrPull(m.Machine)
 				if r := m.Run("enclave", "join", c.enclave, "--expect", d.Fingerprint); r.Code != 0 && r.Code != 3 {
 					t.Errorf("%s: join: %s (admin sync: %s; member sync: %s; admin main %.8s, member main %.8s, remote %.8s)",
 						g.Profile.Name, r.Err(), ra.Err(), rm.Err(), admin.Main(), m.Main(), w.RemoteMain())
@@ -381,11 +420,7 @@ func (c *corpus) secrecy(t *testing.T, w *World, ms []*profileMachine, canaries 
 	}
 	exclusive := oracle.ExclusiveHashes(members, others)
 	c.logf(t, "secrecy: %d member-only content hashes", len(exclusive))
-	for _, m := range ms {
-		if m.member {
-			continue
-		}
-		hits := 0
+	scan := func(m *profileMachine) []string {
 		var paths []string
 		_ = filepath.WalkDir(m.Root, func(p string, d os.DirEntry, err error) error {
 			if err != nil || !d.Type().IsRegular() {
@@ -396,15 +431,21 @@ func (c *corpus) secrecy(t *testing.T, w *World, ms []*profileMachine, canaries 
 				return nil
 			}
 			if _, ok := exclusive[oracle.HashFile(b, replaceFor(m.Machine))]; ok {
-				hits++
 				rel, _ := filepath.Rel(w.Root, p)
 				paths = append(paths, rel)
 			}
 			return nil
 		})
-		c.logf(t, "secrecy %s: %d member-only files found on disk %v", m.g.Profile.Name, hits, firstN(paths, 10))
-		if hits > 0 {
-			t.Errorf("%s: %d member-only files on a non-member", m.g.Profile.Name, hits)
+		return paths
+	}
+	for _, m := range ms {
+		if m.member {
+			continue
+		}
+		paths := scan(m)
+		c.logf(t, "secrecy %s: %d member-only files found on disk %v", m.g.Profile.Name, len(paths), firstN(paths, 10))
+		if len(paths) > 0 {
+			t.Errorf("%s: %d member-only files on a non-member", m.g.Profile.Name, len(paths))
 		}
 		if len(canaries) > 0 {
 			fs, _ := secrecytest.ScanTree(m.Root, canaries...)
@@ -412,6 +453,17 @@ func (c *corpus) secrecy(t *testing.T, w *World, ms []*profileMachine, canaries 
 			if len(fs) > 0 {
 				t.Errorf("%s: canary on a non-member", m.g.Profile.Name)
 			}
+		}
+	}
+	// Positive control: the same scan on a member must find its files.
+	for _, m := range ms {
+		if m.member {
+			n := len(scan(m))
+			c.logf(t, "secrecy control %s (member): %d member-only files found on disk (expect hundreds)", m.g.Profile.Name, n)
+			if n == 0 {
+				t.Errorf("secrecy control: the scan finds nothing on a member, so it proves nothing")
+			}
+			break
 		}
 	}
 	// Member-only plaintext as git blobs in the remote.
@@ -441,6 +493,24 @@ func (c *corpus) secrecy(t *testing.T, w *World, ms []*profileMachine, canaries 
 	for sc.Scan() {
 		if !strings.HasSuffix(sc.Text(), " missing") {
 			present++
+		}
+	}
+	// Positive control: shared plain files are present as blobs.
+	var shared []string
+	for _, e := range others[0].Targets {
+		if e.Kind == oracle.KindPlain && !e.Normalized && !e.Template && !e.Ciphertext && e.Size > 0 {
+			shared = append(shared, filepath.Join(others[0].Dir, "content", filepath.FromSlash(e.Path)))
+		}
+		if len(shared) == 50 {
+			break
+		}
+	}
+	if sids, err := w.GitErr(w.Remote, []byte(strings.Join(shared, "\n")+"\n"), "hash-object", "--stdin-paths"); err == nil {
+		sfound, _ := w.GitErr(w.Remote, []byte(sids+"\n"), "cat-file", "--batch-check")
+		n := strings.Count(sfound, " blob ")
+		c.logf(t, "secrecy control remote: %d of %d shared plain blobs present (expect all)", n, len(shared))
+		if n == 0 {
+			t.Errorf("secrecy control: the blob check finds no shared blob, so it proves nothing")
 		}
 	}
 	// The legacy history stays reachable (import parent), and it held these
@@ -603,6 +673,8 @@ func sealedTarget(t *testing.T, w *World, m *profileMachine) string {
 }
 
 func (c *corpus) rehearseAdopt(t *testing.T) {
+	c.noApply = true
+	defer func() { c.noApply = false }()
 	w := NewWorld(t)
 	c.readLegacySecrets(t, w)
 	admin, _, ok := c.importWorld(t, w, true)
@@ -611,7 +683,9 @@ func (c *corpus) rehearseAdopt(t *testing.T) {
 	}
 	ms := c.joinProfiles(t, w, admin, true)
 	for _, m := range ms {
-		m.Run("sync") // fetch the key-log adds; sync applies, so stamp after a dry run first
+		if r := c.syncOrPull(m.Machine); r.Code != 0 { // fetch the key-log adds without applying
+			c.logf(t, "%s: pull: %s", m.g.Profile.Name, r.Err())
+		}
 	}
 	for _, m := range ms {
 		before := stamps(m.Home)
@@ -622,7 +696,7 @@ func (c *corpus) rehearseAdopt(t *testing.T) {
 		after := stamps(m.Home)
 		changed := diffStamps(before, after)
 		sinceSeed := diffStamps(c.seeded[m.Name], after)
-		c.logf(t, "adopt %s: files rewritten since seeding (init, join and sync included): %d %v", m.g.Profile.Name, len(sinceSeed), firstN(sinceSeed, 10))
+		c.logf(t, "adopt %s: files rewritten since seeding (init and join included): %d %v", m.g.Profile.Name, len(sinceSeed), firstN(sinceSeed, 10))
 		var d struct {
 			Actions []struct {
 				Target string `json:"target"`
@@ -641,6 +715,9 @@ func (c *corpus) rehearseAdopt(t *testing.T) {
 		}
 		c.logf(t, "adopt %s: dry-run %s, files touched by dry-run %d; adopt %s, actions %v, holds %v, files rewritten %d %v",
 			m.g.Profile.Name, dr.Err(), len(changedDry), r.Err(), kinds, holds, len(changed), firstN(changed, 10))
+		if kinds["adopt"] == 0 {
+			t.Errorf("%s: adopt recorded no target as adopted: %v", m.g.Profile.Name, kinds)
+		}
 		if len(changedDry) > 0 {
 			t.Errorf("%s: adopt --dry-run touched %d files", m.g.Profile.Name, len(changedDry))
 		}
@@ -685,7 +762,7 @@ func (c *corpus) soak(t *testing.T, w *World, ms []*profileMachine) {
 			"files/.config/yadm-e2e/settings.json": "{\n  \"theme\": \"dark\"\n}\n",
 		})
 		f, _ := os.OpenFile(filepath.Join(dir, "manifest.toml"), os.O_APPEND|os.O_WRONLY, 0)
-		_, _ = f.WriteString("\n[[file]]\ntarget = \".config/yadm-e2e/Brewfile\"\n\n[[file]]\ntarget = \".config/yadm-e2e/settings.json\"\nformat = \"json\"\ndrop = [\"volatile\"]\n\n[[root]]\npath = \".config/yadm-e2e/drop\"\n")
+		_, _ = f.WriteString("\n[[file]]\ntarget = \".config/yadm-e2e/Brewfile\"\nmerge = \"union\"\n\n[[file]]\ntarget = \".config/yadm-e2e/settings.json\"\nformat = \"json\"\nvolatile = [\"volatile\"]\n\n[[root]]\npath = \".config/yadm-e2e/drop\"\n")
 		_ = f.Close()
 	})
 	var machines []*Machine
@@ -699,7 +776,7 @@ func (c *corpus) soak(t *testing.T, w *World, ms []*profileMachine) {
 	}
 	spec := SoakSpec{Machines: machines, Members: members, Enclave: c.enclave, Shared: shared,
 		Union: ".config/yadm-e2e/Brewfile", JSON: ".config/yadm-e2e/settings.json", Root: ".config/yadm-e2e/drop",
-		Rounds: soakRounds(50), Seed: soakSeed()}
+		Rounds: soakRounds(50), Seed: soakSeed(), Types: strings.Join(c.types(), ",")}
 	if sealed != "" {
 		spec.Sealed = []string{sealed}
 	}

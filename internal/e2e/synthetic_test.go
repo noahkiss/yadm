@@ -49,11 +49,12 @@ target = ".config/shell/env.sh"
 
 [[file]]
 target = ".config/packages/Brewfile"
+merge = "union"
 
 [[file]]
 target = ".config/app/settings.json"
 format = "json"
-drop = ["volatile"]
+volatile = ["volatile"]
 
 [[root]]
 path = ".config/private"
@@ -190,6 +191,7 @@ func TestSyntheticSoak(t *testing.T) {
 		JSON:     ".config/app/settings.json",
 		Sealed:   []string{synthSealed},
 		Root:     ".config/drop",
+		Types:    "home,corp",
 		Rounds:   soakRounds(6),
 		Seed:     soakSeed(),
 		Canaries: []secrecytest.Canary{canary},
@@ -220,6 +222,6 @@ func reportSoak(t *testing.T, rep SoakReport) {
 		t.Errorf("volatile JSON keys reached git %d times", rep.VolatileLeaks)
 	}
 	if rep.NewFilesStuck > 0 {
-		t.Errorf("%d new owned-root files were committed but never reached a peer", rep.NewFilesStuck)
+		t.Errorf("%d new owned-root files never reached a peer (by decision %v)", rep.NewFilesStuck, rep.StuckBy)
 	}
 }
