@@ -278,7 +278,7 @@ func (p *planner) emitFile(f *legacyFile, v *variant, target, when string, singl
 			p.problem(f.Path, "template processor %q is not supported; only the built-in one converts", proc)
 			return
 		}
-		res, probs := convertTemplate(f.Path, target, data, p.includeFile)
+		res, probs := convertTemplate(f.Path, target, data, p.includeFor(e.Enclave))
 		p.problems = append(p.problems, probs...)
 		if len(probs) > 0 {
 			return
@@ -349,19 +349,41 @@ func (p *planner) decode(f *legacyFile) ([]byte, bool, bool) {
 	return pt, true, true
 }
 
-// includeFile returns a tracked file at a $HOME path for a template include.
-func (p *planner) includeFile(home string) ([]byte, bool, error) {
-	f := p.repo.byPath[home]
-	if f == nil || f.Symlink {
-		return nil, false, nil
+// includeFor returns the include lookup for a template that is stored
+// sealed for enclave (empty for a plaintext template). An encrypted include
+// is inlined only into a template sealed for the same enclave, so its
+// plaintext never lands in files/.
+func (p *planner) includeFor(enclave model.EnclaveName) includeFunc {
+	return func(home string) ([]byte, bool, error) {
+		f := p.repo.byPath[home]
+		if f == nil || f.Symlink {
+			return nil, false, nil
+		}
+		n := len(p.problems)
+		data, encrypted, ok := p.decode(f)
+		if !ok {
+			p.problems = p.problems[:n]
+			return nil, false, fmt.Errorf("cannot read the included file")
+		}
+		if encrypted {
+			v := &variant{}
+			if alt, isAlt, err := ParseAltName(f.Path); err == nil && isAlt {
+				var as []atom
+				for _, c := range alt.Conds {
+					if a, ok := atomFor(c); ok {
+						as = append(as, a)
+					}
+				}
+				v.Conds = newConj(as...)
+			}
+			inc, ok := p.enclaveFor(f, v)
+			p.problems = p.problems[:n]
+			if !ok || inc != enclave {
+				return nil, false, fmt.Errorf("the included file is encrypted and the template is not sealed for its enclave")
+			}
+		}
+		return data, true, nil
 	}
-	n := len(p.problems)
-	data, _, ok := p.decode(f)
-	if !ok {
-		p.problems = p.problems[:n]
-		return nil, false, fmt.Errorf("cannot read the included file")
-	}
-	return data, true, nil
 }
 
 // enclaveFor picks the enclave of an encrypted file from its classes.

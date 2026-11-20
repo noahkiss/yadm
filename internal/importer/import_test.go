@@ -36,6 +36,8 @@ var legacyExtra = map[string]string{
 		"{% include \"aliases.sh\" %}\n" +
 		"{% if yadm.hostname == \"asset-0001\" %}\nexport ASSET=1\n{% endif %}\n",
 	".ssh/config": "Host example\n  User someone\n",
+	// A sealed template may inline an encrypted file of its own enclave.
+	".config/notes/combined##class.personal,template": "head\n{% include \"private.md##class.personal\" %}\n",
 }
 
 var legacyExec = map[string]bool{"bin/hello": true, ".config/notes/run.sh##class.personal": true}
@@ -183,6 +185,7 @@ func TestImportEndToEnd(t *testing.T) {
 			".config/notes/private.md":   {lf.Canary.String(), 0o600},
 			".config/notes/latest":       {lf.Canary.String(), 0o600},
 			".config/notes/run.sh":       {lf.Canary.String(), 0o700},
+			".config/notes/combined":     {"head\n# Private notes\nMarker: " + lf.Canary.String(), 0o600},
 			".config/tool/config.toml":   {"", 0},
 			".config/shell/proxy.conf":   {"proxy = laptop-a.example.invalid\n", 0o644},
 			"bin/hi":                     {"echo hello", 0o755},
@@ -299,6 +302,12 @@ func TestImportProblemsWriteNothing(t *testing.T) {
 		"dangling link": {
 			extra: map[string]string{},
 			path:  "bin/nowhere", reason: "not provided",
+		},
+		// A plaintext template must not inline an encrypted file: its
+		// plaintext would land in files/ and the object store.
+		"encrypted include into plaintext": {
+			extra: map[string]string{".config/shell/leak.sh##template": "{% include \"../notes/private.md##class.personal\" %}\n"},
+			path:  ".config/shell/leak.sh##template", reason: "encrypted",
 		},
 	}
 	t.Setenv("YADM_TEST_WRONG", "wrong")
