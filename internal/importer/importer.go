@@ -181,6 +181,8 @@ func convert(ctx context.Context, opts Options) (*converted, error) {
 	conv.Manifest, err = encodeManifest(p.entries)
 	if err != nil {
 		conv.Problems = append(conv.Problems, Problem{Path: "manifest.toml", Reason: err.Error()})
+	} else if fl != nil && conv.Fleet != nil {
+		conv.Problems = append(conv.Problems, checkExclusive(conv.Manifest, fl)...)
 	}
 	sort.SliceStable(conv.Problems, func(i, j int) bool {
 		if conv.Problems[i].Path != conv.Problems[j].Path {

@@ -39,14 +39,14 @@ func (e *CollisionError) Error() string {
 }
 
 // FileMode returns the mode to write the target with. An explicit `mode`
-// wins. Otherwise a whole-file enclave entry gets 0600, and any other entry
-// gets 0755 when its source is executable and 0644 when it is not.
+// wins. Otherwise the entry gets 0755 when its source is executable and
+// 0644 when it is not, sealed or not: an enclave keeps plaintext out of the
+// repository and off other machines, and a file that must be private on
+// disk says so with `mode`.
 func (r Resolved) FileMode(sourceExecutable bool) fs.FileMode {
 	switch {
 	case r.Entry.Mode != 0:
 		return r.Entry.Mode
-	case r.Entry.Enclave != "":
-		return 0o600
 	case sourceExecutable:
 		return 0o755
 	}

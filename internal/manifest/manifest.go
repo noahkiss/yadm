@@ -36,7 +36,7 @@ type Entry struct {
 	When     string                       `toml:"when" json:"when,omitempty"`
 	Enclave  model.EnclaveName            `toml:"enclave" json:"enclave,omitempty"`   // whole file sealed for this enclave
 	Template bool                         `toml:"template" json:"template,omitempty"` // render with package render
-	Mode     fs.FileMode                  `toml:"mode" json:"mode,omitempty"`         // 0 means 0644 (0755 if the source is executable); sealed files default to 0600
+	Mode     fs.FileMode                  `toml:"mode" json:"mode,omitempty"`         // 0 means 0644 (0755 if the source is executable), sealed or not
 	Format   Format                       `toml:"format" json:"format,omitempty"`
 	Keep     []string                     `toml:"keep" json:"keep,omitempty"`       // key paths the repo owns; others belong to the app
 	Drop     []string                     `toml:"drop" json:"drop,omitempty"`       // key paths never captured

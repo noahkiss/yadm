@@ -18,9 +18,16 @@
 //     variant that could also match, so at most one entry applies per machine.
 //   - Templates for the built-in processor only: yadm.* variables, if with
 //     == or !=, else, endif, and include (inlined) become package render
-//     syntax; env.HOME becomes {{ home }}. Any other env.VAR, other
-//     processors, and literal text that would open a tag ({{, {%, {#; the new
-//     syntax has no escape) fail the import with path and line.
+//     syntax; env.HOME becomes {{ home }}. Literal text that would open a
+//     tag ({{, {%, {#) is escaped with render.Escape. Any other env.VAR and
+//     other processors fail the import with path and line.
+//   - Modes: a target gets 0644, or 0755 when its source is executable,
+//     sealed or not; the manifest default gives that, so no `mode` is
+//     written. Under .ssh and .gnupg the entry sets 0600, or 0700 when
+//     executable, as upstream's perms step leaves them.
+//   - Checks: the manifest and fleet must pass strict manifest.Parse and
+//     fleet.Parse, every condition must name a declared type or fact, and no
+//     fleet machine may get two entries for one target.
 //   - Transcrypt: paths whose `filter` attribute names a transcrypt filter are
 //     decrypted with the password from the environment variable the caller
 //     names, and sealed through the caller's Sealer into the enclave the

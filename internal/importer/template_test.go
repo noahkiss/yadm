@@ -3,6 +3,10 @@ package importer
 import (
 	"strings"
 	"testing"
+
+	"github.com/noahkiss/yadm/internal/cond"
+	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/render"
 )
 
 func TestConvertTemplate(t *testing.T) {
@@ -65,9 +69,6 @@ func TestConvertTemplateProblems(t *testing.T) {
 		"{% if yadm.class == \"a\" %}\n":            "unterminated",
 		"{% endif %}\n":                             "endif without",
 		"{% else %}\n":                              "else without",
-		"const f = ({{ a }}) => 1\n":                `literal "{{"`,
-		"n=${#arr}\n":                               `literal "{#"`,
-		"x {% if yadm.os == \"Linux\" %} y\n":       `literal "{%"`,
 		"{% include \"missing\" %}\n":               "not in the repository",
 		"{% include \"/etc/x\" %}\n":                "outside",
 	}
@@ -82,6 +83,38 @@ func TestConvertTemplateProblems(t *testing.T) {
 		}
 		if probs[0].Path == "" {
 			t.Errorf("%q: problem without path", src)
+		}
+	}
+}
+
+// TestConvertTemplateEscapes checks that text upstream prints as is, but
+// which would open a tag in the new syntax, renders back to itself.
+func TestConvertTemplateEscapes(t *testing.T) {
+	cases := []struct{ src, want string }{
+		{"type Opts = {{ x: string }}\n", "type Opts = {{ x: string }}\n"},
+		{"n=${#arr}\n", "n=${#arr}\n"},
+		{"x {% if yadm.os == \"Linux\" %} y\n", "x {% if yadm.os == \"Linux\" %} y\n"},
+		{"{# not a comment #}\n", "{# not a comment #}\n"},
+		{"{{{ env.HOME }}}\n", "{/home/u}\n"},
+		{"{%{{ yadm.user }}\n", "{%u\n"},
+		{"f() {\n  echo {{ yadm.user }}\n}\n", "f() {\n  echo u\n}\n"},
+	}
+	v := cond.Vocabulary{Types: map[string]bool{}, FactKeys: map[string]bool{}, Collectors: map[string]bool{}}
+	eng := render.New(v)
+	ctx := model.Context{Home: "/home/u", User: "u"}
+	for _, tc := range cases {
+		res, probs := convertTemplate("t##template", "t", []byte(tc.src), nil)
+		if len(probs) > 0 {
+			t.Errorf("%q: problems %v", tc.src, probs)
+			continue
+		}
+		out, err := eng.Render("t", res.Out, ctx)
+		if err != nil {
+			t.Errorf("%q: converted %q does not render: %v", tc.src, res.Out, err)
+			continue
+		}
+		if string(out) != tc.want {
+			t.Errorf("%q: renders %q, want %q", tc.src, out, tc.want)
 		}
 	}
 }

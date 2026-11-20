@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -153,9 +154,10 @@ func TestRankMatchesUpstream(t *testing.T) {
 			t.Fatal(err)
 		}
 		conv := &converted{Files: pl.files, Manifest: man}
+		voc := &cond.Vocabulary{Types: pl.types, FactKeys: pl.factKeys, Collectors: map[string]bool{}}
 		for _, m := range machines {
 			want := upstreamPick(paths, m)
-			got, probs, err := refResolve(conv, nil, model.Context{Machine: m.model()}, nil)
+			got, probs, err := resolveFor(conv, nil, model.Context{Machine: m.model()}, voc, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

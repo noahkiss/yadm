@@ -133,7 +133,7 @@ func TestCorpusAgainstOracle(t *testing.T) {
 		p := g.Profile
 		m := fleetMachine(t, conv, p.Name)
 		mctx := model.Context{Machine: m, Home: oracle.HomeToken, User: p.User}
-		got, rprobs, err := refResolve(conv, sealer, mctx, func(model.EnclaveName) bool { return p.Decrypt })
+		got, rprobs, err := resolveFor(conv, sealer, mctx, nil, func(model.EnclaveName) bool { return p.Decrypt })
 		if err != nil {
 			t.Fatalf("%s: %v", p.Name, err)
 		}

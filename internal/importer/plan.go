@@ -292,7 +292,7 @@ func (p *planner) emitFile(f *legacyFile, v *variant, target, when string, singl
 		data = res.Out
 		e.Template = true
 	}
-	e.Mode = modeFor(target, f.Exec, e.Enclave != "")
+	e.Mode = modeFor(target, f.Exec)
 	if e.Enclave != "" {
 		e.Source = model.SourcePath("sealed/" + string(e.Enclave) + "/" + stored)
 		if p.opts.Sealer == nil {
@@ -415,20 +415,20 @@ func (p *planner) enclaveFor(f *legacyFile, v *variant) (model.EnclaveName, bool
 	return "", false
 }
 
-// modeFor returns an explicit mode where the manifest default would differ
-// from what the file needs. A sealed executable keeps its execute bit for the
-// owner only. Under .ssh and .gnupg, upstream's perms step removes group and
-// other access.
-func modeFor(target string, exec, sealed bool) fs.FileMode {
+// modeFor returns an explicit mode where the manifest default (0644, or 0755
+// for an executable source) would differ from what upstream writes. Only
+// under .ssh and .gnupg does upstream's perms step remove group and other
+// access. Encryption protects the repository, not the disk, so a sealed
+// file keeps the mode of its source.
+func modeFor(target string, exec bool) fs.FileMode {
 	first, _, _ := strings.Cut(target, "/")
-	private := first == ".ssh" || first == ".gnupg"
-	switch {
-	case exec && (sealed || private):
-		return 0o700
-	case private && !sealed:
-		return 0o600
+	if first != ".ssh" && first != ".gnupg" {
+		return 0
 	}
-	return 0
+	if exec {
+		return 0o700
+	}
+	return 0o600
 }
 
 // resolveLinks turns each tracked symlink into entries that reuse the source
