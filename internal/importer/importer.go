@@ -38,6 +38,11 @@ type Options struct {
 	// Filters maps the other gitattributes filters (strip filters) to
 	// intra-file rules. A path marked with an unmapped filter fails the import.
 	Filters map[string]Filter
+	// Machine names the machines-table row that is the importing machine.
+	// That row gets Self as its fleet id instead of a random one. A name that
+	// matches no row fails the import.
+	Machine string
+	Self    model.MachineID
 	Sealer  Sealer // seals encrypted files; required when any exist
 	DryRun  bool
 }

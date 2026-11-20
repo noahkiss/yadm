@@ -136,6 +136,7 @@ mode = 0o600
 [[unit]]
 target = "Library/LaunchAgents/example.helper.plist"
 kind = "launchd"
+reload = "auto"                   # or "never"; auto skips KeepAlive jobs
 
 [[root]]
 path = ".config/shell"            # new files here are reported
@@ -532,7 +533,7 @@ timeout    = "10m"
 - Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`).
 - A task runs once per apply, after all writes, with the matched targets in its request.
 - A failed task is recorded in state and the status ref, reported through notify, and never stops other tasks or the sync.
-- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it.
+- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it. With `reload = "never"` a unit is never reloaded. On `auto`, the launchd reloader also skips a job whose plist sets `KeepAlive`, the job that runs the reload (`$XPC_SERVICE_NAME`), and a plist it cannot read as XML. A skip is recorded in the task result detail, not as a failure.
 - A held task keeps the first apply open only when it is a `first_apply` task. A first-apply task that already succeeded does not run again while another one waits to be allowed. Once a held definition is allowed, the next apply drops its hold.
 
 ### 12.2 No package manager in core
@@ -663,7 +664,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 
 ### 15.1 Import
 
-`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…] [--filters <toml>] [--crypt-filter <name>…]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
+`yadm import <legacy-repo> --output <dir> [--machines <tsv>] [--password-env <VAR>] [--class-enclave <class>=<enclave>…] [--filters <toml>] [--crypt-filter <name>…] [--machine <name>]` converts a repository managed by upstream yadm once. It reads the repository; it never runs upstream yadm.
 
 | Input | Output |
 |---|---|
@@ -672,9 +673,11 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. A filter of another name counts as transcrypt when the legacy repository's own local config (a bare repository works; the config is read, never run or written) shows a smudge, clean or textconv command that runs transcrypt, or when `--crypt-filter <name>` names it, since a clone lacks that config. A file stored as ciphertext under any other filter fails the import. |
 | Tracked symlinks | Entries that reuse the source of what the link points at, under both conditions. A link that names a path inside a directory alternate (`dir##class.x/file`) reuses the files converted from it, under that alternate's condition. |
 | Paths with any other `filter=<name>` (a strip filter) | The `--filters` file maps each filter, per target or target glob, to the entry's `format`, `keep`, `drop`, `volatile` and `merge`. A strip filter that also ran transcrypt sets `crypt = true`; its files are decrypted and sealed too. A path whose filter has no mapping, or no rule for its target, fails the import, so a filter is never lost silently. |
-| Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. |
+| Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. Each machine gets a random id, except the row `--machine` names, which gets the importing machine's own id; a `--machine` that names no row fails the import. |
 
 The output is one commit whose parent is the legacy head, with a `Legacy-Head:` trailer, so history stays reachable through `git log`. That also keeps the legacy ciphertext and old path names reachable. Any problem means no commit. The importer never pushes.
+
+Sealing creates each enclave's key log, signed by the importing machine, on top of that commit. Once it is committed, the importing machine pins it in its state directory, so it needs no `enclave join --expect`; the report still prints each fingerprint for the other machines. An existing different pin for that enclave is kept, and the report says to join after switching repositories. A failed import pins nothing.
 
 ### 15.2 Adopt
 

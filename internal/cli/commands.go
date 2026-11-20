@@ -130,6 +130,7 @@ func (a *app) register(root *cobra.Command) {
 	im.Flags().StringToString("class-enclave", nil, "legacy class=enclave")
 	im.Flags().String("default-enclave", "", "enclave for encrypted files with no class")
 	im.Flags().String("filters", "", "TOML file mapping legacy strip filters to keep, drop and volatile rules")
+	im.Flags().String("machine", "", "machines-table row that is this machine; it keeps this machine's id")
 	im.Flags().StringArray("crypt-filter", nil, "extra gitattributes filter name that marks transcrypt files (repeatable)")
 	im.Flags().String("output", "", "directory for the converted repository")
 	im.Flags().String("branch", "", "branch name in the output (default main)")

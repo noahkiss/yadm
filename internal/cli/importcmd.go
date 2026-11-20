@@ -107,24 +107,32 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 	if opts.Branch == "" {
 		opts.Branch = "main"
 	}
+	opts.Machine, _ = f.GetString("machine")
 	var sealer *importSealer
-	if opts.PasswordEnv != "" {
+	var state string
+	if opts.PasswordEnv != "" || opts.Machine != "" {
 		p, err := DefaultPaths()
 		if err != nil {
 			return result{}, err
 		}
+		state = p.State
 		id, err := crypt.LoadIdentity(p.State)
 		if err != nil {
 			return result{next: []string{"yadm init <remote> --machine <name>"}},
-				fmt.Errorf("sealing encrypted files needs this machine's identity: %w", err)
+				fmt.Errorf("--machine and sealing encrypted files need this machine's identity: %w", err)
 		}
-		out, _ := filepath.Abs(opts.Output)
-		rec, _, err := recoveryMember(cmd, out, p.State, p.Source)
-		if err != nil {
-			return result{}, err
+		if opts.Machine != "" {
+			opts.Self = id.Machine
 		}
-		sealer = newImportSealer(id, rec)
-		opts.Sealer = sealer
+		if opts.PasswordEnv != "" {
+			out, _ := filepath.Abs(opts.Output)
+			rec, _, err := recoveryMember(cmd, out, p.State, p.Source)
+			if err != nil {
+				return result{}, err
+			}
+			sealer = newImportSealer(id, rec)
+			opts.Sealer = sealer
+		}
 	}
 	rep, err := importer.Import(ctx, opts)
 	d := importData{Report: rep}
@@ -152,8 +160,26 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 			return result{data: d}, err
 		}
 		d.Commit, d.KeyLogs = id, fps
-		for e, fp := range fps {
-			next = append(next, fmt.Sprintf("once this machine uses the new repository: yadm enclave join %s --expect %s", e, fp))
+		// The key logs are committed: pin them for this machine, which
+		// signed them, so it needs no `enclave join --expect`. An existing
+		// different pin is a trust anchor for another log and is kept.
+		pins := crypt.FilePins(state)
+		for e, entry := range sealer.entries {
+			pin, err := crypt.PinOf(entry)
+			if err != nil {
+				return result{data: d}, err
+			}
+			old, err := pins.Get(e)
+			if err != nil {
+				return result{data: d}, err
+			}
+			if old != nil && *old != pin {
+				next = append(next, fmt.Sprintf("this machine already pins another %s key log; after switching to the new repository: yadm enclave join %s --expect %s", e, e, fps[e]))
+				continue
+			}
+			if err := pins.Set(e, pin); err != nil {
+				return result{data: d}, err
+			}
 		}
 		sort.Strings(next)
 	}

@@ -139,6 +139,13 @@ func buildFleet(rows []machineRow, p *planner, opts Options) (*fleet.File, error
 	used := map[model.MachineID]bool{}
 	names := map[string]bool{}
 	var errs []string
+	selfFound := false
+	if opts.Machine != "" {
+		if opts.Self == "" {
+			return nil, fmt.Errorf("machine %s: no identity id for the importing machine", opts.Machine)
+		}
+		used[opts.Self] = true
+	}
 	for _, r := range rows {
 		if names[strings.ToLower(r.Name)] {
 			errs = append(errs, fmt.Sprintf("line %d: duplicate machine name %s", r.Line, r.Name))
@@ -179,7 +186,12 @@ func buildFleet(rows []machineRow, p *planner, opts Options) (*fleet.File, error
 		if len(m.Facts) == 0 {
 			m.Facts = nil
 		}
-		id := newMachineID(used)
+		var id model.MachineID
+		if opts.Machine != "" && strings.EqualFold(r.Name, opts.Machine) {
+			id, selfFound = opts.Self, true
+		} else {
+			id = newMachineID(used)
+		}
 		m.ID = id
 		f.Machines[id] = m
 	}
@@ -197,6 +209,9 @@ func buildFleet(rows []machineRow, p *planner, opts Options) (*fleet.File, error
 		if !declared[k] {
 			missing = append(missing, k)
 		}
+	}
+	if opts.Machine != "" && !selfFound {
+		errs = append(errs, fmt.Sprintf("--machine %s names no machine in the machines table", opts.Machine))
 	}
 	sort.Strings(missing)
 	for _, k := range missing {
