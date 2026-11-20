@@ -51,8 +51,21 @@ func TestKeyLogRewriteRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// B signs a fresh, canonical seq-1 entry of its own and puts it in
+	// place of the existing one.
+	head, _, err := crypt.Create("personal", w.f.Identities[b], w.f.Recovery.Member(), crypt.MemPins())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewrite, err := crypt.MarshalLogEntry(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.Seq != 1 || string(rewrite) == string(orig) {
+		t.Fatalf("forged entry seq %d, same bytes %v", head.Seq, string(rewrite) == string(orig))
+	}
 	forged := pushRaw(t, B, []store.Change{
-		{Path: entry, Blob: append(append([]byte(nil), orig...), []byte("# rewritten\n")...), Mode: 0o100644},
+		{Path: entry, Blob: rewrite, Mode: 0o100644},
 		{Path: "files/.config/shell/aliases.sh", Blob: []byte("alias evil=\"x\"\n"), Mode: 0o100644},
 	})
 
@@ -107,11 +120,37 @@ func TestKeyLogAppendRules(t *testing.T) {
 		}
 		return id
 	}
-	next := commit(store.Change{Path: crypt.LogPath("personal", 2), Blob: []byte("x"), Mode: 0o100644})
+	// Entries 2 to 4 of personal, signed by its member A through crypt.
+	log := w.f.Logs["personal"]
+	ring, by := w.f.Rings["personal"], w.f.Identities[fixture.HostA]
+	pins := pinnedAt(t, log[len(log)-1])
+	e2, err := ring.Add(log[len(log)-1], w.f.Identities[fixture.HostB].Member(), by, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e3, ring, err := ring.Rotate(e2, by, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e4, _, err := ring.Rotate(e3, by, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := func(e crypt.LogEntry) store.Change {
+		b, err := crypt.MarshalLogEntry(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store.Change{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}
+	}
+	if e2.Seq != 2 || e4.Seq != 4 {
+		t.Fatalf("seqs %d %d", e2.Seq, e4.Seq)
+	}
+	next := commit(entry(e2))
 	if v, err := A.s.keyLogViolations(ctx, base, next); err != nil || len(v) != 0 {
 		t.Errorf("next entry refused: %v %v", v, err)
 	}
-	skip := commit(store.Change{Path: crypt.LogPath("personal", 4), Blob: []byte("x"), Mode: 0o100644})
+	skip := commit(entry(e4))
 	if v, _ := A.s.keyLogViolations(ctx, base, skip); len(v) != 1 {
 		t.Errorf("a skipped seq was accepted: %v", v)
 	}
@@ -169,8 +208,15 @@ func TestPreExistingFileUnderNewRootNotCommitted(t *testing.T) {
 	}
 	man = append(man, []byte("\n[[root]]\npath = \".config/private-dir\"\n")...)
 	pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: man, Mode: 0o100644}})
-	A.sync() // applies the new root
-	r := A.sync()
+	A.sync() // applies the new root; it holds until allowed here
+	if err := A.eng.AllowRoot(ctx, A.main(), ".config/private-dir"); err != nil {
+		t.Fatal(err)
+	}
+	r := A.sync() // accepts the allowed root
+	if len(r.Committed) != 0 {
+		t.Fatalf("pre-existing file committed when the root was accepted: %+v", r)
+	}
+	r = A.sync()
 	if len(r.Committed) != 0 {
 		t.Fatalf("pre-existing file committed: %+v", r)
 	}

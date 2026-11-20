@@ -274,13 +274,20 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err != nil {
 		return rep, err
 	}
+	if opts.Resolve && opts.Capture == nil {
+		if err := s.rebaseOnto(ctx, head, opts.Paths); err != nil {
+			return rep, err
+		}
+	}
 	var cp apply.Capture
 	var drift []apply.Drift
 	if opts.Capture != nil {
 		cp = *opts.Capture
 	} else if len(opts.Changes) == 0 || len(opts.Paths) > 0 {
 		// Scan everything (owned roots included), then keep the named paths.
-		all, err := s.Apply.Scan(ctx, apply.ScanOptions{})
+		// Resolving hashes every file: a target captured before its conflict
+		// was raised has an unchanged stat tuple but no longer matches.
+		all, err := s.Apply.Scan(ctx, apply.ScanOptions{FullHash: opts.Resolve})
 		if err != nil {
 			return rep, fmt.Errorf("scan: %w", err)
 		}
@@ -326,14 +333,14 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		ch := cp.Changes[i]
 		scope := scopeOf(cp, t)
 		isNamed := opts.Capture != nil || (len(opts.Paths) > 0 && named(opts.Paths, t))
-		if hasHold(st, t, model.HoldConflict) {
-			if !opts.Resolve || !isNamed {
-				continue
-			}
+		switch {
+		case opts.Resolve && isNamed:
 			// The caller settled the conflict: commit this side over the
 			// current source and drop the hold.
 			dropHolds(st, t, model.HoldConflict)
 			resolve[t] = true
+		case hasHold(st, t, model.HoldConflict):
+			continue
 		}
 		dropSyncHolds(st, func(x model.Target) bool { return x == t })
 		approved := isNamed && !opts.Unattended
@@ -408,6 +415,34 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
 	}
 	return s.finish(ctx, rep, cp.Paths, out.committed)
+}
+
+// rebaseOnto settles the conflicts of the named targets in favour of the
+// live files: each target's capture base becomes its source blob at head,
+// its conflict hold goes, and its last-written hash is cleared so the scan
+// sees it. The capture that follows is then the live file against the
+// current source, and it commits without going up the ladder again.
+func (s *Syncer) rebaseOnto(ctx context.Context, head model.CommitID, paths []model.Target) error {
+	tree, err := s.treeMap(ctx, head)
+	if err != nil {
+		return err
+	}
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	for t, ts := range st.Targets {
+		if !named(paths, t) {
+			continue
+		}
+		if e, ok := tree[ts.Source]; ok {
+			ts.SourceBlob = e.Blob
+		}
+		ts.Written = ""
+		st.Targets[t] = ts
+		dropHolds(st, t, model.HoldConflict)
+	}
+	return s.Apply.State.Save(st)
 }
 
 // dropHolds removes t's holds with one of reasons.

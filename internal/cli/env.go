@@ -267,11 +267,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 // after the commit landed comes back as pushErr: the commit stands and the
 // next sync pushes it.
 func (m *machineEnv) commitThrough(ctx context.Context, version string, opts sync.CommitOptions) (rep sync.Report, pushErr, err error) {
-	rep, err = m.syncer(version).Commit(ctx, opts)
-	if err != nil && opts.Push && len(rep.Committed) > 0 && !errors.Is(err, sync.ErrLocked) {
-		return rep, err, nil
-	}
-	return rep, nil, err
+	return m.hookCommit(ctx, version, opts, 0)
 }
 
 // selfStatus is this machine's last published status record, or nil.

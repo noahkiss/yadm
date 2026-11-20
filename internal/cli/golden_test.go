@@ -317,7 +317,7 @@ func TestEveryCommandOneEnvelope(t *testing.T) {
 	walk = func(c *cobra.Command, prefix []string) {
 		for _, s := range c.Commands() {
 			p := append(append([]string{}, prefix...), s.Name())
-			if s.Name() == "git" || s.Name() == "help" {
+			if s.Name() == "git" || s.Name() == "help" || s.Name() == "hook" { // hook has its own contract (hook_test.go)
 				continue
 			}
 			paths = append(paths, p)

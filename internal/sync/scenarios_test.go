@@ -298,7 +298,7 @@ func addMember(t *testing.T, f *fixture.Fixture, e model.EnclaveName, m model.Ma
 	t.Helper()
 	log := f.Logs[e]
 	by := f.Identities[fixture.Members[e][0]]
-	head, err := f.Rings[e].Add(log[len(log)-1], f.Identities[m].Member(), by, crypt.MemPins())
+	head, err := f.Rings[e].Add(log[len(log)-1], f.Identities[m].Member(), by, pinnedAt(t, log[len(log)-1]))
 	if err != nil {
 		t.Fatal(err)
 	}

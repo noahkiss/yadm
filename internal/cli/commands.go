@@ -83,6 +83,7 @@ func (a *app) register(root *cobra.Command) {
 	exact(leaf(fl, "diff <collector>", "Compare an observed fact across machines", a.cmdFleetDiff), 1)
 
 	a.registerEnclave(root)
+	a.registerHooks(root)
 
 	pr := a.group(root, "protection", "Local allows for weakened protection of a target")
 	exact(leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow), 1)

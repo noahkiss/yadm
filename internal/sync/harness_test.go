@@ -150,7 +150,8 @@ func (w *world) newMachine(id model.MachineID) *machine {
 	w.allowAll(m)
 	runner := &tasks.Runner{Exec: m.exec, Allow: m.allows, Units: nopUnits{}}
 	m.eng = apply.New(apply.Deps{Store: repo, Self: id, Identity: w.f.Identities[id], Pins: crypt.FilePins(m.state),
-		State: apply.FileStateDB(m.state), Home: m.home, User: "user", StateDir: m.state, Tasks: runner, Now: w.clock.Now})
+		State: apply.FileStateDB(m.state), Home: m.home, User: "user", StateDir: m.state, Tasks: runner, Allow: m.allows, Now: w.clock.Now})
+	m.allowRoots(m.main())
 	m.s = &Syncer{Deps: Deps{Store: repo, Apply: m.eng, Status: store.StatusRefs(repo, id), Exec: m.exec,
 		Identity: fleet.Identity{Machine: id, Notify: []string{"notify-hook"}}, Lock: FileLock(m.state), Leases: FileLeases(m.state),
 		Version: "test", Now: w.clock.Now, Backoff: time.Millisecond}}
@@ -194,6 +195,38 @@ func (w *world) allowAll(m *machine) {
 	for n, d := range fl.Collectors {
 		allow(extexec.KindCollector, n, d)
 	}
+}
+
+// allowRoots allows every owned root in m's plan at rev, as the owner does
+// with `yadm root allow` on a machine they trust.
+func (m *machine) allowRoots(rev model.CommitID) {
+	t := m.w.t
+	t.Helper()
+	ctx := context.Background()
+	snap, err := m.eng.Load(ctx, rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range snap.Plan.Roots {
+		if err := m.eng.AllowRoot(ctx, rev, r.Path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// pinnedAt returns a PinStore pinned at head, as the signer's machine has
+// after it loaded the log up to head.
+func pinnedAt(t *testing.T, head crypt.LogEntry) crypt.PinStore {
+	t.Helper()
+	p, err := crypt.PinOf(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := crypt.MemPins()
+	if err := pins.Set(head.Enclave, p); err != nil {
+		t.Fatal(err)
+	}
+	return pins
 }
 
 func (m *machine) path(t model.Target) string {

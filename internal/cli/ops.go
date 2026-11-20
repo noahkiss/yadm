@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -140,7 +143,19 @@ func (a *app) cmdReviewList(cmd *cobra.Command, args []string) (result, error) {
 		}
 		items = append(items, it...)
 	}
-	return result{data: map[string]any{"items": items}}, nil
+	// Decisions agents deferred wait here too, while their holds are open.
+	var deferred []Deferred
+	if hs, err := m.eng.Holds(ctx); err == nil {
+		deferred = openDeferred(m.paths.State, hs)
+	}
+	if deferred == nil {
+		deferred = []Deferred{}
+	}
+	var next []string
+	for _, d := range deferred {
+		next = append(next, "yadm hold show "+d.ID)
+	}
+	return result{data: map[string]any{"items": items, "deferred": deferred}, next: next}, nil
 }
 
 func (a *app) cmdReviewOK(cmd *cobra.Command, args []string) (result, error) {
@@ -327,6 +342,9 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	if err != nil {
 		return result{}, err
 	}
+	if h.Reason == model.HoldConflict && h.Target != "" {
+		return a.resolveConflict(ctx, m, h, take)
+	}
 	var res apply.Result
 	if err := m.locked(ctx, func() error {
 		var err error
@@ -358,6 +376,113 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	holds := append(res.Holds, rep.Holds...)
 	data["holds"] = withHoldNext(holds)
 	return result{data: data, text: actionsText(res)}, attention(holds)
+}
+
+// resolveConflict settles a conflict hold sync raised. Taking the target (or
+// a merged file, written to the target first) commits this machine's file
+// over the current source and pushes it. Taking the source drops the hold
+// and rewrites the target from the source; the replaced bytes are backed up.
+func (a *app) resolveConflict(ctx context.Context, m *machineEnv, h model.Hold, take string) (result, error) {
+	abs := filepath.Join(m.home, filepath.FromSlash(string(h.Target)))
+	data := map[string]any{"resolved": h.ID}
+	switch take {
+	case "source":
+		var res apply.Result
+		err := m.locked(ctx, func() error {
+			if err := dropConflict(m.paths.State, h.Target); err != nil {
+				return err
+			}
+			snap, err := m.load(ctx)
+			if err != nil {
+				return err
+			}
+			if _, err := m.eng.Apply(ctx, snap.Commit, apply.ApplyOptions{Paths: []model.Target{h.Target}}); err != nil {
+				return err
+			}
+			// The target differs from the last write, so apply held it as
+			// drifted; taking the source settles that hold.
+			hs, err := m.eng.Holds(ctx)
+			if err != nil {
+				return err
+			}
+			for _, d := range withHoldNext(hs) {
+				if d.Target == h.Target && d.Reason == model.HoldDrifted {
+					res, err = m.eng.ResolveHold(ctx, d.ID, apply.ResolveOptions{Take: "source"})
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return lockedResult(err), err
+		}
+		res = normResult(res)
+		data["result"] = res
+		return result{data: data, text: actionsText(res)}, attention(res.Holds)
+	case "target":
+	default:
+		b, err := os.ReadFile(take)
+		if err != nil {
+			return result{}, err
+		}
+		mode := os.FileMode(0o644)
+		if info, err := os.Stat(abs); err == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := writeFileAtomic(abs, b, mode); err != nil {
+			return result{}, err
+		}
+	}
+	_, _ = m.load(ctx)
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
+		Paths: []model.Target{h.Target}, Resolve: true, Push: true,
+		Message: "resolve " + string(h.Target) + " (conflict)",
+	})
+	if err != nil {
+		return result{data: data}, err
+	}
+	rep = reportData(rep)
+	data["commits"] = rep.Committed
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	var holds []model.Hold
+	for _, x := range rep.Holds {
+		if x.Target == h.Target {
+			holds = append(holds, x)
+		}
+	}
+	data["holds"] = withHoldNext(holds)
+	return result{data: data, text: fmt.Sprintf("resolved %s: %d commit(s)", h.Target, len(rep.Committed))}, attention(holds)
+}
+
+// dropConflict removes t's conflict holds from the state.
+func dropConflict(stateDir string, t model.Target) error {
+	db := apply.FileStateDB(stateDir)
+	st, err := db.Load()
+	if err != nil {
+		return err
+	}
+	out := st.Holds[:0]
+	for _, x := range st.Holds {
+		if !(x.Target == t && x.Reason == model.HoldConflict) {
+			out = append(out, x)
+		}
+	}
+	st.Holds = out
+	return db.Save(st)
+}
+
+// writeFileAtomic writes b to p through a temp file and a rename.
+func writeFileAtomic(p string, b []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	tmp := p + ".yadm-tmp"
+	if err := os.WriteFile(tmp, b, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, p)
 }
 
 // ---- leases ----
