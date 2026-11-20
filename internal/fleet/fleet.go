@@ -1,10 +1,21 @@
 package fleet
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -16,6 +27,9 @@ const FileName = "fleet.toml"
 
 // Schema is the fleet file format version.
 const Schema = 1
+
+// DefaultCollectorTimeout applies when a collector sets no timeout.
+const DefaultCollectorTimeout = 30 * time.Second
 
 // File is the parsed fleet file.
 type File struct {
@@ -83,13 +97,171 @@ type CollectorDef struct {
 	Publish Publish        `toml:"publish" json:"publish"`
 }
 
+// namePattern bounds every identifier the fleet file declares: type and
+// collector names, machine ids, names and nicknames. Type names also become
+// path segments (sealed/<enclave>/), so no separators or dots-only names.
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 // Parse parses and validates a fleet file: unique names and nicknames, known
-// types on every machine, valid collector settings.
-func Parse(b []byte) (*File, error) { return nil, model.ErrNotImplemented }
+// types on every machine, valid collector settings. Unknown keys are errors.
+func Parse(b []byte) (*File, error) {
+	var f File
+	dec := toml.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("%s: %w", FileName, err)
+	}
+	if f.Schema != Schema {
+		return nil, fmt.Errorf("%s: schema %d: want %d", FileName, f.Schema, Schema)
+	}
+	if err := f.validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", FileName, err)
+	}
+	return &f, nil
+}
+
+func (f *File) validate() error {
+	if f.Types == nil {
+		f.Types = map[model.TypeName]TypeDef{}
+	}
+	if f.Machines == nil {
+		f.Machines = map[model.MachineID]model.Machine{}
+	}
+	if f.Collectors == nil {
+		f.Collectors = map[string]CollectorDef{}
+	}
+	var errs []error
+	for t := range f.Types {
+		if !namePattern.MatchString(string(t)) {
+			errs = append(errs, fmt.Errorf("type %q: invalid name", t))
+		}
+	}
+	// Ids, names and nicknames share one namespace, so Lookup is never ambiguous.
+	owner := map[string]model.MachineID{}
+	claim := func(id model.MachineID, what, key string) {
+		if !namePattern.MatchString(key) {
+			errs = append(errs, fmt.Errorf("machine %s: %s %q: invalid", id, what, key))
+			return
+		}
+		if prev, ok := owner[key]; ok && prev != id {
+			errs = append(errs, fmt.Errorf("machine %s: %s %q already names machine %s", id, what, key, prev))
+			return
+		} else if ok {
+			errs = append(errs, fmt.Errorf("machine %s: %s %q repeats", id, what, key))
+			return
+		}
+		owner[key] = id
+	}
+	ids := make([]model.MachineID, 0, len(f.Machines))
+	for id := range f.Machines {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		claim(id, "id", string(id))
+	}
+	for _, id := range ids {
+		m := f.Machines[id]
+		m.ID = id
+		f.Machines[id] = m
+		if m.Name == "" {
+			errs = append(errs, fmt.Errorf("machine %s: name is required", id))
+		} else {
+			claim(id, "name", m.Name)
+		}
+		for _, n := range m.Nicknames {
+			claim(id, "nickname", n)
+		}
+		if len(m.Types) == 0 {
+			errs = append(errs, fmt.Errorf("machine %s: at least one type is required", id))
+		}
+		seen := map[model.TypeName]bool{}
+		for _, t := range m.Types {
+			if _, ok := f.Types[t]; !ok {
+				errs = append(errs, fmt.Errorf("machine %s: unknown type %q", id, t))
+			}
+			if seen[t] {
+				errs = append(errs, fmt.Errorf("machine %s: type %q repeats", id, t))
+			}
+			seen[t] = true
+		}
+		for k := range m.Facts {
+			if k == "" || strings.ContainsAny(k, "= \t\n") {
+				errs = append(errs, fmt.Errorf("machine %s: fact key %q: invalid", id, k))
+			}
+		}
+	}
+	voc := f.Vocabulary()
+	names := make([]string, 0, len(f.Collectors))
+	for n := range f.Collectors {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		c := f.Collectors[n]
+		if !namePattern.MatchString(n) {
+			errs = append(errs, fmt.Errorf("collector %q: invalid name", n))
+		}
+		if len(c.Command) == 0 || c.Command[0] == "" {
+			errs = append(errs, fmt.Errorf("collector %s: command is required", n))
+		}
+		if c.Timeout < 0 {
+			errs = append(errs, fmt.Errorf("collector %s: negative timeout", n))
+		}
+		if c.Publish.Mode == "" {
+			c.Publish.Mode = PublishLocal
+			f.Collectors[n] = c
+		}
+		if c.Publish.Mode == PublishSealed {
+			if td, ok := f.Types[model.TypeName(c.Publish.Enclave)]; !ok || !td.Enclave {
+				errs = append(errs, fmt.Errorf("collector %s: publish sealed:%s names no enclave type", n, c.Publish.Enclave))
+			}
+		}
+		if err := checkWhen(c.When, voc); err != nil {
+			errs = append(errs, fmt.Errorf("collector %s: %w", n, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// checkWhen validates a condition. While package cond is not implemented it
+// accepts any condition, so a valid fleet file never fails on a stub.
+func checkWhen(when string, v cond.Vocabulary) error {
+	_, err := cond.Parse(when, v)
+	if errors.Is(err, model.ErrNotImplemented) {
+		return nil
+	}
+	return err
+}
+
+// ErrUnknownMachine is returned by Lookup when nothing matches.
+var ErrUnknownMachine = errors.New("unknown machine")
 
 // Lookup finds a machine by id, name or nickname. An ambiguous match is an error.
 func (f *File) Lookup(key string) (model.Machine, error) {
-	return model.Machine{}, model.ErrNotImplemented
+	var found []model.Machine
+	for id, m := range f.Machines {
+		m.ID = id
+		hit := string(id) == key || m.Name == key
+		for _, n := range m.Nicknames {
+			hit = hit || n == key
+		}
+		if hit {
+			found = append(found, m)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return model.Machine{}, fmt.Errorf("%w: %q", ErrUnknownMachine, key)
+	case 1:
+		return found[0], nil
+	}
+	ids := make([]string, len(found))
+	for i, m := range found {
+		ids[i] = string(m.ID)
+	}
+	sort.Strings(ids)
+	return model.Machine{}, fmt.Errorf("machine %q is ambiguous: %s", key, strings.Join(ids, ", "))
 }
 
 // Vocabulary returns the names conditions may mention.
@@ -128,20 +300,259 @@ const IdentityFile = "machine.toml"
 // private keys that prove it live in the state directory (see crypt).
 type Identity struct {
 	Machine model.MachineID `toml:"machine"`
-	Remote  string          `toml:"remote"`
-	Notify  []string        `toml:"notify"` // extexec argv for alerts; empty means log only
-	Busy    []string        `toml:"busy"`   // extexec argv; exit 0 with items means "a session is busy with these paths"
+	Remote  string          `toml:"remote,omitempty"`
+	Notify  []string        `toml:"notify,omitempty"` // extexec argv for alerts; empty means log only
+	Busy    []string        `toml:"busy,omitempty"`   // extexec argv; exit 0 with items means "a session is busy with these paths"
 }
 
-// LoadIdentity reads the identity file.
-func LoadIdentity(path string) (Identity, error) { return Identity{}, model.ErrNotImplemented }
+// LoadIdentity reads the identity file. Unknown keys are errors, and the
+// machine id is required.
+func LoadIdentity(path string) (Identity, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Identity{}, err
+	}
+	var id Identity
+	dec := toml.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&id); err != nil {
+		return Identity{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := id.validate(); err != nil {
+		return Identity{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return id, nil
+}
+
+func (id Identity) validate() error {
+	if !namePattern.MatchString(string(id.Machine)) {
+		return fmt.Errorf("machine %q: invalid or missing id", id.Machine)
+	}
+	for _, argv := range [][]string{id.Notify, id.Busy} {
+		if len(argv) > 0 && argv[0] == "" {
+			return errors.New("notify and busy need a command as their first element")
+		}
+	}
+	return nil
+}
+
+// SaveIdentity writes the identity file with mode 0600, atomically.
+func SaveIdentity(path string, id Identity) error {
+	if err := id.validate(); err != nil {
+		return err
+	}
+	b, err := toml.Marshal(id)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".machine-*.toml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// NewMachineID returns a fresh random machine id, "m-" and 12 hex digits.
+func NewMachineID() (model.MachineID, error) {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return model.MachineID("m-" + hex.EncodeToString(b)), nil
+}
+
+// matchWhen evaluates a collector's condition for this machine. Tests replace
+// it while package cond is a stub.
+var matchWhen = func(when string, v cond.Vocabulary, mctx model.Context) (bool, error) {
+	e, err := cond.Parse(when, v)
+	if err != nil {
+		return false, err
+	}
+	return e.Eval(mctx), nil
+}
+
+// now is the clock Collect stamps facts with.
+var now = time.Now
 
 // Collect runs every collector whose `when` matches this machine and whose
 // definition allowed(name, hash) accepts (see tasks.AllowList). A failed
 // collector yields an ObservedFact with Error set; it never fails the sync.
 // A collector that is not allowed is skipped and reported by name.
 func Collect(ctx context.Context, f *File, mctx model.Context, r extexec.Runner, allowed func(name string, def CollectorDef) bool) (map[string]model.ObservedFact, []string, error) {
-	return nil, nil, model.ErrNotImplemented
+	return CollectWith(ctx, f, mctx, r, allowed, extexec.Request{Home: mctx.Home})
+}
+
+// CollectWith is Collect with a base request, so the caller can pass the
+// source directory and commit the exec contract carries. Kind, Name, Machine
+// and Home are always set from the collector and mctx.
+//
+// A nil allowed function allows nothing. A `when` that cannot be evaluated
+// yields a fact with Error set and runs nothing. The error result is non-nil
+// only when ctx ends; facts collected so far are returned with it.
+func CollectWith(ctx context.Context, f *File, mctx model.Context, r extexec.Runner, allowed func(name string, def CollectorDef) bool, base extexec.Request) (map[string]model.ObservedFact, []string, error) {
+	facts := map[string]model.ObservedFact{}
+	var skipped []string
+	if f == nil {
+		return facts, nil, nil
+	}
+	voc := f.Vocabulary()
+	names := make([]string, 0, len(f.Collectors))
+	for n := range f.Collectors {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return facts, skipped, err
+		}
+		def := f.Collectors[name]
+		ok, err := matchWhen(def.When, voc, mctx)
+		if err != nil {
+			facts[name] = model.ObservedFact{Collector: name, CollectedAt: now().UTC(), Error: "when: " + err.Error()}
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if allowed == nil || !allowed(name, def) {
+			skipped = append(skipped, name)
+			continue
+		}
+		req := base
+		req.Kind = extexec.KindCollector
+		req.Name = name
+		req.Machine = mctx.Machine
+		req.Home = mctx.Home
+		timeout := def.Timeout.D()
+		if timeout <= 0 {
+			timeout = DefaultCollectorTimeout
+		}
+		res, err := r.Run(ctx, extexec.Spec{Argv: def.Command, Timeout: timeout}, req)
+		fact := model.ObservedFact{Collector: name, CollectedAt: now().UTC()}
+		if err != nil {
+			if ctx.Err() != nil {
+				return facts, skipped, ctx.Err()
+			}
+			// Keep only the error: partial output of a failed run is not a fact.
+			fact.Error = err.Error()
+		} else {
+			fact.Items = res.Items
+			if res.Response != nil && len(res.Response.Data) > 0 && string(res.Response.Data) != "null" {
+				fact.Data = append(json.RawMessage(nil), res.Response.Data...)
+			}
+		}
+		facts[name] = fact
+	}
+	return facts, skipped, nil
+}
+
+// FactSealer seals observed facts for one enclave. crypt.Set implements it.
+type FactSealer interface {
+	CanOpen(e model.EnclaveName) bool
+	SealValue(e model.EnclaveName, keyPath string, plaintext []byte) (string, error)
+}
+
+// FactOpener opens sealed observed facts. crypt.Set implements it.
+type FactOpener interface {
+	CanOpen(e model.EnclaveName) bool
+	OpenValue(e model.EnclaveName, keyPath, token string) ([]byte, error)
+}
+
+// sealedFactsKey is the key path sealed observed facts are bound to.
+const sealedFactsKey = "status.observed"
+
+// Published splits this machine's facts by their collector's publish mode,
+// for model.Status.Observed and model.Status.Sealed.
+//
+//   - local, and any fact whose collector the fleet file no longer declares,
+//     goes nowhere.
+//   - plain goes into plain.
+//   - sealed:<enclave> goes into sealed[enclave], one sealed JSON object per
+//     enclave. When s is nil, cannot open the enclave or fails to seal, the
+//     fact is dropped and a problem is reported. It never falls back to plain.
+func Published(f *File, facts map[string]model.ObservedFact, s FactSealer) (plain map[string]model.ObservedFact, sealed map[model.EnclaveName][]byte, problems []error) {
+	byEnclave := map[model.EnclaveName]map[string]model.ObservedFact{}
+	for name, fact := range facts {
+		def, ok := f.Collectors[name]
+		if !ok {
+			continue
+		}
+		switch def.Publish.Mode {
+		case PublishPlain:
+			if plain == nil {
+				plain = map[string]model.ObservedFact{}
+			}
+			plain[name] = fact
+		case PublishSealed:
+			e := def.Publish.Enclave
+			if byEnclave[e] == nil {
+				byEnclave[e] = map[string]model.ObservedFact{}
+			}
+			byEnclave[e][name] = fact
+		}
+	}
+	enclaves := make([]model.EnclaveName, 0, len(byEnclave))
+	for e := range byEnclave {
+		enclaves = append(enclaves, e)
+	}
+	sort.Slice(enclaves, func(i, j int) bool { return enclaves[i] < enclaves[j] })
+	for _, e := range enclaves {
+		if s == nil || !s.CanOpen(e) {
+			problems = append(problems, fmt.Errorf("observed facts for %s dropped: not a member", e))
+			continue
+		}
+		b, err := json.Marshal(byEnclave[e])
+		if err != nil {
+			problems = append(problems, fmt.Errorf("observed facts for %s dropped: %w", e, err))
+			continue
+		}
+		tok, err := s.SealValue(e, sealedFactsKey, b)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("observed facts for %s dropped: seal failed", e))
+			continue
+		}
+		if sealed == nil {
+			sealed = map[model.EnclaveName][]byte{}
+		}
+		sealed[e] = []byte(tok)
+	}
+	return plain, sealed, problems
+}
+
+// OpenSealed opens one enclave's sealed observed facts from a status record.
+// It returns nil and no error when the record holds none for e.
+func OpenSealed(st model.Status, e model.EnclaveName, o FactOpener) (map[string]model.ObservedFact, error) {
+	tok, ok := st.Sealed[e]
+	if !ok {
+		return nil, nil
+	}
+	if o == nil || !o.CanOpen(e) {
+		return nil, fmt.Errorf("observed facts for %s: not a member", e)
+	}
+	b, err := o.OpenValue(e, sealedFactsKey, string(tok))
+	if err != nil {
+		return nil, fmt.Errorf("observed facts for %s: %w", e, err)
+	}
+	var out map[string]model.ObservedFact
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("observed facts for %s: %w", e, err)
+	}
+	return out, nil
 }
 
 // StatusRef returns the ref that holds a machine's status record.
@@ -154,6 +565,62 @@ type StatusRefs interface {
 	Publish(ctx context.Context, s model.Status) error
 }
 
+// StaleAfter is how old a machine's last sync may be before `fleet list`
+// flags it.
+const StaleAfter = 24 * time.Hour
+
+// PublishEvery is the longest a machine goes without publishing its status.
+const PublishEvery = time.Hour
+
+// PublishDue reports whether a sync should publish a new status record:
+// after a sync that changed something, when nothing was published yet, or
+// when the last record is PublishEvery old.
+func PublishDue(last *model.Status, changed bool, at time.Time) bool {
+	return changed || last == nil || !at.Before(last.LastSync.Add(PublishEvery))
+}
+
+// Summary is one machine's row in `yadm fleet list`.
+type Summary struct {
+	Machine model.Machine `json:"machine"`
+	Status  *model.Status `json:"status,omitempty"`
+	Stale   bool          `json:"stale"` // no status, or last sync older than StaleAfter
+}
+
+// List joins the fleet file with the status records, sorted by machine id.
+// A status ref for a machine the fleet file does not declare still appears,
+// with only its id, so a removed or forged machine stays visible.
+func List(f *File, statuses map[model.MachineID]model.Status, at time.Time) []Summary {
+	ids := map[model.MachineID]bool{}
+	if f != nil {
+		for id := range f.Machines {
+			ids[id] = true
+		}
+	}
+	for id := range statuses {
+		ids[id] = true
+	}
+	out := make([]Summary, 0, len(ids))
+	for id := range ids {
+		s := Summary{Machine: model.Machine{ID: id}}
+		if f != nil {
+			if m, ok := f.Machines[id]; ok {
+				m.ID = id
+				s.Machine = m
+			}
+		}
+		if st, ok := statuses[id]; ok {
+			st := st
+			s.Status = &st
+			s.Stale = at.Sub(st.LastSync) > StaleAfter
+		} else {
+			s.Stale = true
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Machine.ID < out[j].Machine.ID })
+	return out
+}
+
 // ObservedDiff compares one collector's items across machines.
 type ObservedDiff struct {
 	Collector string                       `json:"collector"`
@@ -162,7 +629,43 @@ type ObservedDiff struct {
 	Unknown   []model.MachineID            `json:"unknown"` // machines with no published value
 }
 
-// DiffObserved compares a published collector across machines.
+// DiffObserved compares a published collector across machines. It reads only
+// the plain observed facts. A machine whose value is absent or carries an
+// error is Unknown. Every machine with a value has a Missing entry, empty when
+// it lacks nothing.
 func DiffObserved(statuses map[model.MachineID]model.Status, collector string) (ObservedDiff, error) {
-	return ObservedDiff{}, model.ErrNotImplemented
+	if collector == "" {
+		return ObservedDiff{}, errors.New("collector name is required")
+	}
+	d := ObservedDiff{Collector: collector, Union: []string{}, Missing: map[model.MachineID][]string{}, Unknown: []model.MachineID{}}
+	have := map[model.MachineID]map[string]bool{}
+	union := map[string]bool{}
+	for id, st := range statuses {
+		fact, ok := st.Observed[collector]
+		if !ok || fact.Error != "" {
+			d.Unknown = append(d.Unknown, id)
+			continue
+		}
+		set := map[string]bool{}
+		for _, it := range fact.Items {
+			set[it] = true
+			union[it] = true
+		}
+		have[id] = set
+	}
+	for it := range union {
+		d.Union = append(d.Union, it)
+	}
+	sort.Strings(d.Union)
+	for id, set := range have {
+		miss := []string{}
+		for _, it := range d.Union {
+			if !set[it] {
+				miss = append(miss, it)
+			}
+		}
+		d.Missing[id] = miss
+	}
+	sort.Slice(d.Unknown, func(i, j int) bool { return d.Unknown[i] < d.Unknown[j] })
+	return d, nil
 }

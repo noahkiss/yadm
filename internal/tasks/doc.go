@@ -40,6 +40,9 @@
 //	func (r *Runner) Run(ctx, ev Event, sel []Selected, req extexec.Request) ([]model.TaskResult, []model.Hold)
 //	type Gate interface{ Check(ctx, staged []Staged, req extexec.Request) (pass []model.Target, holds []model.Hold, verdicts []Verdict) }
 //	func NewGate(checks map[string]manifest.CheckDef, r extexec.Runner, allow AllowList) Gate
+//	func NewGateIn(checks, r, allow, dir string) Gate // dir holds staged plaintext while a check runs
 //	type UnitReloader interface{ Reload(ctx, u manifest.Unit, home string) error }
 //	func SystemReloader(goos string) (UnitReloader, error)
+//	func NewReloader(goos string, c Commander, uid int) (UnitReloader, error) // c runs launchctl/systemctl
+//	func MatchGlob(glob, target string) bool // "**" spans segments; "*" stays in one
 package tasks

@@ -30,8 +30,16 @@
 //	func (f *File) Enclaves() []model.EnclaveName
 //	type Identity struct{ Machine model.MachineID; Remote string; Notify, Busy []string }
 //	func LoadIdentity(path string) (Identity, error)
+//	func SaveIdentity(path string, id Identity) error
+//	func NewMachineID() (model.MachineID, error)
 //	func Collect(ctx, f *File, mctx model.Context, r extexec.Runner, allowed func(string, CollectorDef) bool) (facts map[string]model.ObservedFact, skipped []string, err error)
+//	func CollectWith(ctx, f, mctx, r, allowed, base extexec.Request) (...) // base carries source and commit
+//	func Published(f *File, facts map[string]model.ObservedFact, s FactSealer) (plain map[string]model.ObservedFact, sealed map[model.EnclaveName][]byte, problems []error)
+//	func OpenSealed(st model.Status, e model.EnclaveName, o FactOpener) (map[string]model.ObservedFact, error)
 //	type StatusRefs interface{ ReadAll(ctx) (map[model.MachineID]model.Status, error); Publish(ctx, model.Status) error }
+//	func NewMemoryStatusRefs(self model.MachineID, seed map[model.MachineID]model.Status) *MemoryStatusRefs
 //	func StatusRef(id model.MachineID) string
+//	func PublishDue(last *model.Status, changed bool, at time.Time) bool
+//	func List(f *File, statuses map[model.MachineID]model.Status, at time.Time) []Summary
 //	func DiffObserved(statuses map[model.MachineID]model.Status, collector string) (ObservedDiff, error)
 package fleet
