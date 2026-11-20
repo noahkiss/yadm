@@ -10,15 +10,23 @@
 //	{{ observed.COLLECTOR }}           observed items joined by "\n"; missing is an error
 //	{% if COND %} ... {% elif COND %} ... {% else %} ... {% endif %}
 //	{# comment #}
-//	{{ "{{" }}                         a literal "{{"
+//	{{ "{{" }}                         a literal delimiter: {{ }} {% %} {# #}
 //
-// COND is the package cond language. A directive that ends a line consumes that
-// line's newline. Anything else between {{ }} or {% %} is an error with the
-// file, line and column; there are no filters, loops or includes.
+// COND is the package cond language. A {% %} or {# #} tag alone on its line
+// (only blanks around it) removes the whole line, newline included. A tag
+// may not span lines. Anything else between {{ }} or {% %} is an error with
+// the file, line and column; there are no filters, loops or includes.
+//
+// The whole template is parsed before it is evaluated, so a malformed block
+// or an unknown name fails even in a branch this machine does not take. A
+// missing value (a fact this machine lacks, a collector with no result or a
+// failed one) fails only when its branch is taken. The output always ends
+// with exactly one newline: trailing newlines collapse to one.
 //
 // Exported API:
 //
 //	type Engine interface{ Render(name string, src []byte, ctx model.Context) ([]byte, error) }
 //	func New(v cond.Vocabulary) Engine
+//	func Validate(name string, src []byte, v cond.Vocabulary) error
 //	type Error struct{ Name string; Line, Col int; Msg string }
 package render
