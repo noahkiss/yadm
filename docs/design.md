@@ -305,7 +305,7 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 
 The state database stores hashes, never rendered bytes. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
-Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref or `cachetextconv = true` setting.
+Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref, any `cachetextconv = true` setting, and any filter or merge driver in the source clone's own config.
 
 Every change to sealing or delivery needs a test with `internal/secrecytest` that plants a canary in enclave plaintext and asserts it reaches neither a non-member's `$HOME` nor any repository's object store.
 
