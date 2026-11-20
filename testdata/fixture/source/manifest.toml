@@ -1,0 +1,101 @@
+# Synthetic manifest exercising every rule kind.
+schema = 1
+
+[defaults]
+quiet = "2h"
+
+# Shared plaintext, every machine.
+[[file]]
+target = ".config/shell/aliases.sh"
+
+[[file]]
+target = ".config/packages/list"
+
+# A template: one source, rendered per machine.
+[[file]]
+target = ".gitconfig"
+source = "files/.gitconfig.tmpl"
+template = true
+
+# Only on work machines.
+[[file]]
+target = ".config/work/proxy.conf"
+when = "type:work"
+template = true
+
+# Two variants of one target, chosen by condition. Exactly one applies per machine.
+[[file]]
+target = ".config/shell/os.sh"
+source = "files/.config/shell/os-darwin.sh"
+when = "os:darwin"
+
+[[file]]
+target = ".config/shell/os.sh"
+source = "files/.config/shell/os-linux.sh"
+when = "os:linux"
+
+# An app-rewritten JSON file: the repo owns some keys, the app owns the rest,
+# one value is sealed for the personal enclave.
+[[file]]
+target = ".config/editor/settings.json"
+format = "jsonc"
+keep = ["editor.*", "terminal.font"]
+drop = ["window.state", "recent"]
+seal = { "sync.token" = "personal" }
+quiet = "0s"
+
+# A text file with a sealed region.
+[[file]]
+target = ".ssh/config"
+regions = true
+mode = 0o600
+
+# Whole files sealed for an enclave (sources under sealed/<enclave>/).
+[[file]]
+target = ".config/notes/private.md"
+enclave = "personal"
+when = "type:personal"
+
+[[file]]
+target = ".config/client-tool/token"
+enclave = "client"
+when = "type:client"
+
+# Service units, reloaded only when their bytes change.
+[[file]]
+target = "Library/LaunchAgents/example.sync-helper.plist"
+when = "os:darwin"
+
+[[file]]
+target = ".config/systemd/user/sync-helper.service"
+when = "os:linux"
+
+[[unit]]
+target = "Library/LaunchAgents/example.sync-helper.plist"
+kind = "launchd"
+
+[[unit]]
+target = ".config/systemd/user/sync-helper.service"
+kind = "systemd"
+
+[[root]]
+path = ".config/shell"
+
+[tasks.package-bundle]
+on = [".config/packages/list"]
+command = ["pkg-tool", "bundle", "--file", ".config/packages/list"]
+timeout = "10m"
+
+[tasks.first-setup]
+first_apply = true
+command = ["sh", "-c", "echo first apply"]
+
+[tasks.cleanup-cache]
+on_remove = [".config/work/**"]
+when = "type:work"
+command = ["sh", "-c", "rm -rf \"$YADM_HOME/.cache/work-tool\""]
+
+[checks.no-private-keys]
+paths = ["**"]
+command = ["secret-check", "--stdin-json"]
+timeout = "20s"

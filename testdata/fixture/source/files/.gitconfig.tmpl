@@ -1,0 +1,17 @@
+{# Rendered per machine by the template engine. #}
+[user]
+	name = Example User
+{% if type:work %}
+	email = user@work.example.invalid
+{% else %}
+	email = user@personal.example.invalid
+{% endif %}
+[core]
+	editor = {{ machine.facts.editor }}
+	excludesfile = {{ home }}/.config/git/ignore
+[init]
+	defaultBranch = main
+{% if os:darwin %}
+[credential]
+	helper = os-keychain
+{% endif %}

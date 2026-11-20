@@ -1,0 +1,6 @@
+[Unit]
+Description=Example sync helper
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/true

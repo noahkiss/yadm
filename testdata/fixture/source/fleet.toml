@@ -1,0 +1,53 @@
+# Synthetic fleet: three machines, three user-defined types, two enclaves.
+schema = 1
+
+[types.personal]
+enclave = true
+
+[types.work]
+
+[types.client]
+enclave = true
+
+[machines.m-a1b2c3]
+name = "host-a"
+nicknames = ["laptop-a"]
+types = ["personal"]
+os = "darwin"
+arch = "arm64"
+
+[machines.m-a1b2c3.facts]
+editor = "editor-one"
+shell = "zsh"
+
+[machines.m-d4e5f6]
+name = "host-b"
+nicknames = ["desk-b"]
+types = ["work"]
+os = "darwin"
+arch = "arm64"
+
+[machines.m-d4e5f6.facts]
+editor = "editor-two"
+shell = "zsh"
+proxy = "proxy.example.invalid:3128"
+
+[machines.m-g7h8i9]
+name = "host-c"
+types = ["work", "client"]
+os = "linux"
+arch = "amd64"
+
+[machines.m-g7h8i9.facts]
+editor = "editor-one"
+shell = "bash"
+
+[collectors.packages]
+command = ["pkg-tool", "list", "--names"]
+timeout = "30s"
+publish = "plain"
+
+[collectors.client-tools]
+command = ["client-tool", "--version"]
+when = "type:client"
+publish = "sealed:client"

@@ -1,0 +1,4 @@
+name	hostname	classes	editor
+host-a	laptop-a.example.invalid	personal	editor-one
+host-b	asset-0001	work	editor-two
+host-c	build-c.example.invalid	work,client	editor-one

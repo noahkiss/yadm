@@ -1,0 +1,11 @@
+{
+  // Repo-owned keys (keep): editor.* and terminal.font.
+  "editor.fontSize": 13,
+  "editor.tabSize": 2,
+  "terminal.font": "Mono Example",
+  // Sealed for the personal enclave; the fixture generator replaces this
+  // placeholder with a sealed value token.
+  "sync": {
+    "token": "@@SEAL:personal:sync.token@@"
+  }
+}

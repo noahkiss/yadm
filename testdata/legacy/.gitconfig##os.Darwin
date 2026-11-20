@@ -1,0 +1,4 @@
+[user]
+	name = Example User
+[credential]
+	helper = os-keychain

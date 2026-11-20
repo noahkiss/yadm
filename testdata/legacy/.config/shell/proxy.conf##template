@@ -1,0 +1,4 @@
+proxy = {{ yadm.hostname }}
+{% if yadm.class == "work" %}
+work = 1
+{% endif %}
