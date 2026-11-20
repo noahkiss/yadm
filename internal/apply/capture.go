@@ -382,6 +382,27 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	return &store.Change{Path: p, Blob: blob, Mode: mode}, nil, nil
 }
 
+// ownedState is the state of a target taken over as it is: managed from the
+// source at the snapshot with the entry's protection, and nothing written
+// yet, so the next scan sees it as drift and captures it.
+func ownedState(snap *Snapshot, r manifest.Resolved) TargetState {
+	p := protOf(r.Entry)
+	ts := TargetState{
+		Source: r.Source, SourceBlob: snap.Tree[r.Source].Blob, Scope: r.Entry.Scope(),
+		Enclave: p.Enclave, Seal: p.Seal, Regions: p.Regions,
+		Keep: p.Keep, Drop: p.Drop, Volatile: p.Volatile,
+		ExplicitMode: uint32(r.Entry.Mode.Perm()),
+	}
+	for k := range p.Seal {
+		ts.SealSet = append(ts.SealSet, k)
+	}
+	sort.Strings(ts.SealSet)
+	if p.Regions {
+		ts.SealSet = append(ts.SealSet, "regions")
+	}
+	return ts
+}
+
 func rootOf(p *manifest.Plan, t model.Target) (manifest.Root, bool) {
 	var best manifest.Root
 	found := false
@@ -511,8 +532,9 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 	}
 
 	// Take the target: capture it as it is now.
-	ts := st.Targets[t]
-	if _, inPlan := snap.Plan.Targets[t]; !inPlan {
+	ts, have := st.Targets[t]
+	r, inPlan := snap.Plan.Targets[t]
+	if !inPlan {
 		// A modified orphan: keep the file as it is and stop managing it.
 		// It goes into the baseline, so an owned root over it never
 		// captures it automatically.
@@ -520,6 +542,22 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		st.Baseline[t] = now
 		clearFileHolds(st, t)
 		return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActSkip, Scope: h.Scope, Reason: "hold resolved: take target; no longer managed"}}}, e.State.Save(st)
+	}
+	if !have {
+		// A file yadm never wrote (an adopt or apply hold): taking it is the
+		// decision a keep, drop or volatile entry waits for. Record it as
+		// managed against the source at the snapshot, with the entry's
+		// protection and no written hash, so the capture below, the commit
+		// scan and the next apply all treat it as this machine's file.
+		ts = ownedState(snap, r)
+		st.Targets[t] = ts
+		delete(st.Seen, t)
+		delete(st.Baseline, t)
+		delete(st.Ignored, t)
+		clearFileHolds(st, t)
+		if err := e.State.Save(st); err != nil {
+			return Result{}, err
+		}
 	}
 	kind := DriftModified
 	if lv, err := e.readTarget(ctx, abs); err == nil && !lv.exists {
