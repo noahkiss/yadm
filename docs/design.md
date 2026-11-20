@@ -160,7 +160,7 @@ Resolution for one machine:
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
-- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that a key-level merge always resolves to this machine's value.
+- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
 - A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
 `yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it.
@@ -207,6 +207,7 @@ The keep, drop and seal engines are core. The key lists for each app are user co
 |---|---|---|---|---|
 | `keep` | JSON, JSONC, TOML | Only the listed keys | Repo keys merged into the live file; app keys untouched | Same |
 | `drop` | JSON, JSONC, TOML | Never the listed keys | Live values untouched | Same |
+| `volatile` | JSON, JSONC, TOML | The value it held before; a local change is never captured, and a key the source lacks stays out | Live value untouched; a missing key is seeded from the source | Same |
 | `seal` | JSON, JSONC, TOML | A value token `yadm:1:<enclave>:<epoch>:<base64url>` | Plaintext value | Key absent |
 | `regions` | Any text with line comments | One line `# yadm:sealed 1 <epoch> <base64>` between markers | Plaintext body between markers | Markers with nothing between |
 

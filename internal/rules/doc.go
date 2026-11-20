@@ -57,7 +57,7 @@
 //
 // Exported API:
 //
-//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool; Source model.SourcePath }
+//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool; Source model.SourcePath; Volatile []string }
 //	func SpecOf(e manifest.Entry) Spec; func SpecFor(r manifest.Resolved) Spec // SpecFor sets Source
 //	var ErrNoSource error // sealing or opening with an empty Spec.Source
 //	type Sealer interface{ CanOpen; SealValue; OpenValue; SealRegion; OpenRegion }  // crypt.Set implements it

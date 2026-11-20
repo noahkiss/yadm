@@ -25,12 +25,20 @@ type Spec struct {
 	Seal    map[string]model.EnclaveName
 	Regions bool
 	Source  model.SourcePath
+	// Volatile key paths are machine-local: apply keeps the live value,
+	// and capture keeps the source's value, so a change to one is never
+	// committed. A source without the key seeds a live file that lacks it.
+	Volatile []string
 }
 
 // SpecOf extracts the intra-file rules from a manifest entry. The caller
 // sets Source to the resolved source path.
 func SpecOf(e manifest.Entry) Spec {
-	return Spec{Format: e.Format, Keep: e.Keep, Drop: e.Drop, Seal: e.Seal, Regions: e.Regions, Source: e.Source}
+	s := Spec{Format: e.Format, Keep: e.Keep, Drop: e.Drop, Seal: e.Seal, Regions: e.Regions, Source: e.Source}
+	if e.Format == manifest.FormatJSON || e.Format == manifest.FormatJSONC || e.Format == manifest.FormatTOML {
+		s.Volatile = e.Volatile
+	}
+	return s
 }
 
 // SpecFor is SpecOf for a resolved entry, with its resolved source path.
@@ -54,7 +62,7 @@ func partName(src model.SourcePath, keyOrLabel string) (string, error) {
 
 // Empty reports whether the spec has no intra-file rules.
 func (s Spec) Empty() bool {
-	return len(s.Keep) == 0 && len(s.Drop) == 0 && len(s.Seal) == 0 && !s.Regions
+	return len(s.Keep) == 0 && len(s.Drop) == 0 && len(s.Seal) == 0 && !s.Regions && len(s.Volatile) == 0
 }
 
 // Sealer seals and opens parts of files. crypt.Set implements it.
@@ -121,9 +129,12 @@ type compiled struct {
 	drop  []pattern
 	seals []sealRule
 	owned []pattern // keep plus seal: what the source holds in keep mode
+	vol   []pattern // volatile: machine-local values
 }
 
-func (s Spec) structured() bool { return len(s.Keep) > 0 || len(s.Drop) > 0 || len(s.Seal) > 0 }
+func (s Spec) structured() bool {
+	return len(s.Keep) > 0 || len(s.Drop) > 0 || len(s.Seal) > 0 || len(s.Volatile) > 0
+}
 
 func compile(spec Spec) (*compiled, error) {
 	f, err := formatFor(string(spec.Format))
@@ -135,6 +146,9 @@ func compile(spec Spec) (*compiled, error) {
 		return nil, err
 	}
 	if c.drop, err = parsePatterns(spec.Drop); err != nil {
+		return nil, err
+	}
+	if c.vol, err = parsePatterns(spec.Volatile); err != nil {
 		return nil, err
 	}
 	keys := make([]string, 0, len(spec.Seal))
@@ -462,6 +476,14 @@ func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error) {
 			}
 		}
 	}
+	if len(c.vol) > 0 {
+		lroot, _ := c.f.parse(live)
+		for _, p := range matchPaths(lroot, c.vol) {
+			if base, err = put(c.f, base, p, live, false); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return base, nil
 }
 
@@ -677,6 +699,11 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 				return nil, nil, err
 			}
 		}
+		if len(c.vol) > 0 {
+			if out, err = c.keepVolatile(out, prevSource, prevRoot); err != nil {
+				return nil, nil, err
+			}
+		}
 		var v []Violation
 		var pl []leakProbe
 		if out, v, pl, err = c.sealValues(out, prevSource, prevRoot, s); err != nil {
@@ -697,6 +724,37 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 		return nil, nil, ErrRoundTrip
 	}
 	return out, nil, nil
+}
+
+// keepVolatile puts the previous source's value back at every volatile
+// path of out, and removes a volatile key the previous source lacks, so a
+// machine-local value never reaches the source.
+func (c *compiled) keepVolatile(out, prev []byte, prevRoot *node) ([]byte, error) {
+	root, err := c.f.parse(out)
+	if err != nil {
+		return nil, err
+	}
+	var gone [][]string
+	for _, p := range matchPaths(root, c.vol) {
+		if prevRoot != nil && find(prevRoot, p) != nil {
+			if out, err = put(c.f, out, p, prev, false); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		gone = append(gone, p)
+	}
+	// A volatile key the target deleted is deleted from the source too:
+	// keeping it would not round-trip (apply seeds a missing key).
+	if len(gone) == 0 {
+		return out, nil
+	}
+	root, err = c.f.parse(out)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(gone, func(i, j int) bool { return pos(root, gone[i]) < pos(root, gone[j]) })
+	return deletePaths(c.f, out, gone, false)
 }
 
 type leakProbe struct {
