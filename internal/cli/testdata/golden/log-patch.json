@@ -1,0 +1,11 @@
+{
+  "command": "log",
+  "data": null,
+  "error": {
+    "code": "not_implemented",
+    "message": "log --patch: not implemented"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

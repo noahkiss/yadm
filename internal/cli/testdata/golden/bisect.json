@@ -1,0 +1,11 @@
+{
+  "command": "bisect",
+  "data": null,
+  "error": {
+    "code": "not_implemented",
+    "message": "bisect: not implemented"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

@@ -1,0 +1,15 @@
+{
+  "command": "diff",
+  "data": {
+    "files": [
+      {
+        "diff": "--- source/.config/tool/config\n+++ target/.config/tool/config\n@@ -1 +1 @@\n-color = blue\n+color = red\n",
+        "target": ".config/tool/config"
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

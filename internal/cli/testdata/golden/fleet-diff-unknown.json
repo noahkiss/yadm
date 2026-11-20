@@ -1,0 +1,11 @@
+{
+  "command": "fleet diff",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: no collector \"nope\" in fleet.toml"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

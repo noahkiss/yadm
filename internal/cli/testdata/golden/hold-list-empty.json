@@ -1,0 +1,10 @@
+{
+  "command": "hold list",
+  "data": {
+    "holds": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

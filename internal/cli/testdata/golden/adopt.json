@@ -1,0 +1,53 @@
+{
+  "command": "adopt",
+  "data": {
+    "actions": [
+      {
+        "kind": "adopt",
+        "scope": "shared",
+        "source": "files/.config/tool/config",
+        "target": ".config/tool/config"
+      },
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/extra",
+        "target": ".config/tool/extra"
+      },
+      {
+        "kind": "hold",
+        "reason": "drifted",
+        "scope": "shared",
+        "source": "files/.config/tool/retag-me",
+        "target": ".config/tool/retag-me"
+      }
+    ],
+    "commit": "<oid>",
+    "holds": [
+      {
+        "detail": "<detail>",
+        "id": "<sha256>",
+        "next": [
+          "yadm hold show <sha256>",
+          "yadm hold resolve <sha256> --take target",
+          "yadm hold resolve <sha256> --take source"
+        ],
+        "reason": "drifted",
+        "scope": "shared",
+        "since": "<since>",
+        "target": ".config/tool/retag-me"
+      }
+    ],
+    "schedule": {
+      "installed": false,
+      "skipped": true
+    }
+  },
+  "error": {
+    "code": "attention",
+    "message": "holds need attention: 1 held"
+  },
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

@@ -1,0 +1,13 @@
+{
+  "command": "version",
+  "data": {
+    "arch": "<arch>",
+    "go": "<go>",
+    "os": "<os>",
+    "version": "test"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

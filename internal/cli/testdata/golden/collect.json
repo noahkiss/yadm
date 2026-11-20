@@ -1,0 +1,19 @@
+{
+  "command": "collect",
+  "data": {
+    "observed": {
+      "packages": {
+        "collected_at": "<collected_at>",
+        "collector": "packages",
+        "items": [
+          "tool-one"
+        ]
+      }
+    },
+    "skipped": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

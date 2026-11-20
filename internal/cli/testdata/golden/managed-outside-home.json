@@ -1,0 +1,11 @@
+{
+  "command": "managed",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: \"/elsewhere/file\" is not under $HOME"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

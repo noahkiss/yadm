@@ -1,0 +1,13 @@
+{
+  "command": "apply",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: unknown flag: --no-such-flag"
+  },
+  "next": [
+    "yadm --help"
+  ],
+  "ok": false,
+  "schema": 1
+}

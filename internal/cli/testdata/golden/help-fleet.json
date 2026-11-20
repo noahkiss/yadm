@@ -1,0 +1,18 @@
+{
+  "command": "fleet",
+  "data": {
+    "commands": [
+      "yadm fleet diff",
+      "yadm fleet list",
+      "yadm fleet show",
+      "yadm fleet status"
+    ],
+    "flags": "  -h, --help          help for fleet\n      --interactive   allow prompts (no command prompts without it)\n      --json          print one JSON envelope on stdout\n",
+    "short": "Machines, their status refs and observed facts",
+    "usage": "yadm fleet [flags]"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

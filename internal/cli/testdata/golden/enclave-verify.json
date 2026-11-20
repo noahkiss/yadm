@@ -1,0 +1,18 @@
+{
+  "command": "enclave verify",
+  "data": {
+    "enclaves": [
+      {
+        "enclave": "vault",
+        "epoch": 0,
+        "member": false,
+        "ok": true,
+        "seq": 0
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

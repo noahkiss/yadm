@@ -1,0 +1,16 @@
+{
+  "command": "hello",
+  "data": {
+    "data": {
+      "k": 1
+    },
+    "items": [
+      "x"
+    ],
+    "message": "hi"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

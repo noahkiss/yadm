@@ -1,0 +1,19 @@
+{
+  "command": "enclave list",
+  "data": {
+    "enclaves": [
+      {
+        "enclave": "vault",
+        "epoch": 0,
+        "member": false,
+        "members": [],
+        "pinned": null,
+        "seq": 0
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

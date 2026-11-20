@@ -1,0 +1,30 @@
+{
+  "command": "import",
+  "data": {
+    "commit": "<oid>",
+    "machines": 0,
+    "mappings": [
+      {
+        "from": ".config/app/settings##default",
+        "sealed": false,
+        "source": "files/.config/app/settings##default",
+        "target": ".config/app/settings",
+        "when": "!os:linux"
+      },
+      {
+        "from": ".config/app/settings##os.Linux",
+        "sealed": false,
+        "source": "files/.config/app/settings##os.Linux",
+        "target": ".config/app/settings",
+        "when": "os:linux"
+      }
+    ]
+  },
+  "error": null,
+  "next": [
+    "review $TMP/imported, then push it to a new remote",
+    "on each machine: yadm init <remote> --machine <name>"
+  ],
+  "ok": true,
+  "schema": 1
+}

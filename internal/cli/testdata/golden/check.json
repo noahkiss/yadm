@@ -1,0 +1,59 @@
+{
+  "command": "check",
+  "data": {
+    "checks": [
+      {
+        "detail": "<detail>",
+        "name": "identity",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "manifest",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "key_logs",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "membership",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "schedule",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "last_sync",
+        "ok": false
+      },
+      {
+        "detail": "<detail>",
+        "name": "holds",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "secrecy_config",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
+        "name": "git_drivers",
+        "ok": true
+      }
+    ]
+  },
+  "error": {
+    "code": "error",
+    "message": "1 of 9 checks failed"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

@@ -1,0 +1,12 @@
+{
+  "command": "why",
+  "data": {
+    "managed": false,
+    "protected": false,
+    "target": ".config/other"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

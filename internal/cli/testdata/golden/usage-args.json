@@ -1,0 +1,13 @@
+{
+  "command": "why",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: accepts 1 arg(s), received 0"
+  },
+  "next": [
+    "yadm --help"
+  ],
+  "ok": false,
+  "schema": 1
+}

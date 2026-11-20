@@ -1,0 +1,14 @@
+{
+  "command": "hold resolve",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: --take source|target|<file> is required"
+  },
+  "next": [
+    "yadm hold resolve abc --take source",
+    "yadm hold resolve abc --take target"
+  ],
+  "ok": false,
+  "schema": 1
+}

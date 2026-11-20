@@ -1,0 +1,27 @@
+{
+  "command": "init",
+  "data": {
+    "allowed": [
+      "collector:packages",
+      "task:bundle"
+    ],
+    "in_fleet": true,
+    "machine": "<machine-id>",
+    "name": "host-a",
+    "recipient": "<recipient>",
+    "schedule": {
+      "installed": true
+    },
+    "sign_key": "<sign_key>",
+    "source": "$TMP/a/home/.local/share/yadm/source"
+  },
+  "error": null,
+  "next": [
+    "on a member machine: yadm enclave add <machine-id> --enclave <enclave> --recipient <recipient> --sign-key <sign_key>",
+    "then here: yadm enclave join <enclave> --expect <fingerprint>",
+    "yadm adopt --dry-run",
+    "yadm apply"
+  ],
+  "ok": true,
+  "schema": 1
+}

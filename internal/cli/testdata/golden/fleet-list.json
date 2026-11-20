@@ -1,0 +1,48 @@
+{
+  "command": "fleet list",
+  "data": {
+    "machines": [
+      {
+        "machine": {
+          "arch": "<arch>",
+          "id": "<machine-id>",
+          "name": "host-a",
+          "os": "<os>",
+          "types": [
+            "work",
+            "vault"
+          ]
+        },
+        "stale": true
+      },
+      {
+        "machine": {
+          "arch": "<arch>",
+          "id": "<machine-id>",
+          "name": "host-b",
+          "os": "<os>",
+          "types": [
+            "work"
+          ]
+        },
+        "stale": true
+      },
+      {
+        "machine": {
+          "arch": "<arch>",
+          "id": "<machine-id>",
+          "name": "host-c",
+          "os": "<os>",
+          "types": [
+            "other"
+          ]
+        },
+        "stale": true
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

@@ -1,0 +1,23 @@
+{
+  "command": "enclave create",
+  "data": {
+    "commit": "<oid>",
+    "enclave": "vault",
+    "epoch": 1,
+    "fingerprint": "<sha256>",
+    "members": [
+      "<machine-id>"
+    ],
+    "op": "create",
+    "recovery_dir": "$TMP/recovery",
+    "seq": 1,
+    "subject": "<machine-id>"
+  },
+  "error": null,
+  "next": [
+    "yadm sync",
+    "move the recovery identity in $TMP/recovery offline, then delete it from this machine"
+  ],
+  "ok": true,
+  "schema": 1
+}

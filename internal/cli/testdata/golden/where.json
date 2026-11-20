@@ -1,0 +1,12 @@
+{
+  "command": "where",
+  "data": {
+    "config": "$TMP/fresh/home/.config/yadm",
+    "source": "$TMP/fresh/home/.local/share/yadm/source",
+    "state": "$TMP/fresh/home/.local/state/yadm"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

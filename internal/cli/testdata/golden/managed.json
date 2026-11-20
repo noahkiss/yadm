@@ -1,0 +1,13 @@
+{
+  "command": "managed",
+  "data": {
+    "managed": true,
+    "scope": "shared",
+    "source": "files/.config/tool/config",
+    "target": ".config/tool/config"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

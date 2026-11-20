@@ -1,0 +1,25 @@
+{
+  "command": "machine",
+  "data": {
+    "arch": "<arch>",
+    "enclaves": {
+      "opened": [],
+      "other": [
+        "vault"
+      ],
+      "refused": []
+    },
+    "id": "<machine-id>",
+    "name": "host-a",
+    "observed": {},
+    "os": "<os>",
+    "types": [
+      "work",
+      "vault"
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

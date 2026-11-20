@@ -1,0 +1,43 @@
+{
+  "command": "task list",
+  "data": {
+    "definitions": [
+      {
+        "allowed": true,
+        "applies": true,
+        "definition": {
+          "command": [
+            "echo",
+            "tool-one"
+          ],
+          "publish": "plain",
+          "timeout": "0s"
+        },
+        "hash": "<sha256>",
+        "kind": "collector",
+        "name": "packages"
+      },
+      {
+        "allowed": true,
+        "applies": true,
+        "definition": {
+          "command": [
+            "pkg-tool",
+            "bundle"
+          ],
+          "on": [
+            ".config/tool/config"
+          ],
+          "timeout": "5m0s"
+        },
+        "hash": "<sha256>",
+        "kind": "task",
+        "name": "bundle"
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

@@ -1,0 +1,19 @@
+{
+  "command": "explain",
+  "data": {
+    "command": "init",
+    "steps": [
+      "clone <remote> into the source directory",
+      "look up --machine in fleet.toml; a name not in the fleet gets a new random machine id",
+      "generate an age X25519 identity and an Ed25519 signing key, mode 0600, in the state directory",
+      "write machine.toml (machine id and remote) in the config directory",
+      "allow current task, check and collector definitions only with --allow-tasks",
+      "install the sync schedule (a launchd user agent) unless --no-schedule",
+      "print the machine id, recipient and signing key for `yadm enclave add` on a member"
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

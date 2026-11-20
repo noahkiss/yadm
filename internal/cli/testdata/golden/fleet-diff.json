@@ -1,0 +1,13 @@
+{
+  "command": "fleet diff",
+  "data": {
+    "collector": "packages",
+    "missing": {},
+    "union": [],
+    "unknown": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}
