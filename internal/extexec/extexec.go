@@ -44,7 +44,7 @@ type Request struct {
 	Changed []model.Target          `json:"changed,omitempty"` // tasks: targets written; checks: targets staged
 	Removed []model.Target          `json:"removed,omitempty"` // tasks: targets removed on this apply
 	Staged  map[model.Target]string `json:"staged,omitempty"`  // checks: target -> path of a temp file with the staged plaintext (0600, deleted after)
-	Trigger string                  `json:"trigger,omitempty"` // tasks: "paths", "remove" or "first-apply"
+	Trigger string                  `json:"trigger,omitempty"` // tasks: "paths", "remove", "first-apply", "fact" (an on_fact input changed) or "render" (on_render)
 	Args    []string                `json:"args,omitempty"`    // subcommands
 	JSON    bool                    `json:"json"`              // the caller asked for --json
 	Event   map[string]any          `json:"event,omitempty"`   // notify: the event being reported
