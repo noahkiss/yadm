@@ -20,7 +20,6 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
-	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
@@ -562,8 +561,7 @@ func (a *app) cmdDiff(cmd *cobra.Command, args []string) (result, error) {
 func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 	fd := fileDiff{Target: t}
 	snap := m.snap
-	r, ok := snap.Plan.Targets[t]
-	if !ok {
+	if _, ok := snap.Plan.Targets[t]; !ok {
 		fd.Skipped = "not managed on this machine"
 		return fd
 	}
@@ -572,7 +570,7 @@ func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 		fd.Skipped = err.Error()
 		return fd
 	}
-	want, err := renderFor(ctx, m.repo, snap, r, live)
+	want, err := m.eng.Render(ctx, snap, t, live)
 	if err != nil {
 		fd.Skipped = err.Error()
 		return fd
@@ -584,81 +582,6 @@ func (m *machineEnv) diffOne(ctx context.Context, t model.Target) fileDiff {
 	}
 	fd.Diff = d
 	return fd
-}
-
-// renderFor produces the target bytes of one resolved entry, the way apply
-// does: open a sealed file, render a template, apply intra-file rules.
-func renderFor(ctx context.Context, st store.Store, snap *apply.Snapshot, r manifest.Resolved, live []byte) ([]byte, error) {
-	open := func(e model.EnclaveName) bool {
-		if l, ok := snap.Enclaves[e]; ok && l.Err != nil {
-			return false
-		}
-		return snap.Crypto != nil && snap.Crypto.CanOpen(e)
-	}
-	te, ok := snap.Tree[r.Source]
-	if !ok {
-		return nil, fmt.Errorf("%s: not in the source tree", r.Source)
-	}
-	raw, err := st.ReadBlob(ctx, te.Blob)
-	if err != nil {
-		return nil, err
-	}
-	if enc := r.Entry.Enclave; enc != "" {
-		if !open(enc) {
-			return nil, fmt.Errorf("sealed for %s; this machine cannot open it", enc)
-		}
-		if raw, err = snap.Crypto.OpenFile(enc, r.Source, raw); err != nil {
-			return nil, err
-		}
-	}
-	if r.Entry.Template {
-		if raw, err = snap.Render.Render(string(r.Source), raw, snap.Context); err != nil {
-			return nil, err
-		}
-	}
-	if spec := rules.SpecFor(r); !spec.Empty() {
-		var s rules.Sealer = refusingSealer{snap}
-		if raw, err = rules.ToTarget(raw, live, spec, s); err != nil {
-			return nil, err
-		}
-	}
-	return raw, nil
-}
-
-// refusingSealer opens only enclaves this machine is a member of and whose
-// key log verified.
-type refusingSealer struct{ snap *apply.Snapshot }
-
-func (r refusingSealer) ok(e model.EnclaveName) bool {
-	if l, found := r.snap.Enclaves[e]; found && l.Err != nil {
-		return false
-	}
-	return r.snap.Crypto != nil && r.snap.Crypto.CanOpen(e)
-}
-func (r refusingSealer) CanOpen(e model.EnclaveName) bool { return r.ok(e) }
-func (r refusingSealer) SealValue(e model.EnclaveName, k string, p []byte) (string, error) {
-	if !r.ok(e) {
-		return "", crypt.ErrNotMember
-	}
-	return r.snap.Crypto.SealValue(e, k, p)
-}
-func (r refusingSealer) OpenValue(e model.EnclaveName, k, t string) ([]byte, error) {
-	if !r.ok(e) {
-		return nil, crypt.ErrNotMember
-	}
-	return r.snap.Crypto.OpenValue(e, k, t)
-}
-func (r refusingSealer) SealRegion(e model.EnclaveName, l string, b []byte) (string, error) {
-	if !r.ok(e) {
-		return "", crypt.ErrNotMember
-	}
-	return r.snap.Crypto.SealRegion(e, l, b)
-}
-func (r refusingSealer) OpenRegion(e model.EnclaveName, l, t string) ([]byte, error) {
-	if !r.ok(e) {
-		return nil, crypt.ErrNotMember
-	}
-	return r.snap.Crypto.OpenRegion(e, l, t)
 }
 
 func reportData(r sync.Report) sync.Report {

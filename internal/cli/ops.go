@@ -274,7 +274,7 @@ func (a *app) cmdHoldShow(cmd *cobra.Command, args []string) (result, error) {
 			return s
 		}
 		if crypt.IsSealedFile(b) {
-			if snap == nil || enc == "" || snap.Crypto == nil || !(refusingSealer{snap}).ok(enc) {
+			if snap == nil || enc == "" || snap.Crypto == nil || !snap.CanOpen(enc) {
 				s.Sealed = true
 				return s
 			}
