@@ -9,8 +9,10 @@ import (
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/render"
+	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/tasks"
+	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
 // StateSchema is the version of the state file.
@@ -18,6 +20,15 @@ const StateSchema = 1
 
 // BackupRetention is how long replaced target bytes are kept.
 const BackupRetention = 30 * 24 * time.Hour
+
+// FullHashInterval is the longest time between two full hash passes of Scan.
+const FullHashInterval = 24 * time.Hour
+
+// Default bounds for filesystem access, so a slow or dead mount never hangs a command.
+const (
+	DefaultStatTimeout = 2 * time.Second  // one stat or one read of a target
+	DefaultScanBudget  = 60 * time.Second // a whole Scan, owned roots included
+)
 
 // TargetState is what the tool knows about one target it manages.
 type TargetState struct {
@@ -45,6 +56,8 @@ type State struct {
 	Observed       map[string]model.ObservedFact `json:"observed,omitempty"`
 	Tasks          map[string]model.TaskResult   `json:"tasks,omitempty"`
 	RenderContext  *model.Context                `json:"render_context,omitempty"` // the Context of the last apply, to recompute last renders
+	Roots          []manifest.Root               `json:"roots,omitempty"`          // owned roots of the last apply; Scan reads them without loading a Snapshot
+	Seen           map[model.Target]time.Time    `json:"seen,omitempty"`           // first sighting of each new file in an owned root
 }
 
 // StateDB loads and saves State atomically.
@@ -59,20 +72,16 @@ const StateFile = "state.json"
 // FileStateDB returns the JSON-file StateDB in stateDir.
 func FileStateDB(stateDir string) StateDB { return fileDB{dir: stateDir} }
 
-type fileDB struct{ dir string }
-
-func (fileDB) Load() (*State, error) { return nil, model.ErrNotImplemented }
-func (fileDB) Save(*State) error     { return model.ErrNotImplemented }
-
 // DriftKind classifies a difference between a target and the state.
 type DriftKind string
 
 // Drift kinds.
 const (
-	DriftModified DriftKind = "modified"
-	DriftDeleted  DriftKind = "deleted"
-	DriftNew      DriftKind = "new" // unmanaged file inside an owned root
-	DriftMode     DriftKind = "mode"
+	DriftModified   DriftKind = "modified"
+	DriftDeleted    DriftKind = "deleted"
+	DriftNew        DriftKind = "new" // unmanaged file inside an owned root
+	DriftMode       DriftKind = "mode"
+	DriftUnreadable DriftKind = "unreadable" // stat or read failed or timed out; nothing is known
 )
 
 // Drift is one target that differs from what the tool last wrote.
@@ -82,6 +91,7 @@ type Drift struct {
 	Scope  model.Scope  `json:"scope"`
 	Since  time.Time    `json:"since"`
 	Hash   string       `json:"hash,omitempty"`
+	Detail string       `json:"detail,omitempty"`
 }
 
 // ScanOptions tunes Scan.
@@ -119,12 +129,15 @@ type ApplyOptions struct {
 	Paths  []model.Target
 }
 
-// Result is the outcome of Apply or Adopt.
+// Result is the outcome of Apply, Adopt or ResolveHold.
 type Result struct {
 	Commit  model.CommitID     `json:"commit"`
 	Actions []Action           `json:"actions"`
 	Holds   []model.Hold       `json:"holds"`
 	Tasks   []model.TaskResult `json:"tasks,omitempty"`
+	// Capture carries source changes when ResolveHold takes the target. The
+	// caller commits them through the gate; apply never commits.
+	Capture *Capture `json:"-"`
 }
 
 // Capture is the outcome of capturing drift: source changes ready for a
@@ -154,6 +167,77 @@ type Snapshot struct {
 	Keys     *crypt.Set
 	Enclaves map[model.EnclaveName]crypt.EnclaveLoad
 	Render   render.Engine
+	// Crypto seals and opens for this machine. Load sets it from Keys; nil
+	// means this machine opens no enclave.
+	Crypto Crypto
+	// Tree maps each source path at Commit to its blob id and git mode.
+	Tree map[model.SourcePath]store.TreeEntry
+}
+
+// Crypto is what apply needs from the enclave keys: the rules.Sealer for
+// values and regions, plus whole-file sealing. SetCrypto adapts a crypt.Set.
+type Crypto interface {
+	rules.Sealer
+	SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error)
+	OpenFile(e model.EnclaveName, container []byte) ([]byte, error)
+}
+
+// SetCrypto adapts a crypt.Set to Crypto. A nil set opens nothing.
+func SetCrypto(s *crypt.Set) Crypto {
+	if s == nil {
+		s = &crypt.Set{}
+	}
+	return setCrypto{s}
+}
+
+type setCrypto struct{ *crypt.Set }
+
+func (c setCrypto) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
+	r, ok := c.Rings[e]
+	if !ok {
+		return nil, crypt.ErrNotMember
+	}
+	return r.SealFile(pt)
+}
+
+func (c setCrypto) OpenFile(e model.EnclaveName, ct []byte) ([]byte, error) {
+	r, ok := c.Rings[e]
+	if !ok {
+		return nil, crypt.ErrNotMember
+	}
+	return r.OpenFile(ct)
+}
+
+// Rules is the intra-file rules engine. The default is package rules.
+type Rules interface {
+	ToTarget(source, live []byte, spec rules.Spec, s rules.Sealer) ([]byte, error)
+	ToSource(target, prevSource []byte, spec rules.Spec, s rules.Sealer) ([]byte, []rules.Violation, error)
+}
+
+type pkgRules struct{}
+
+func (pkgRules) ToTarget(source, live []byte, spec rules.Spec, s rules.Sealer) ([]byte, error) {
+	return rules.ToTarget(source, live, spec, s)
+}
+
+func (pkgRules) ToSource(target, prev []byte, spec rules.Spec, s rules.Sealer) ([]byte, []rules.Violation, error) {
+	return rules.ToSource(target, prev, spec, s)
+}
+
+// Text is the in-process merge and template patcher. The default is package textmerge.
+type Text interface {
+	Merge3(base, ours, theirs []byte) ([]byte, []textmerge.Region, error)
+	PatchTemplate(tmpl, lastRender, target []byte) ([]byte, error)
+}
+
+type pkgText struct{}
+
+func (pkgText) Merge3(b, o, t []byte) ([]byte, []textmerge.Region, error) {
+	return textmerge.Merge3(b, o, t)
+}
+
+func (pkgText) PatchTemplate(tmpl, last, target []byte) ([]byte, error) {
+	return textmerge.PatchTemplate(tmpl, last, target)
 }
 
 // Deps are the collaborators an Engine needs. cli wires them.
@@ -168,47 +252,39 @@ type Deps struct {
 	StateDir string
 	Tasks    *tasks.Runner
 	Now      func() time.Time
+
+	// Optional. Zero values pick the defaults.
+	LoadSnapshot func(ctx context.Context, rev model.CommitID) (*Snapshot, error) // replaces Load (tests, bisect sandboxes)
+	Rules        Rules                                                            // default: package rules
+	Text         Text                                                             // default: package textmerge
+	StatTimeout  time.Duration                                                    // default DefaultStatTimeout
+	ScanBudget   time.Duration                                                    // default DefaultScanBudget
 }
 
 // Engine runs apply, scan, capture and adopt.
-type Engine struct{ Deps }
+type Engine struct {
+	Deps
+	fs fsys
+}
 
 // New returns an Engine.
-func New(d Deps) *Engine { return &Engine{Deps: d} }
-
-// Load reads fleet.toml, manifest.toml and every key log at rev, verifies
-// the key logs, builds this machine's Context (with observed facts from
-// local state) and resolves the plan.
-func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error) {
-	return nil, model.ErrNotImplemented
-}
-
-// Scan finds drift between targets and the state.
-func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
-	return nil, model.ErrNotImplemented
-}
-
-// Plan computes the actions apply would take for rev.
-func (e *Engine) Plan(ctx context.Context, rev model.CommitID) ([]Action, error) {
-	return nil, model.ErrNotImplemented
-}
-
-// Apply renders rev for this machine and writes changed targets, then runs
-// triggered tasks (including unit reloads and, once, first-apply tasks).
-func (e *Engine) Apply(ctx context.Context, rev model.CommitID, opts ApplyOptions) (Result, error) {
-	return Result{}, model.ErrNotImplemented
-}
-
-// Capture turns drift into source changes, applying the round-trip check and
-// the seal guard.
-func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
-	return Capture{}, model.ErrNotImplemented
-}
-
-// Adopt takes over an existing $HOME: identical targets are recorded without
-// writing, missing ones are written, differing ones are held.
-func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOptions) (Result, error) {
-	return Result{}, model.ErrNotImplemented
+func New(d Deps) *Engine {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	if d.Rules == nil {
+		d.Rules = pkgRules{}
+	}
+	if d.Text == nil {
+		d.Text = pkgText{}
+	}
+	if d.StatTimeout <= 0 {
+		d.StatTimeout = DefaultStatTimeout
+	}
+	if d.ScanBudget <= 0 {
+		d.ScanBudget = DefaultScanBudget
+	}
+	return &Engine{Deps: d, fs: osFS{}}
 }
 
 // RetagOptions describes a change of which machines get a target.
@@ -218,43 +294,7 @@ type RetagOptions struct {
 	DryRun  bool
 }
 
-// Retag builds one atomic source change for a target: the manifest entry's
-// `when` and `enclave`, the move between files/ and sealed/<enclave>/ with
-// the content opened and resealed, and nothing else. Only a member of every
-// enclave involved can retag. The change is protected: it never auto-commits,
-// and machines that lose the target remove it on their next apply (if it is
-// unchanged there; a drifted copy is held).
-func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (Capture, error) {
-	return Capture{}, model.ErrNotImplemented
-}
-
-// MergeSealed resolves a replay conflict on a sealed file this machine can
-// open: it opens the three stages, merges the plaintext with textmerge.Merge3
-// in memory and reseals. A remaining conflict comes back as a Hold with the
-// stage blob ids; no plaintext or marker text is returned in the Change.
-func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error) {
-	return nil, nil, model.ErrNotImplemented
-}
-
-// Reseal reseals every file, value and region of an enclave under its
-// current epoch, after a remove or rotate. The result is one protected commit.
-func (e *Engine) Reseal(ctx context.Context, snap *Snapshot, enclave model.EnclaveName) (Capture, error) {
-	return Capture{}, model.ErrNotImplemented
-}
-
-// Holds lists current holds from the state.
-func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
-	return nil, model.ErrNotImplemented
-}
-
 // ResolveOptions says how to resolve a hold.
 type ResolveOptions struct {
 	Take string // "source", "target", or a path to a file with the merged content
-}
-
-// ResolveHold resolves one hold by id. Taking the target captures it (through
-// the seal guard); taking the source rewrites the target; a file path is
-// written to the target and then captured.
-func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions) (Result, error) {
-	return Result{}, model.ErrNotImplemented
 }

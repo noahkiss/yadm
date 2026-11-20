@@ -89,12 +89,13 @@ func TestContractsCompose(t *testing.T) {
 	}
 	tr := &tasks.Runner{Exec: runner, Allow: allow}
 	ae := apply.New(apply.Deps{Store: st, Self: "m-test", Pins: crypt.FilePins(stateDir), State: apply.FileStateDB(stateDir), StateDir: stateDir, Tasks: tr})
-	_, err = ae.Load(ctx, "HEAD")
-	ni("apply.Load", err)
-	_, err = ae.Scan(ctx, apply.ScanOptions{})
-	ni("apply.Scan", err)
-	_, _, err = ae.MergeSealed(ctx, &apply.Snapshot{Keys: keys}, store.Conflict{})
-	ni("apply.MergeSealed", err)
+	// apply.Load needs a real repository; integration tests cover it.
+	if _, err = ae.Scan(ctx, apply.ScanOptions{}); err != nil {
+		t.Errorf("apply.Scan on an empty state: %v", err)
+	}
+	if _, _, err = ae.MergeSealed(ctx, &apply.Snapshot{Keys: keys}, store.Conflict{}); err == nil {
+		t.Error("apply.MergeSealed must refuse a conflict outside sealed/")
+	}
 	if _, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil); err != nil {
 		t.Errorf("crypt.LoadSet with no logs: %v", err)
 	}
