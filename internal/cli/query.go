@@ -194,5 +194,20 @@ func (a *app) cmdExplain(cmd *cobra.Command, args []string) (result, error) {
 	for i, s := range out {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, s)
 	}
-	return result{data: map[string]any{"command": args[0], "steps": out}, text: b.String()}, nil
+	data := map[string]any{"command": args[0], "steps": out}
+	// For apply and adopt on a set-up machine, add the actions apply plans here.
+	if name == "apply" || name == "adopt" {
+		if m, err := openLoaded(cmd.Context()); err == nil {
+			if acts, err := m.eng.Plan(cmd.Context(), m.snap.Commit); err == nil {
+				if acts == nil {
+					acts = []apply.Action{}
+				}
+				data["actions"] = acts
+				for _, x := range acts {
+					fmt.Fprintf(&b, "   %-7s %s\n", x.Kind, x.Target)
+				}
+			}
+		}
+	}
+	return result{data: data, text: b.String()}, nil
 }

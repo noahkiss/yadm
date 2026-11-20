@@ -6,7 +6,7 @@
     "message": "usage: --expect is required: the fingerprint printed by `yadm enclave add` on a member, received out of band"
   },
   "next": [
-    "yadm enclave join work --expect <fingerprint>"
+    "yadm enclave join vault --expect <fingerprint>"
   ],
   "ok": false,
   "schema": 1

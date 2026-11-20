@@ -1,0 +1,11 @@
+{
+  "command": "enclave create",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: the recovery identity is required: --recovery-recipient and --recovery-sign-key, or --new-recovery <dir>"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

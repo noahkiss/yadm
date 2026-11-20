@@ -7,7 +7,7 @@
       {
         "index": 1,
         "reason": "when \"os:darwin\" is false on this machine",
-        "when": "<when>"
+        "when": "os:darwin"
       }
     ],
     "target": ".config/tool/only-mac"

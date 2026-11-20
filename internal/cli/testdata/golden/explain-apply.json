@@ -1,6 +1,26 @@
 {
   "command": "explain",
   "data": {
+    "actions": [
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/config",
+        "target": ".config/tool/config"
+      },
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/extra",
+        "target": ".config/tool/extra"
+      },
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/retag-me",
+        "target": ".config/tool/retag-me"
+      }
+    ],
     "command": "apply",
     "steps": [
       "load fleet.toml, manifest.toml and the key logs at main; verify each key log against the local pins",

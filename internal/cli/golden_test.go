@@ -25,9 +25,12 @@ var volatileKeys = map[string]bool{
 }
 
 var (
-	reOID  = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
-	reHash = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
-	reMID  = regexp.MustCompile(`\bm-[0-9a-f]{12}\b`)
+	reOID     = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
+	reHash    = regexp.MustCompile(`\b[0-9a-f]{64}\b`)
+	reMID     = regexp.MustCompile(`\bm-[0-9a-f]{12}\b`)
+	reTime    = regexp.MustCompile(`^\d{4}-\d\d-\d\dT`)
+	reAge     = regexp.MustCompile(`\bage1[0-9a-z]{20,}`)
+	reSignArg = regexp.MustCompile(`--sign-key \S+`)
 )
 
 // normalize rewrites an envelope so it is stable across runs and machines and
@@ -40,6 +43,9 @@ func normalize(t *testing.T, raw []byte, root string) []byte {
 	}
 	var walk func(key string, v any) any
 	walk = func(key string, v any) any {
+		if s, ok := v.(string); ok && key == "when" && !reTime.MatchString(s) {
+			return v // a condition, not a commit time
+		}
 		if volatileKeys[key] {
 			if v == nil {
 				return nil
@@ -62,6 +68,8 @@ func normalize(t *testing.T, raw []byte, root string) []byte {
 			s = reHash.ReplaceAllString(s, "<sha256>")
 			s = reOID.ReplaceAllString(s, "<oid>")
 			s = reMID.ReplaceAllString(s, "<machine-id>")
+			s = reAge.ReplaceAllString(s, "<recipient>")
+			s = reSignArg.ReplaceAllString(s, "--sign-key <sign_key>")
 			return s
 		}
 		return v
@@ -103,14 +111,31 @@ const goldenFleet = `schema = 1
 
 [types.work]
 
+[types.other]
+
+[types.vault]
+enclave = true
+
 [machines.m-aaaaaa000001]
 name = "host-a"
+types = ["work", "vault"]
+os = "linux"
+arch = "amd64"
+
+[machines.m-bbbbbb000002]
+name = "host-b"
 types = ["work"]
 os = "linux"
 arch = "amd64"
 
+[machines.m-cccccc000003]
+name = "host-c"
+types = ["other"]
+os = "linux"
+arch = "amd64"
+
 [collectors.packages]
-command = ["pkg-tool", "list"]
+command = ["echo", "tool-one"]
 publish = "plain"
 `
 
@@ -122,6 +147,13 @@ target = ".config/tool/config"
 [[file]]
 target = ".config/tool/only-mac"
 when = "os:darwin"
+
+[[file]]
+target = ".config/tool/retag-me"
+when = "type:work"
+
+[[file]]
+target = ".config/tool/extra"
 
 [tasks.bundle]
 on = [".config/tool/config"]
@@ -140,18 +172,23 @@ func TestGolden(t *testing.T) {
 		"manifest.toml":                goldenManifest,
 		"files/.config/tool/config":    "color = blue\n",
 		"files/.config/tool/only-mac":  "mac\n",
+		"files/.config/tool/retag-me":  "work only\n",
+		"files/.config/tool/extra":     "extra\n",
 		"files/.config/tool/unrelated": "x\n",
 	})
-	run := func(name string, wantCode int, args ...string) {
+	run := func(name string, wantCode int, args ...string) Envelope {
 		t.Helper()
-		_, code, raw := yadm(t, args...)
+		env, code, raw := yadm(t, args...)
 		if code != wantCode {
 			t.Fatalf("%s: exit %d, want %d\n%s", name, code, wantCode, raw)
 		}
 		golden(t, name, raw, root)
+		return env
 	}
 
 	useMachine(t, root, "fresh")
+	run("version", ExitOK, "version")
+	run("where", ExitOK, "where")
 	run("status-not-initialized", ExitError, "status")
 	run("usage-unknown-command", ExitUsage, "no-such-command-xyz")
 	run("usage-group", ExitUsage, "fleet")
@@ -159,12 +196,31 @@ func TestGolden(t *testing.T) {
 	run("usage-args", ExitUsage, "why")
 	run("legacy-alt", ExitUsage, "alt")
 	run("legacy-encrypt", ExitUsage, "encrypt")
-	run("explain-apply", ExitOK, "explain", "apply")
+	run("explain-init", ExitOK, "explain", "init")
 	run("explain-unknown", ExitUsage, "explain", "frobnicate")
 	run("bisect-no-as", ExitUsage, "bisect")
+	run("bisect", ExitNotImplemented, "bisect", "--as", "host-a")
+	run("help-fleet", ExitOK, "fleet", "--help")
+
+	legacy := filepath.Join(root, "legacy")
+	git(t, root, "init", "-q", "-b", "main", legacy)
+	writeFile(t, filepath.Join(legacy, ".config/app/settings##os.Linux"), "linux\n")
+	writeFile(t, filepath.Join(legacy, ".config/app/settings##default"), "default\n")
+	git(t, legacy, "add", "-A")
+	git(t, legacy, "commit", "-q", "-m", "legacy")
+	run("import", ExitOK, "import", legacy, "--output", filepath.Join(root, "imported"))
+
+	bin := filepath.Join(root, "bin")
+	writeFile(t, filepath.Join(bin, "yadm-hello"), "#!/bin/sh\ncat >/dev/null\necho '{\"schema\":1,\"ok\":true,\"items\":[\"x\"],\"message\":\"hi\",\"data\":{\"k\":1}}'\n")
+	if err := os.Chmod(filepath.Join(bin, "yadm-hello"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	run("external", ExitOK, "hello", "world")
 
 	a := useMachine(t, root, "a")
 	run("init", ExitOK, "init", remote, "--machine", "host-a", "--allow-tasks")
+	run("explain-apply", ExitOK, "explain", "apply")
 	run("apply", ExitOK, "apply")
 	run("apply-noop", ExitOK, "apply", "--dry-run")
 	run("machine", ExitOK, "machine")
@@ -172,10 +228,16 @@ func TestGolden(t *testing.T) {
 	run("why-unmanaged", ExitOK, "why", ".config/other")
 	run("managed", ExitOK, "managed", ".config/tool/config")
 	run("managed-outside-home", ExitUsage, "managed", "/elsewhere/file")
+	run("log", ExitOK, "log")
+	run("log-patch", ExitNotImplemented, "log", "-p")
 	run("task-list", ExitOK, "task", "list")
+	run("collect", ExitOK, "collect")
 	run("enclave-list", ExitOK, "enclave", "list")
 	run("enclave-verify", ExitOK, "enclave", "verify")
-	run("enclave-join-no-expect", ExitUsage, "enclave", "join", "work")
+	run("enclave-join-no-expect", ExitUsage, "enclave", "join", "vault")
+	run("enclave-create-no-recovery", ExitUsage, "enclave", "create", "vault")
+	run("enclave-create", ExitOK, "enclave", "create", "vault", "--new-recovery", filepath.Join(root, "recovery"))
+	run("enclave-list-created", ExitOK, "enclave", "list")
 	run("fleet-list", ExitOK, "fleet", "list")
 	run("fleet-show", ExitOK, "fleet", "show", "host-a")
 	run("fleet-diff", ExitOK, "fleet", "diff", "packages")
@@ -184,16 +246,63 @@ func TestGolden(t *testing.T) {
 	run("conflicts-empty", ExitOK, "conflicts")
 	run("hold-resolve-no-take", ExitUsage, "hold", "resolve", "abc")
 	run("schedule-status", ExitOK, "schedule", "status")
-	run("log-patch", ExitNotImplemented, "log", "-p")
+	run("check", ExitError, "check")
 
 	writeFile(t, filepath.Join(a.Home, ".config/tool/config"), "color = red\n")
 	run("status-drift", ExitOK, "status")
 	run("capture", ExitOK, "capture")
 	run("diff", ExitOK, "diff")
 	run("apply-drifted", ExitAttention, "apply")
-	run("hold-list", ExitAttention, "hold", "list")
+	env := run("hold-list", ExitAttention, "hold", "list")
 	run("status-held", ExitAttention, "status")
+	hs := decode[map[string][]map[string]any](t, env.Data)["holds"]
+	if len(hs) != 1 {
+		t.Fatalf("holds: %v", hs)
+	}
+	run("hold-show", ExitOK, "hold", "show", hs[0]["id"].(string))
+
+	// Retag a work-only file into the vault enclave: host-b loses it; host-c
+	// never had it and is not listed.
+	env = run("retag", ExitOK, "retag", ".config/tool/retag-me", "vault", "--enclave", "vault")
+	if lost := decode[struct {
+		RemovedOn []string `json:"removed_on"`
+	}](t, env.Data).RemovedOn; len(lost) != 1 || lost[0] != "m-bbbbbb000002" {
+		t.Fatalf("removed_on: %v", lost)
+	}
+	src := useMachineSource(a)
+	if out := git(t, src, "ls-tree", "-r", "--name-only", "HEAD"); !strings.Contains(out, "sealed/vault/.config/tool/retag-me") || strings.Contains(out, "files/.config/tool/retag-me") {
+		t.Fatalf("retag tree:\n%s", out)
+	}
+
+	// Adopt on host-b: one identical target, one differing, one missing.
+	b := useMachine(t, root, "b")
+	yadmOK(t, "init", remote, "--machine", "host-b", "--no-schedule")
+	writeFile(t, filepath.Join(b.Home, ".config/tool/config"), "color = blue\n")
+	writeFile(t, filepath.Join(b.Home, ".config/tool/retag-me"), "mine\n")
+	run("adopt-dry-run", ExitAttention, "adopt", "--dry-run", "--allow-tasks")
+	for _, p := range []string{
+		filepath.Join(b.Home, ".config/tool/extra"),
+		filepath.Join(b.State, "allowed.json"),
+		filepath.Join(b.State, "state.json"),
+		filepath.Join(b.Home, ".config/systemd/user/yadm-sync.timer"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("adopt --dry-run wrote %s", p)
+		}
+	}
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/retag-me")); got != "mine\n" {
+		t.Fatalf("adopt --dry-run changed a differing target: %q", got)
+	}
+	run("adopt", ExitAttention, "adopt", "--no-schedule")
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/extra")); got != "extra\n" {
+		t.Fatalf("adopt did not write the missing target: %q", got)
+	}
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/retag-me")); got != "mine\n" {
+		t.Fatalf("adopt overwrote a differing target: %q", got)
+	}
 }
+
+func useMachineSource(m machineDirs) string { return m.Source }
 
 // TestEveryCommandOneEnvelope walks the command tree. Every command, with no
 // arguments and with --help, prints exactly one envelope whose ok and error

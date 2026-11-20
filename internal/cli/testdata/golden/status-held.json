@@ -1,7 +1,7 @@
 {
   "command": "status",
   "data": {
-    "ahead": 0,
+    "ahead": 1,
     "applied": "<oid>",
     "behind": 0,
     "drift": [
@@ -31,7 +31,10 @@
     "last_sync": null,
     "machine": "<machine-id>"
   },
-  "error": null,
+  "error": {
+    "code": "attention",
+    "message": "holds need attention: 1 held"
+  },
   "next": [
     "yadm diff",
     "yadm commit",

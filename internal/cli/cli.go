@@ -60,8 +60,8 @@ type ErrorBody struct {
 }
 
 // ErrAttention wraps a successful result that has holds; it maps to
-// ExitAttention. The envelope stays ok with a null error: the command did
-// its work, and data lists what needs attention.
+// ExitAttention. The envelope stays ok (the command did its work) and its
+// error carries code "attention"; data lists what needs attention.
 var ErrAttention = errors.New("holds need attention")
 
 // ErrRefused marks a secrecy or trust refusal; it maps to ExitRefused.
@@ -175,7 +175,7 @@ func (a *app) emit(name string, res result, err error) {
 		if env.Next == nil {
 			env.Next = []string{}
 		}
-		if err != nil && code != ExitAttention {
+		if err != nil {
 			env.Error = &ErrorBody{Code: ecode, Message: err.Error(), Details: res.details}
 		}
 		enc := json.NewEncoder(a.stdout)

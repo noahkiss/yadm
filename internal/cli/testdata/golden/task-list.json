@@ -7,8 +7,8 @@
         "applies": true,
         "definition": {
           "command": [
-            "pkg-tool",
-            "list"
+            "echo",
+            "tool-one"
           ],
           "publish": "plain",
           "timeout": "0s"

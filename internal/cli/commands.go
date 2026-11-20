@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/noahkiss/yadm/internal/apply"
+	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/extexec"
 	"github.com/noahkiss/yadm/internal/fleet"
@@ -310,7 +311,7 @@ func (a *app) cmdAdopt(cmd *cobra.Command, args []string) (result, error) {
 			return result{}, err
 		}
 	}
-	res, err := m.eng.Adopt(ctx, m.snap.Commit, apply.AdoptOptions{DryRun: dry, AllowTasks: allowTasks})
+	res, err := m.eng.Adopt(ctx, m.snap.Commit, apply.AdoptOptions{DryRun: dry, AllowTasks: allowTasks && !dry})
 	if err != nil {
 		return result{}, err
 	}
@@ -769,23 +770,7 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	// Machines that lose the target: in the fleet now, without any of the new types.
-	removed := []model.MachineID{}
-	snap := m.snap
-	if r, ok := snap.Plan.Why(t); ok == nil && r.Managed {
-		for id, mc := range snap.Fleet.Machines {
-			keep := false
-			for _, ty := range types {
-				if mc.HasType(ty) {
-					keep = true
-				}
-			}
-			if !keep {
-				removed = append(removed, id)
-			}
-		}
-	}
-	sort.Slice(removed, func(i, j int) bool { return removed[i] < removed[j] })
+	removed := losers(m.snap, t, types)
 	data := map[string]any{"commit": "", "removed_on": removed, "holds": withHoldNext(c.Holds)}
 	if dry || len(c.Changes) == 0 {
 		return result{data: data}, attention(c.Holds)
@@ -851,4 +836,39 @@ func (a *app) cmdCollect(cmd *cobra.Command, args []string) (result, error) {
 		next = []string{"yadm task allow " + strings.Join(skipped, " ")}
 	}
 	return result{data: map[string]any{"observed": obs, "skipped": skipped}, next: next}, nil
+}
+
+// losers lists the fleet machines that receive t now (its entry's `when`
+// holds for them) and have none of the new types. Conditions on observed
+// facts see no observed facts for other machines.
+func losers(snap *apply.Snapshot, t model.Target, types []model.TypeName) []model.MachineID {
+	when := ""
+	for _, e := range snap.Manifest.Entries {
+		if e.Target == t {
+			when = e.When
+		}
+	}
+	expr := cond.Always()
+	if when != "" {
+		x, err := cond.Parse(when, snap.Fleet.Vocabulary())
+		if err != nil {
+			return []model.MachineID{}
+		}
+		expr = x
+	}
+	out := []model.MachineID{}
+	for id, mc := range snap.Fleet.Machines {
+		mc.ID = id
+		keep := false
+		for _, ty := range types {
+			if mc.HasType(ty) {
+				keep = true
+			}
+		}
+		if !keep && expr.Eval(model.Context{Machine: mc}) {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }

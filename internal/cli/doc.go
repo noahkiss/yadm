@@ -6,7 +6,7 @@
 // Every command accepts --json. With --json, stdout carries exactly one
 // Envelope and nothing else; human text goes nowhere. No command prompts
 // unless it is given --interactive. A command that succeeds with holds exits
-// ExitAttention with ok true and a null error. Key-log trust failures
+// ExitAttention with ok true and error code "attention". Key-log trust failures
 // (crypt.ErrInvalidLog, ErrNotPinned, ErrBadSignature, ErrBrokenChain,
 // ErrNotMember) exit ExitRefused.
 //

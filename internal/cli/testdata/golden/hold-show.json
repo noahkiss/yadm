@@ -1,0 +1,29 @@
+{
+  "command": "hold show",
+  "data": {
+    "base": null,
+    "hold": {
+      "detail": "<detail>",
+      "id": "<sha256>",
+      "next": [
+        "yadm hold show <sha256>",
+        "yadm hold resolve <sha256> --take target",
+        "yadm hold resolve <sha256> --take source"
+      ],
+      "reason": "drifted",
+      "scope": "shared",
+      "since": "<since>",
+      "target": ".config/tool/config"
+    },
+    "ours": null,
+    "theirs": null
+  },
+  "error": null,
+  "next": [
+    "yadm hold show <sha256>",
+    "yadm hold resolve <sha256> --take target",
+    "yadm hold resolve <sha256> --take source"
+  ],
+  "ok": true,
+  "schema": 1
+}

@@ -7,6 +7,18 @@
         "scope": "shared",
         "source": "files/.config/tool/config",
         "target": ".config/tool/config"
+      },
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/extra",
+        "target": ".config/tool/extra"
+      },
+      {
+        "kind": "write",
+        "scope": "shared",
+        "source": "files/.config/tool/retag-me",
+        "target": ".config/tool/retag-me"
       }
     ],
     "commit": "<oid>",

@@ -4,7 +4,9 @@
     "arch": "<arch>",
     "enclaves": {
       "opened": [],
-      "other": [],
+      "other": [
+        "vault"
+      ],
       "refused": []
     },
     "id": "<machine-id>",
@@ -12,7 +14,8 @@
     "observed": {},
     "os": "<os>",
     "types": [
-      "work"
+      "work",
+      "vault"
     ]
   },
   "error": null,

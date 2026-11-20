@@ -109,8 +109,12 @@ func checkInvariant(t *testing.T, args []string, env Envelope, code int) {
 	}
 	want := map[int]string{ExitError: CodeError, ExitUsage: CodeUsage, ExitLocked: CodeLocked, ExitNotImplemented: CodeNotImplemented, ExitRefused: CodeRefused}
 	switch code {
-	case ExitOK, ExitAttention:
+	case ExitOK:
 		if !env.OK || env.Error != nil {
+			t.Fatalf("yadm %v: exit %d with ok=%v error=%+v", args, code, env.OK, env.Error)
+		}
+	case ExitAttention:
+		if !env.OK || env.Error == nil || env.Error.Code != CodeAttention {
 			t.Fatalf("yadm %v: exit %d with ok=%v error=%+v", args, code, env.OK, env.Error)
 		}
 	default:

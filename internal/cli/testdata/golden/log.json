@@ -1,0 +1,27 @@
+{
+  "command": "log",
+  "data": {
+    "commits": [
+      {
+        "author": "<author>",
+        "id": "<oid>",
+        "parents": null,
+        "paths": [
+          "files/.config/tool/config",
+          "files/.config/tool/extra",
+          "files/.config/tool/only-mac",
+          "files/.config/tool/retag-me",
+          "files/.config/tool/unrelated",
+          "fleet.toml",
+          "manifest.toml"
+        ],
+        "subject": "seed",
+        "when": "<when>"
+      }
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

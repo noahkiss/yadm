@@ -1,0 +1,16 @@
+{
+  "command": "retag",
+  "data": {
+    "commit": "<oid>",
+    "holds": [],
+    "removed_on": [
+      "<machine-id>"
+    ]
+  },
+  "error": null,
+  "next": [
+    "yadm sync"
+  ],
+  "ok": true,
+  "schema": 1
+}

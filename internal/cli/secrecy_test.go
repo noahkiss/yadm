@@ -73,7 +73,14 @@ func TestSecrecyThroughCLI(t *testing.T) {
 	// host-b (work) is in no enclave.
 	b := fixtureMachine(t, root, remote, fx, fixture.HostB, true)
 	yadmOK(t, "apply")
-	for _, args := range [][]string{{"diff"}, {"machine"}, {"status"}, {"log"}, {"enclave", "list"}, {"check"}} {
+	// Edit a target with a sealed region so diff has something to show.
+	sshCfg := filepath.Join(b.Home, ".ssh/config")
+	writeFile(t, sshCfg, readFile(t, sshCfg)+"# local edit\n")
+	env, _, _ := yadm(t, "diff", ".ssh/config")
+	if fs := decode[map[string][]fileDiff](t, env.Data)["files"]; len(fs) != 1 || !strings.Contains(fs[0].Diff, "+# local edit") {
+		t.Fatalf("non-member diff: %+v", fs)
+	}
+	for _, args := range [][]string{{"diff", ".ssh/config", ".config/editor/settings.json"}, {"diff"}, {"hold", "list"}, {"machine"}, {"status"}, {"log"}, {"enclave", "list"}, {"check"}} {
 		_, _, out := yadm(t, args...)
 		for _, c := range canaries {
 			if strings.Contains(string(out), c.String()) {
@@ -86,7 +93,7 @@ func TestSecrecyThroughCLI(t *testing.T) {
 
 	// host-a is the only member of personal.
 	a := fixtureMachine(t, root, remote, fx, fixture.HostA, true)
-	env := yadmOK(t, "apply")
+	env = yadmOK(t, "apply")
 	if s := mustJSON(t, env.Data); !strings.Contains(s, ".config/notes/private.md") {
 		t.Fatalf("member apply did not deliver the sealed file: %s", s)
 	}
