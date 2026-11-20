@@ -40,7 +40,9 @@ var hooks = struct {
 	hookWait  time.Duration   // how long a harness hook waits for the lock
 	stdin     func() io.Reader
 }{
-	scheduler: func() (schedule.Scheduler, error) { return schedule.ForOS(runtime.GOOS) },
+	// The CLI changes the real schedule: init, adopt and `schedule install`
+	// need the live scheduler. Tests replace this hook.
+	scheduler: func() (schedule.Scheduler, error) { return schedule.ForOSLive(runtime.GOOS, true) },
 	now:       time.Now,
 	exec:      extexec.NewRunner,
 	units: func() tasks.UnitReloader {
