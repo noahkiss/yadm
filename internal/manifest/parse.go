@@ -224,6 +224,11 @@ func (m *Manifest) validateUnit(u Unit) error {
 	default:
 		return fmt.Errorf("unknown unit kind %q: want launchd or systemd", u.Kind)
 	}
+	switch u.Reload {
+	case "", ReloadAuto, ReloadNever:
+	default:
+		return fmt.Errorf("unknown unit reload %q: want auto or never", u.Reload)
+	}
 	for _, e := range m.Entries {
 		if e.Target == u.Target || IsGlob(string(e.Target)) && Match(string(e.Target), t) {
 			return nil

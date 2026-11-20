@@ -273,7 +273,9 @@ func (r *Runner) Run(ctx context.Context, ev Event, sel []Selected, req extexec.
 			err = r.Units.Reload(ctx, u, req.Home)
 		}
 		res.Duration = now().Sub(started)
-		if err != nil {
+		if why, skipped := IsSkip(err); skipped {
+			res.Detail = "reload skipped: " + why
+		} else if err != nil {
 			res.ExitCode = -1
 			res.Error = err.Error()
 		}

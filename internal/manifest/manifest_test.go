@@ -167,6 +167,7 @@ func TestParseErrors(t *testing.T) {
 		{"negative quiet", head + "[[file]]\ntarget = \"a\"\nquiet = \"-1s\"\n", "negative quiet"},
 		{"bad duration", head + "[defaults]\nquiet = \"soon\"\n", FileName},
 		{"unit kind", head + "[[file]]\ntarget = \"a\"\n[[unit]]\ntarget = \"a\"\nkind = \"initd\"\n", "unknown unit kind"},
+		{"unit reload", head + "[[file]]\ntarget = \"a\"\n[[unit]]\ntarget = \"a\"\nkind = \"launchd\"\nreload = \"sometimes\"\n", "unknown unit reload"},
 		{"unit orphan", head + "[[unit]]\ntarget = \"a\"\nkind = \"launchd\"\n", "no [[file]] entry"},
 		{"unit glob", head + "[[file]]\ntarget = \"a/**\"\n[[unit]]\ntarget = \"a/*\"\nkind = \"launchd\"\n", "not a glob"},
 		{"root glob", head + "[[root]]\npath = \".config/*\"\n", "not a glob"},

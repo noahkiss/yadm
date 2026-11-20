@@ -135,7 +135,20 @@ type Unit struct {
 	Target model.Target `toml:"target" json:"target"`
 	Kind   UnitKind     `toml:"kind" json:"kind"`
 	When   string       `toml:"when" json:"when,omitempty"`
+	Reload UnitReload   `toml:"reload" json:"reload,omitempty"` // "" means auto
 }
+
+// UnitReload says whether the built-in unit task reloads a unit.
+type UnitReload string
+
+// Unit reload modes.
+const (
+	// ReloadAuto reloads on a byte change. The launchd reloader still
+	// skips a KeepAlive job and the job running the reload.
+	ReloadAuto UnitReload = "auto"
+	// ReloadNever never reloads; the new bytes take effect at the next login.
+	ReloadNever UnitReload = "never"
+)
 
 // Manifest is the parsed manifest file.
 type Manifest struct {

@@ -53,5 +53,6 @@
 //	type UnitReloader interface{ Reload(ctx, u manifest.Unit, home string) error }
 //	func SystemReloader(goos string) (UnitReloader, error)
 //	func NewReloader(goos string, c Commander, uid int) (UnitReloader, error) // c runs launchctl/systemctl
+//	type SkipError struct{ Reason string }; func IsSkip(err error) (string, bool) // a unit left alone on purpose: never, KeepAlive, self, unreadable plist
 //	func MatchGlob(glob, target string) bool // "**" spans segments; "*" stays in one
 package tasks
