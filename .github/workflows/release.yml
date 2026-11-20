@@ -1,0 +1,112 @@
+# Release pipeline. A pushed v* tag runs the Go gate, builds every binary under
+# cmd/ for darwin and linux (amd64, arm64) with GoReleaser, attaches the
+# archives and checksums.txt to the tag's GitHub Release, then bumps the
+# Homebrew formula noahkiss/tap/yadm-nkmk through the tap's own bump.yml.
+#
+# To cut a release:
+#
+#   git tag -a vX.Y.Z -m vX.Y.Z
+#   git push origin vX.Y.Z
+#
+# To rehearse locally (writes dist/, publishes nothing):
+#
+#   goreleaser release --snapshot --clean
+#
+# To re-run only the tap bump for a tag that already has its release:
+#
+#   gh workflow run release.yml -R noahkiss/yadm -f tag=vX.Y.Z -f tap_only=true
+#
+# The tap hop needs a PAT in the secret HOMEBREW_TAP_TOKEN with `actions: write`
+# on the tap. This repo's GITHUB_TOKEN cannot dispatch another repository.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release, e.g. v0.1.0'
+        required: true
+      tap_only:
+        description: 'Skip the build and only bump the tap'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      tap_inputs: ${{ steps.tag.outputs.tap_inputs }}
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] \
+            || { echo "::error::not a release tag: ${tag}"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "tap_inputs=$(jq -cn --arg tag "$tag" '{formula: "yadm-nkmk", tag: $tag}')" >> "$GITHUB_OUTPUT"
+
+  # On a tag push this gates the tagged commit. On a dispatch it gates the ref
+  # the workflow was dispatched on; the tag itself was gated when first pushed.
+  ci:
+    needs: resolve
+    if: ${{ !inputs.tap_only }}
+    permissions:
+      contents: read
+    uses: noahkiss/workflows/.github/workflows/go-ci.yml@main
+    with:
+      cancel-in-progress: false
+
+  goreleaser:
+    needs: [resolve, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # GoReleaser fails rather than replace an asset that is already attached,
+      # so a re-run cannot change what the formula's sha256 pins.
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Fails unless the tap's verified bump lands. The tap installs the formula on
+  # macOS and Linux and runs its test block before it commits.
+  bump-tap:
+    needs: [resolve, goreleaser]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.goreleaser.result == 'success' || inputs.tap_only) }}
+    uses: noahkiss/workflows/.github/workflows/dispatch-and-wait.yml@main
+    with:
+      repo: noahkiss/homebrew-tap
+      workflow: bump.yml
+      inputs_json: ${{ needs.resolve.outputs.tap_inputs }}
+      timeout_minutes: 45
+    secrets:
+      token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
