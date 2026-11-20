@@ -51,8 +51,9 @@ func TestContractsCompose(t *testing.T) {
 
 	_, err := cond.Parse("type:x", voc)
 	ni("cond.Parse", err)
-	_, err = fleet.Parse(nil)
-	ni("fleet.Parse", err)
+	if _, err = fleet.Parse(nil); err == nil {
+		t.Error("fleet.Parse: an empty fleet file must be rejected")
+	}
 	_, err = manifest.Parse(nil)
 	ni("manifest.Parse", err)
 	_, err = eng.Render("t", nil, model.Context{})
@@ -61,12 +62,14 @@ func TestContractsCompose(t *testing.T) {
 	ni("rules.ToTarget", err)
 	_, err = crypt.LoadIdentity(t.TempDir())
 	ni("crypt.LoadIdentity", err)
-	_, err = runner.Run(ctx, extexec.Spec{}, extexec.Request{})
-	ni("extexec.Run", err)
+	if _, err = runner.Run(ctx, extexec.Spec{}, extexec.Request{}); !errors.Is(err, extexec.ErrNoCommand) {
+		t.Errorf("extexec.Run: want ErrNoCommand, got %v", err)
+	}
 	_, err = importer.Import(ctx, importer.Options{})
 	ni("importer.Import", err)
-	_, err = schedule.ForOS("linux")
-	ni("schedule.ForOS", err)
+	if _, err = schedule.ForOS("linux"); err != nil {
+		t.Errorf("schedule.ForOS: %v", err)
+	}
 
 	stateDir := t.TempDir()
 	allow := tasks.FileAllowList(stateDir)
@@ -85,8 +88,9 @@ func TestContractsCompose(t *testing.T) {
 	ni("crypt.LoadSet", err)
 	_, _, err = textmerge.Merge3(nil, nil, nil)
 	ni("textmerge.Merge3", err)
-	_, err = tasks.DefinitionHash(manifest.TaskDef{})
-	ni("tasks.DefinitionHash", err)
+	if h, err := tasks.DefinitionHash(manifest.TaskDef{}); err != nil || len(h) != 64 {
+		t.Errorf("tasks.DefinitionHash = %q, %v", h, err)
+	}
 
 	s := &sync.Syncer{Deps: sync.Deps{Store: st, Apply: ae, Fleet: fl, Status: statusDB, Keys: keys, Exec: runner, Gate: gate,
 		Lock: sync.FileLock(stateDir), Leases: sync.FileLeases(stateDir)}}
