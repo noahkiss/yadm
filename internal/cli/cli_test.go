@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -30,15 +31,16 @@ func TestVersionJSON(t *testing.T) {
 	}
 }
 
-func TestStubsReportNotImplemented(t *testing.T) {
+// TestUninitializedMachine: commands that need a set-up machine fail with
+// one clean envelope and point at init.
+func TestUninitializedMachine(t *testing.T) {
+	hermetic(t)
+	useMachine(t, t.TempDir(), "x")
 	for _, args := range [][]string{
-		{"status", "--json"},
-		{"fleet", "list", "--json"},
-		{"enclave", "add", "host-b", "--json"},
-		{"hold", "list", "--json"},
+		{"status"}, {"apply"}, {"machine"}, {"fleet", "list"}, {"hold", "list"}, {"check"},
 	} {
-		env, code, _ := run(t, args...)
-		if code != ExitNotImplemented || env.OK || env.Error == nil || env.Error.Code != CodeNotImplemented {
+		env, code, _ := yadm(t, args...)
+		if code != ExitError || len(env.Next) == 0 || !strings.HasPrefix(env.Next[0], "yadm init") {
 			t.Fatalf("%v: code=%d env=%+v", args, code, env)
 		}
 	}
