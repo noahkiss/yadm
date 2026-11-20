@@ -134,6 +134,9 @@ type Store interface {
 	// CheckSecrecyConfig fails if any setting could write plaintext into the repo,
 	// such as diff.*.cachetextconv or a refs/notes/textconv ref.
 	CheckSecrecyConfig(ctx context.Context) error
+	// ListRefs returns every ref under prefix (for example "refs/yadm/status/")
+	// with the commit it points at.
+	ListRefs(ctx context.Context, prefix string) (map[string]model.CommitID, error)
 }
 
 // Repo is the git-binary implementation of Store.

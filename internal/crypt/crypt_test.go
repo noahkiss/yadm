@@ -826,3 +826,40 @@ func TestParseValueToken(t *testing.T) {
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+
+// fileSealer is the importer's Sealer contract; *Set must satisfy it.
+var _ interface {
+	SealFile(model.EnclaveName, []byte) ([]byte, error)
+} = (*Set)(nil)
+
+func TestSetSealFile(t *testing.T) {
+	wp := newWorld(t)
+	_, ck, err := Create("client", wp.a, wp.rec.Member(), MemPins())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := &Set{Rings: map[model.EnclaveName]*Keyring{"personal": wp.ring, "client": ck}}
+	ct, err := set.SealFile("personal", []byte("canary-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(ct, []byte("canary-body")) || !IsSealedFile(ct) {
+		t.Fatal("not sealed")
+	}
+	if pt, err := set.OpenFile("personal", ct); err != nil || string(pt) != "canary-body" {
+		t.Fatalf("open: %q %v", pt, err)
+	}
+	if _, err := set.OpenFile("client", ct); err == nil {
+		t.Fatal("opened a personal container as client")
+	}
+	if _, err := set.SealFile("other", []byte("x")); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("seal for unknown enclave: %v", err)
+	}
+	var none *Set
+	if _, err := none.SealFile("personal", []byte("x")); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("nil set: %v", err)
+	}
+	if _, err := none.OpenFile("personal", ct); !errors.Is(err, ErrNotMember) {
+		t.Fatalf("nil set open: %v", err)
+	}
+}

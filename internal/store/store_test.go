@@ -692,3 +692,26 @@ func TestStoreWritesOnlyGivenBytes(t *testing.T) {
 	}
 	secrecytest.AssertTreeClean(t, a.stateDir, c)
 }
+
+func TestListRefs(t *testing.T) {
+	ctx := context.Background()
+	_, a, _ := seeded(t)
+	head, _ := a.Head(ctx)
+	for _, ref := range []string{RefReviewed("personal"), RefReviewed("shared")} {
+		if err := a.UpdateRef(ctx, ref, head, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var s Store = a
+	refs, err := s.ListRefs(ctx, "refs/yadm/reviewed/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs[RefReviewed("personal")] != head || refs[RefReviewed("shared")] != head {
+		t.Fatalf("refs = %v", refs)
+	}
+	none, err := s.ListRefs(ctx, "refs/yadm/status/")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("empty prefix: %v %v", none, err)
+	}
+}

@@ -46,6 +46,7 @@
 //	type Keyring                        // one enclave's epoch keys
 //	func (*Keyring) SealFile / OpenFile / SealValue / OpenValue / SealRegion / OpenRegion
 //	type Set                            // keyrings this machine holds; implements rules.Sealer
+//	func (s *Set) SealFile(e, plaintext) ([]byte, error); func (s *Set) OpenFile(e, container) ([]byte, error)
 //	func IsSealedFile(b []byte) bool; func ParseValueToken(s string) (ValueToken, bool)
 //	type NameScheme interface{ Stored(t model.Target) (string, error) }
 //	type PlainNames struct{}; type HiddenNames struct{}  // HiddenNames is a reserved stub

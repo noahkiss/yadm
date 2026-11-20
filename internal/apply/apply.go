@@ -192,22 +192,6 @@ func SetCrypto(s *crypt.Set) Crypto {
 
 type setCrypto struct{ *crypt.Set }
 
-func (c setCrypto) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
-	r, ok := c.Rings[e]
-	if !ok {
-		return nil, crypt.ErrNotMember
-	}
-	return r.SealFile(pt)
-}
-
-func (c setCrypto) OpenFile(e model.EnclaveName, ct []byte) ([]byte, error) {
-	r, ok := c.Rings[e]
-	if !ok {
-		return nil, crypt.ErrNotMember
-	}
-	return r.OpenFile(ct)
-}
-
 // Rules is the intra-file rules engine. The default is package rules.
 type Rules interface {
 	ToTarget(source, live []byte, spec rules.Spec, s rules.Sealer) ([]byte, error)
