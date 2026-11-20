@@ -94,6 +94,11 @@ func (a *app) runGit(cmd *cobra.Command, args []string) error {
 		a.code = ExitError
 		return nil
 	}
+	if v := gitVerb(args); headMoving[v] {
+		fmt.Fprintf(a.stderr, "yadm git: %q moves the source clone's HEAD behind yadm's back and wedges later syncs; run `yadm sync` to update the source\n", v)
+		a.code = ExitRefused
+		return nil
+	}
 	code, err := store.Passthrough(cmd.Context(), p.Source, os.Stdin, a.stdout, a.stderr, args...)
 	a.code = code
 	if err != nil {
@@ -101,6 +106,29 @@ func (a *app) runGit(cmd *cobra.Command, args []string) error {
 		a.code = ExitError
 	}
 	return nil
+}
+
+// headMoving lists git commands that move HEAD or main in the source clone.
+// Sync owns both: it moves main by compare-and-swap and records where it
+// left the worktree.
+var headMoving = map[string]bool{
+	"pull": true, "checkout": true, "reset": true, "switch": true, "merge": true, "rebase": true,
+	"cherry-pick": true, "revert": true, "am": true,
+}
+
+// gitVerb returns the git subcommand in args, past global options.
+func gitVerb(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-C" || a == "-c" || a == "--git-dir" || a == "--work-tree" || a == "--namespace":
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			return a
+		}
+	}
+	return ""
 }
 
 // legacyVerbs are upstream yadm commands this tool replaces.

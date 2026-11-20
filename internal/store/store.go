@@ -837,10 +837,28 @@ func (r *Repo) SyncWorktree(ctx context.Context, rev model.CommitID) error {
 		oldTree += "^{tree}"
 	}
 	if _, err := r.git(ctx, "diff-index", "--cached", "--quiet", oldTree, "--"); err != nil {
-		if exitCode(err) == 1 {
+		if exitCode(err) != 1 {
+			return err
+		}
+		head, ok, rerr := r.staleWorktreeHead(ctx, old)
+		if rerr != nil {
+			return rerr
+		}
+		if !ok {
 			return fmt.Errorf("%w: staged edits", ErrDirty)
 		}
-		return err
+		// `git checkout` or `git reset` moved HEAD and left a clean index
+		// and worktree there: re-record it and move on from it.
+		if err := r.recordWorktree(head); err != nil {
+			return err
+		}
+		oldTree = string(head) + "^{tree}"
+		// A checkout may have detached HEAD; sync keeps it on main.
+		if sym, _ := r.git(ctx, "symbolic-ref", "-q", "HEAD"); strings.TrimSpace(string(sym)) != RefMain {
+			if _, err := r.git(ctx, "symbolic-ref", "HEAD", RefMain); err != nil {
+				return err
+			}
+		}
 	}
 	if _, err := r.git(ctx, "read-tree", "-m", "-u", oldTree, string(rev)+"^{tree}"); err != nil {
 		var ge *gitError
@@ -851,6 +869,41 @@ func (r *Repo) SyncWorktree(ctx context.Context, rev model.CommitID) error {
 		return err
 	}
 	return r.recordWorktree(rev)
+}
+
+// staleWorktreeHead reports HEAD when the recorded worktree head is stale
+// but the source clone is clean at HEAD, and HEAD is a commit yadm reached
+// itself: main, or a commit on main's history that is an ancestor or a
+// descendant of the recorded head. Anywhere else stays dirty.
+func (r *Repo) staleWorktreeHead(ctx context.Context, old model.CommitID) (model.CommitID, bool, error) {
+	head, err := r.Head(ctx)
+	if err != nil || head == "" || head == old {
+		return "", false, err
+	}
+	if _, err := r.git(ctx, "diff-index", "--cached", "--quiet", string(head), "--"); err != nil {
+		if exitCode(err) == 1 {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	main, err := r.ResolveRef(ctx, RefMain)
+	if err != nil || main == "" {
+		return "", false, err
+	}
+	if head == main {
+		return head, true, nil
+	}
+	if ok, err := r.IsAncestor(ctx, head, main); err != nil || !ok {
+		return "", false, err
+	}
+	if old == "" {
+		return "", false, nil
+	}
+	if ok, err := r.IsAncestor(ctx, head, old); err != nil || ok {
+		return head, ok, err
+	}
+	ok, err := r.IsAncestor(ctx, old, head)
+	return head, ok && err == nil, err
 }
 
 func (r *Repo) emptyTree() string {
