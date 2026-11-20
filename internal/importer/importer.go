@@ -2,20 +2,37 @@ package importer
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 
 	"github.com/noahkiss/yadm/internal/model"
 )
 
+// Sealer seals one whole file for an enclave. The importer calls it once per
+// encrypted legacy file, with the decrypted plaintext, and stores only what
+// it returns. A crypt.Keyring per enclave provides it; tests fake it.
+type Sealer interface {
+	SealFile(enclave model.EnclaveName, plaintext []byte) ([]byte, error)
+}
+
 // Options configures one import.
 type Options struct {
-	Legacy         string                       // path to a clone of the legacy repository
+	Legacy         string                       // path to a clone of the legacy repository; read only
 	Machines       string                       // path to the machines TSV; empty means one machine per class
-	Branch         string                       // new branch name; default "main" in a fresh output
-	Output         string                       // directory for the converted repository
+	Branch         string                       // new branch name; default "main"
+	Output         string                       // directory for the converted repository; must be absent or empty
 	PasswordEnv    string                       // env var holding the transcrypt password
 	ClassEnclaves  map[string]model.EnclaveName // legacy class -> enclave for its encrypted files
-	DefaultEnclave model.EnclaveName            // enclave for encrypted files with no class
-	DryRun         bool
+	DefaultEnclave model.EnclaveName            // enclave for encrypted files with no mapped class
+	// CryptFilters names the gitattributes filters that mark transcrypt files.
+	// Empty means "crypt" plus every filter in the legacy repository's own
+	// config whose smudge command runs transcrypt.
+	CryptFilters []string
+	Sealer       Sealer // seals encrypted files; required when any exist
+	DryRun       bool
 }
 
 // Mapping records one converted path.
@@ -34,6 +51,13 @@ type Problem struct {
 	Reason string `json:"reason"`
 }
 
+func (p Problem) String() string {
+	if p.Line > 0 {
+		return fmt.Sprintf("%s:%d: %s", p.Path, p.Line, p.Reason)
+	}
+	return p.Path + ": " + p.Reason
+}
+
 // Report is the outcome of an import. A non-empty Problems list means no commit was made.
 type Report struct {
 	Commit   model.CommitID `json:"commit,omitempty"`
@@ -42,24 +66,127 @@ type Report struct {
 	Problems []Problem      `json:"problems,omitempty"`
 }
 
-// Import converts the legacy repository.
+// ErrProblems is returned when the import found paths it cannot convert.
+// The Report lists them; nothing was written.
+var ErrProblems = errors.New("import found paths it cannot convert; nothing was committed")
+
+// Import converts the legacy repository. On any problem it writes nothing,
+// returns the problems in the Report and ErrProblems.
 func Import(ctx context.Context, opts Options) (Report, error) {
-	return Report{}, model.ErrNotImplemented
+	if opts.Legacy == "" {
+		return Report{}, errors.New("import: no legacy repository given")
+	}
+	if !opts.DryRun {
+		if opts.Output == "" {
+			return Report{}, errors.New("import: no output directory given")
+		}
+		if err := checkOutputDir(opts.Output); err != nil {
+			return Report{}, err
+		}
+	}
+	conv, err := convert(ctx, opts)
+	if err != nil {
+		return Report{}, err
+	}
+	rep := Report{Mappings: conv.Mappings, Machines: conv.Machines, Problems: conv.Problems}
+	if len(rep.Problems) > 0 {
+		return rep, ErrProblems
+	}
+	if opts.DryRun {
+		return rep, nil
+	}
+	commit, err := writeOutput(ctx, opts, conv)
+	if err != nil {
+		return rep, err
+	}
+	rep.Commit = commit
+	return rep, nil
 }
 
-// AltCond is one condition of an alternate file name.
-type AltCond struct {
-	Key   string // long form: default, class, os, arch, hostname, user, distro, distro_family, template, extension
-	Value string
+func checkOutputDir(dir string) error {
+	ents, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("import: output %s: %w", dir, err)
+	}
+	if len(ents) > 0 {
+		return fmt.Errorf("import: output %s is not empty", dir)
+	}
+	return nil
 }
 
-// AltName is a parsed alternate file name.
-type AltName struct {
-	Base  string
-	Conds []AltCond
+// outFile is one file of the converted source tree.
+type outFile struct {
+	Data []byte // plaintext for files/, sealed bytes for sealed/
+	Exec bool
 }
 
-// ParseAltName parses "dir/name##cond,cond". ok is false for a plain path.
-func ParseAltName(path string) (AltName, bool, error) {
-	return AltName{}, false, model.ErrNotImplemented
+// converted is the whole result of a conversion, before anything is written.
+type converted struct {
+	LegacyHead string
+	Files      map[model.SourcePath]outFile
+	Manifest   []byte
+	Fleet      []byte
+	Mappings   []Mapping
+	Machines   int
+	Problems   []Problem
+}
+
+// convert reads the legacy head and builds the new tree in memory. Problems
+// do not stop it, so one run lists every path that needs attention.
+func convert(ctx context.Context, opts Options) (*converted, error) {
+	legacyDir, err := filepath.Abs(opts.Legacy)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := readLegacy(ctx, legacyDir)
+	if err != nil {
+		return nil, err
+	}
+	filters := map[string]bool{}
+	if len(opts.CryptFilters) > 0 {
+		for _, f := range opts.CryptFilters {
+			filters[f] = true
+		}
+	} else {
+		filters = cryptFilters(ctx, legacyDir)
+	}
+	p := &planner{opts: opts, repo: repo, filters: filters, files: map[model.SourcePath]outFile{}}
+	var machines []machineRow
+	if opts.Machines != "" {
+		machines, err = readMachines(opts.Machines)
+		if err != nil {
+			return nil, err
+		}
+	}
+	p.run()
+	fl, err := buildFleet(machines, p, opts)
+	if err != nil {
+		where := opts.Machines
+		if where == "" {
+			where = "machines table"
+		}
+		p.problems = append(p.problems, Problem{Path: where, Reason: err.Error()})
+	}
+	conv := &converted{LegacyHead: repo.Head, Files: p.files, Mappings: p.mappings, Problems: p.problems}
+	if fl != nil {
+		conv.Machines = len(fl.Machines)
+		conv.Fleet, err = encodeFleet(fl)
+		if err != nil {
+			conv.Problems = append(conv.Problems, Problem{Path: "fleet.toml", Reason: err.Error()})
+		}
+	}
+	conv.Manifest, err = encodeManifest(p.entries)
+	if err != nil {
+		conv.Problems = append(conv.Problems, Problem{Path: "manifest.toml", Reason: err.Error()})
+	}
+	sort.SliceStable(conv.Problems, func(i, j int) bool {
+		if conv.Problems[i].Path != conv.Problems[j].Path {
+			return conv.Problems[i].Path < conv.Problems[j].Path
+		}
+		return conv.Problems[i].Line < conv.Problems[j].Line
+	})
+	return conv, nil
 }
