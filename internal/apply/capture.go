@@ -458,6 +458,9 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		if detail, wide := widenedMode(snap, r); wide {
 			return Result{}, fmt.Errorf("%s: %s", t, detail)
 		}
+		if detail, wide := e.modeWidenedSince(snap, r, ts, have); wide {
+			return Result{}, fmt.Errorf("%s: %s", t, detail)
+		}
 		var lb []byte
 		if lv.exists {
 			lb = lv.bytes

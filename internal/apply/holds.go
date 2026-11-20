@@ -13,10 +13,11 @@ import (
 // apply, adopt or capture of a target clears them; other reasons belong to
 // sync, the gate and tasks and are left alone.
 var fileHoldReasons = map[model.HoldReason]bool{
-	model.HoldDrifted:      true,
-	model.HoldUncapturable: true,
-	model.HoldSealGuard:    true,
-	model.HoldRenderedEdit: true,
+	model.HoldDrifted:       true,
+	model.HoldUncapturable:  true,
+	model.HoldSealGuard:     true,
+	model.HoldRenderedEdit:  true,
+	model.HoldNeedsDecision: true,
 }
 
 // HoldID returns the stable id of a hold. It is model.HoldID, kept here for

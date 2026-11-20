@@ -236,6 +236,7 @@ func TargetMode(snap *Snapshot, r manifest.Resolved) fs.FileMode { return modeOf
 func sourceDefaultMode(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	plain := r
 	plain.Entry.Enclave = "" // enclave files follow the source too
+	plain.Entry.Mode = 0     // the default, not the explicit mode
 	m := plain.FileMode(snap.Tree[r.Source].Mode&0o111 != 0).Perm()
 	if privateTarget(r.Target) {
 		m &^= 0o077
@@ -257,6 +258,33 @@ func widenedMode(snap *Snapshot, r manifest.Resolved) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprintf("the manifest sets mode %#o, wider than %#o, on a file with enclave plaintext; a manifest may not widen such a file's mode", want, def), true
+}
+
+// hasPlaintext reports whether an entry's target holds enclave plaintext.
+func hasPlaintext(en manifest.Entry) bool {
+	return en.Enclave != "" || len(en.Seal) > 0 || en.Regions
+}
+
+// modeWidenedSince reports, for a target with enclave plaintext that this
+// machine wrote before, a mode that grants a permission bit the mode
+// recorded at the last apply lacks: a pusher who drops an owner's explicit
+// `mode = 0o600`, or sets a wider one. It holds until allowed here
+// (`yadm protection allow`).
+func (e *Engine) modeWidenedSince(snap *Snapshot, r manifest.Resolved, ts TargetState, have bool) (string, bool) {
+	if !have || ts.Mode == 0 || !hasPlaintext(r.Entry) {
+		return "", false
+	}
+	want, was := modeOf(snap, r), fs.FileMode(ts.Mode).Perm()
+	if want&^was == 0 || e.allowed(KindMode, string(r.Target), modeHash(r.Target, want)) {
+		return "", false
+	}
+	return fmt.Sprintf("the manifest widens this file's mode from %#o to %#o; the file has enclave plaintext, so it is neither applied nor captured until allowed on this machine", was, want), true
+}
+
+// modeHash is the allow hash for writing target t with mode m.
+func modeHash(t model.Target, m fs.FileMode) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("mode\x00%s\x00%o", t, m.Perm())))
+	return hex.EncodeToString(h[:])
 }
 
 // privateDirs are top-level directories whose files and subdirectories are
@@ -502,6 +530,11 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	if detail, wide := widenedMode(snap, r); wide {
 		return guard(detail)
 	}
+	if detail, wide := e.modeWidenedSince(snap, r, ts, have); wide {
+		h := weakHold(st, now, t, s.Scope, ts.ChangedAt, detail)
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
+		return s, nil
+	}
 	if !adopt && have && e.unchangedSince(ctx, snap, st, r, ts, abs) {
 		s.Kind, s.keep = ActSkip, true
 		s.d = desired{res: r, scope: s.Scope, mode: modeOf(snap, r), blob: ts.SourceBlob, key: ts.ApplyKey}
@@ -519,6 +552,15 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 			return e.materializeLink(ctx, snap, r, s, ts, hold)
 		}
 		return hold("target is not a regular file (symlink or directory); not replaced")
+	}
+	if lv.exists && !have && !adopt && hasLocalKeys(r.Entry) {
+		// The render merges the live file, so it may equal it. Recording
+		// the file as managed would let a later manifest change share keys
+		// that were never yadm's. The user decides.
+		h := fileHold(st, now, t, s.Scope, model.HoldNeedsDecision, ts.ChangedAt,
+			"a new entry with keep, drop or volatile covers a file yadm never wrote; not taken over until resolved")
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldNeedsDecision), &h
+		return s, nil
 	}
 	var lb []byte
 	if lv.exists {
@@ -664,6 +706,9 @@ func applyKey(snap *Snapshot, r manifest.Resolved) string {
 // sameProt reports whether two protections are equal.
 func sameProt(a, b protection) bool {
 	if a.Enclave != b.Enclave || a.Regions != b.Regions || len(a.Seal) != len(b.Seal) {
+		return false
+	}
+	if !slices.Equal(a.Keep, b.Keep) || !slices.Equal(a.Drop, b.Drop) || !slices.Equal(a.Volatile, b.Volatile) {
 		return false
 	}
 	for k, v := range a.Seal {
@@ -974,6 +1019,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 		}
 	}
 	ts.Enclave, ts.Seal, ts.Regions = prot.Enclave, prot.Seal, prot.Regions
+	ts.Keep, ts.Drop, ts.Volatile = prot.Keep, prot.Drop, prot.Volatile
 	for k := range prot.Seal {
 		ts.SealSet = append(ts.SealSet, k)
 	}
