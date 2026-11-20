@@ -1,0 +1,10 @@
+{
+  "command": "enclave list",
+  "data": {
+    "enclaves": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

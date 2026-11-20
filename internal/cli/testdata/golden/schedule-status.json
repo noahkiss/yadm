@@ -1,0 +1,13 @@
+{
+  "command": "schedule status",
+  "data": {
+    "installed": true,
+    "last_run": "<last_run>",
+    "loaded": true,
+    "unit_path": "<unit_path>"
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

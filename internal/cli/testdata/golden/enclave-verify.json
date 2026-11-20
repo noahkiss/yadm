@@ -1,0 +1,10 @@
+{
+  "command": "enclave verify",
+  "data": {
+    "enclaves": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

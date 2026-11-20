@@ -1,0 +1,16 @@
+{
+  "command": "alt",
+  "data": {
+    "removed": "alt",
+    "replacement": "alternates are manifest entries with a `when` condition; `yadm apply` writes them"
+  },
+  "error": {
+    "code": "usage",
+    "message": "usage: `yadm alt` is not a command of this tool: alternates are manifest entries with a `when` condition; `yadm apply` writes them"
+  },
+  "next": [
+    "alternates are manifest entries with a `when` condition; `yadm apply` writes them"
+  ],
+  "ok": false,
+  "schema": 1
+}

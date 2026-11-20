@@ -1,0 +1,42 @@
+{
+  "command": "status",
+  "data": {
+    "ahead": 0,
+    "applied": "<oid>",
+    "behind": 0,
+    "drift": [
+      {
+        "hash": "<sha256>",
+        "kind": "modified",
+        "scope": "shared",
+        "since": "<since>",
+        "target": ".config/tool/config"
+      }
+    ],
+    "holds": [
+      {
+        "detail": "<detail>",
+        "id": "<sha256>",
+        "next": [
+          "yadm hold show <sha256>",
+          "yadm hold resolve <sha256> --take target",
+          "yadm hold resolve <sha256> --take source"
+        ],
+        "reason": "drifted",
+        "scope": "shared",
+        "since": "<since>",
+        "target": ".config/tool/config"
+      }
+    ],
+    "last_sync": null,
+    "machine": "<machine-id>"
+  },
+  "error": null,
+  "next": [
+    "yadm diff",
+    "yadm commit",
+    "yadm hold list"
+  ],
+  "ok": true,
+  "schema": 1
+}

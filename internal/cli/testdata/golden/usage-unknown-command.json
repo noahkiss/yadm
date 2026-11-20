@@ -1,0 +1,13 @@
+{
+  "command": "no-such-command-xyz",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: unknown command \"no-such-command-xyz\" and no yadm-no-such-command-xyz on PATH"
+  },
+  "next": [
+    "yadm --help"
+  ],
+  "ok": false,
+  "schema": 1
+}

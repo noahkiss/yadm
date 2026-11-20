@@ -1,0 +1,16 @@
+{
+  "command": "fleet",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: \"yadm fleet\" needs a subcommand"
+  },
+  "next": [
+    "yadm fleet diff",
+    "yadm fleet list",
+    "yadm fleet show",
+    "yadm fleet status"
+  ],
+  "ok": false,
+  "schema": 1
+}

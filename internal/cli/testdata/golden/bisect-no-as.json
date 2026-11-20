@@ -1,0 +1,11 @@
+{
+  "command": "bisect",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: bisect needs --as <machine> -- <cmd>"
+  },
+  "next": [],
+  "ok": false,
+  "schema": 1
+}

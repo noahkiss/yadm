@@ -1,0 +1,15 @@
+{
+  "command": "capture",
+  "data": {
+    "holds": [],
+    "paths": [
+      ".config/tool/config"
+    ]
+  },
+  "error": null,
+  "next": [
+    "yadm commit"
+  ],
+  "ok": true,
+  "schema": 1
+}

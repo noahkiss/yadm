@@ -1,0 +1,18 @@
+{
+  "command": "explain",
+  "data": {
+    "command": "apply",
+    "steps": [
+      "load fleet.toml, manifest.toml and the key logs at main; verify each key log against the local pins",
+      "resolve the manifest for this machine and render each target in memory",
+      "skip targets whose bytes match; hold targets changed since the last write (drifted)",
+      "write changed targets atomically, backing up replaced bytes for 30 days",
+      "skip sealed files of enclaves this machine cannot open",
+      "run triggered tasks that are allowed here, unit reloads, and first-apply tasks once"
+    ]
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

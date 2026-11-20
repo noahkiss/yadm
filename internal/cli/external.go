@@ -37,7 +37,7 @@ func (a *app) runExternal(name string, args []string) (result, error) {
 		req.Home = home
 	}
 	res, err := hooks.exec().Run(ctx, extexec.Spec{Argv: append([]string{path}, args...), Timeout: SubcommandTimeout}, req)
-	if err != nil {
+	if err != nil && res.ExitCode == 0 && !res.TimedOut {
 		return result{}, err
 	}
 	out := result{}

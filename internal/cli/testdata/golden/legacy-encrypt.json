@@ -1,0 +1,16 @@
+{
+  "command": "encrypt",
+  "data": {
+    "removed": "encrypt",
+    "replacement": "files of an enclave type are sealed automatically; `yadm enclave create <type>` starts an enclave"
+  },
+  "error": {
+    "code": "usage",
+    "message": "usage: `yadm encrypt` is not a command of this tool: files of an enclave type are sealed automatically; `yadm enclave create <type>` starts an enclave"
+  },
+  "next": [
+    "files of an enclave type are sealed automatically; `yadm enclave create <type>` starts an enclave"
+  ],
+  "ok": false,
+  "schema": 1
+}

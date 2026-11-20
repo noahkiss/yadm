@@ -1,0 +1,19 @@
+{
+  "command": "fleet show",
+  "data": {
+    "machine": {
+      "arch": "<arch>",
+      "id": "<machine-id>",
+      "name": "host-a",
+      "os": "<os>",
+      "types": [
+        "work"
+      ]
+    },
+    "stale": true
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

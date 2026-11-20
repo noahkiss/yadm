@@ -1,0 +1,13 @@
+{
+  "command": "explain",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: unknown command \"frobnicate\""
+  },
+  "next": [
+    "yadm --help"
+  ],
+  "ok": false,
+  "schema": 1
+}

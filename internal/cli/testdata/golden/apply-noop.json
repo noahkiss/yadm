@@ -1,0 +1,19 @@
+{
+  "command": "apply",
+  "data": {
+    "actions": [
+      {
+        "kind": "skip",
+        "scope": "shared",
+        "source": "files/.config/tool/config",
+        "target": ".config/tool/config"
+      }
+    ],
+    "commit": "<oid>",
+    "holds": []
+  },
+  "error": null,
+  "next": [],
+  "ok": true,
+  "schema": 1
+}

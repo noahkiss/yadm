@@ -1,0 +1,27 @@
+{
+  "command": "status",
+  "data": {
+    "ahead": 0,
+    "applied": "<oid>",
+    "behind": 0,
+    "drift": [
+      {
+        "hash": "<sha256>",
+        "kind": "modified",
+        "scope": "shared",
+        "since": "<since>",
+        "target": ".config/tool/config"
+      }
+    ],
+    "holds": [],
+    "last_sync": null,
+    "machine": "<machine-id>"
+  },
+  "error": null,
+  "next": [
+    "yadm diff",
+    "yadm commit"
+  ],
+  "ok": true,
+  "schema": 1
+}

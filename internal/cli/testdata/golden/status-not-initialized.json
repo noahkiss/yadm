@@ -1,0 +1,14 @@
+{
+  "command": "status",
+  "data": null,
+  "error": {
+    "code": "error",
+    "message": "this machine is not set up: no machine.toml or source clone"
+  },
+  "next": [
+    "yadm init <remote> --machine <name>",
+    "yadm clone <remote> --machine <name>"
+  ],
+  "ok": false,
+  "schema": 1
+}

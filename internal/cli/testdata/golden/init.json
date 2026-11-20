@@ -1,0 +1,25 @@
+{
+  "command": "init",
+  "data": {
+    "allowed": [
+      "collector:packages",
+      "task:bundle"
+    ],
+    "in_fleet": true,
+    "machine": "<machine-id>",
+    "name": "host-a",
+    "recipient": "<recipient>",
+    "schedule": {
+      "installed": true
+    },
+    "sign_key": "<sign_key>",
+    "source": "$TMP/a/home/.local/share/yadm/source"
+  },
+  "error": null,
+  "next": [
+    "yadm adopt --dry-run",
+    "yadm apply"
+  ],
+  "ok": true,
+  "schema": 1
+}
