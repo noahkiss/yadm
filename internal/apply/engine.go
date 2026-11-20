@@ -564,9 +564,11 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		// A stock symlink yadm never recorded: adopt, and apply too (a
 		// member that adopted before it joined an enclave could not open
 		// the render then), materialize it when its content equals the
-		// render. A new keep, drop or volatile entry still needs a decision.
+		// render. A new keep, drop or volatile entry still needs a decision,
+		// unless the link is the stock layout: it resolves inside $HOME to a
+		// file whose bytes equal the source's own.
 		if !have && lv.info.Mode()&fs.ModeSymlink != 0 {
-			if !adopt && hasLocalKeys(r.Entry) {
+			if !adopt && hasLocalKeys(r.Entry) && !e.stockLink(ctx, snap, r, ts, abs) {
 				h := fileHold(st, now, t, s.Scope, model.HoldNeedsDecision, ts.ChangedAt,
 					"a new entry with keep, drop or volatile covers a symlink yadm never wrote; not taken over until resolved")
 				s.Kind, s.Reason, s.hold = ActHold, string(model.HoldNeedsDecision), &h
@@ -576,10 +578,11 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		}
 		return hold("target is not a regular file (symlink or directory); not replaced")
 	}
-	if lv.exists && !have && !adopt && hasLocalKeys(r.Entry) {
+	if lv.exists && !have && !adopt && hasLocalKeys(r.Entry) && !e.equalsSource(ctx, snap, r, ts, lv.bytes) {
 		// The render merges the live file, so it may equal it. Recording
 		// the file as managed would let a later manifest change share keys
-		// that were never yadm's. The user decides.
+		// that were never yadm's. The user decides. A file byte-identical
+		// to the source itself owes nothing to the merge and is taken over.
 		h := fileHold(st, now, t, s.Scope, model.HoldNeedsDecision, ts.ChangedAt,
 			"a new entry with keep, drop or volatile covers a file yadm never wrote; not taken over until resolved")
 		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldNeedsDecision), &h

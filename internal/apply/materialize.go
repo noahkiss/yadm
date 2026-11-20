@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 )
@@ -52,6 +53,55 @@ func (e *Engine) materializeLink(ctx context.Context, snap *Snapshot, r manifest
 	s.live.bytes = b
 	s.Kind, s.Reason = ActWrite, "materialize symlink"
 	return s, nil
+}
+
+// equalsSource reports whether b equals r's source bytes at snap, opened
+// for a sealed source, before any template render or intra-file rule. It
+// is takeover evidence for a keep, drop or volatile entry that does not
+// depend on merging the live file: keep copies live keys into the render,
+// so render equality alone proves nothing there. A source that cannot be
+// read or opened is no evidence.
+func (e *Engine) equalsSource(ctx context.Context, snap *Snapshot, r manifest.Resolved, ts TargetState, b []byte) bool {
+	raw, blob, err := e.readSource(ctx, snap, r.Source)
+	if err != nil {
+		return false
+	}
+	if enc := r.Entry.Enclave; enc != "" {
+		if !snap.canOpen(enc) {
+			return false
+		}
+		if blob == "" || blob != ts.SourceBlob {
+			snap = snap.strict()
+		}
+		if raw, err = snap.cr().OpenFile(enc, r.Source, raw); err != nil {
+			return false
+		}
+	} else if crypt.IsSealedFile(raw) {
+		return false
+	}
+	return bytes.Equal(raw, b)
+}
+
+// stockLink reports whether the symlink at abs is the stock layout: it
+// resolves inside $HOME to a regular file whose bytes equal r's source
+// bytes (equalsSource).
+func (e *Engine) stockLink(ctx context.Context, snap *Snapshot, r manifest.Resolved, ts TargetState, abs string) bool {
+	home, err := filepath.EvalSymlinks(e.Home)
+	if err != nil {
+		return false
+	}
+	to, err := filepath.EvalSymlinks(abs)
+	if err != nil || !within(home, to) {
+		return false
+	}
+	if info, err := os.Stat(to); err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	b, err := os.ReadFile(to)
+	if err != nil {
+		return false
+	}
+	return e.equalsSource(ctx, snap, r, ts, b)
 }
 
 // dirLinks lists, for the plan's targets, each directory symlink above a
