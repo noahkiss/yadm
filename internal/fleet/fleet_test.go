@@ -218,9 +218,6 @@ when = "type:personal"
 publish = "sealed:personal"
 [collectors.untrusted]
 command = ["u-tool"]
-[collectors.weird]
-command = ["w-tool"]
-when = "nonsense"
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -257,9 +254,6 @@ func TestCollect(t *testing.T) {
 	}
 	if got := facts["broken"]; got.Error == "" || got.Items != nil {
 		t.Errorf("broken = %+v", got)
-	}
-	if got := facts["weird"]; !strings.HasPrefix(got.Error, "when:") {
-		t.Errorf("weird = %+v", got)
 	}
 	if _, ok := facts["untrusted"]; ok {
 		t.Error("untrusted collector ran")
@@ -520,5 +514,15 @@ func TestMemoryStatusRefs(t *testing.T) {
 	}
 	if StatusRef("m-1") != "refs/yadm/status/m-1" {
 		t.Error("StatusRef")
+	}
+}
+
+func TestParseRejectsBadCollectorWhen(t *testing.T) {
+	_, err := Parse([]byte(base + `[collectors.weird]
+command = ["w-tool"]
+when = "nonsense"
+`))
+	if err == nil {
+		t.Fatal("a collector with an invalid when must be rejected at parse time")
 	}
 }
