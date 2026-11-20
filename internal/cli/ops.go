@@ -424,6 +424,9 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 // and rewrites the target from the source; the replaced bytes are backed up.
 func (a *app) resolveConflict(ctx context.Context, m *machineEnv, h model.Hold, take string) (result, error) {
 	abs := filepath.Join(m.home, filepath.FromSlash(string(h.Target)))
+	if err := apply.InsideHome(m.home, abs); err != nil {
+		return result{}, fmt.Errorf("%s: %w", h.Target, err)
+	}
 	data := map[string]any{"resolved": h.ID}
 	switch take {
 	case "source":

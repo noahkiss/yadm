@@ -368,6 +368,20 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return rep, err
 	}
 	if opts.Resolve && opts.Capture == nil {
+		// Resolve against the current main, not a stale local head: when
+		// several machines resolve in turn, each settles over the last.
+		if opts.Push {
+			dirty, err := s.catchUp(ctx, &rep)
+			if err != nil {
+				return rep, err
+			}
+			if dirty {
+				return s.finish(ctx, rep, nil, nil)
+			}
+			if head, err = s.Store.ResolveRef(ctx, store.RefMain); err != nil {
+				return rep, err
+			}
+		}
 		if err := s.rebaseOnto(ctx, head, opts.Paths); err != nil {
 			return rep, err
 		}
@@ -525,6 +539,37 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return r, nil
 	}
 	return s.finish(ctx, rep, cp.Paths, out.committed)
+}
+
+// catchUp fetches and integrates the remote main into the local one, as
+// steps 4 to 7 of a sync do, so a resolution commits over the current main.
+// Offline, it keeps the local head: the push of this call catches up.
+func (s *Syncer) catchUp(ctx context.Context, rep *Report) (bool, error) {
+	base := s.accepted()
+	if base == "" {
+		b, err := s.Store.ResolveRef(ctx, store.RemoteMain)
+		if err != nil {
+			return false, err
+		}
+		base = b
+	}
+	if err := s.Store.Fetch(ctx); err != nil {
+		return false, nil
+	}
+	local, err := s.Store.ResolveRef(ctx, store.RefMain)
+	if err != nil {
+		return false, err
+	}
+	remote, err := s.Store.ResolveRef(ctx, store.RemoteMain)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.integrateAndApply(ctx, rep, base, local, remote, map[model.CommitID]bool{})
+	if err != nil {
+		return false, err
+	}
+	rep.Alerts = append(rep.Alerts, res.alerts...)
+	return res.dirty, nil
 }
 
 // rebaseOnto settles the conflicts of the named targets in favour of the
