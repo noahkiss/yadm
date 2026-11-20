@@ -288,14 +288,16 @@ func (s *Syncer) netLock() NetLock {
 
 // fetched is what a fetch step left.
 type fetched struct {
-	base    model.CommitID // origin/main before the fetch: the guard's base on a first sync
+	base    model.CommitID // origin/main before the fetch: the start a machine with no AcceptedFile record seeds
 	err     error          // the fetch failed
 	skipped bool           // another process held the network lock
 }
 
 // fetch runs step 4 under the network lock, without the sync lock. Another
 // process on the network makes it skip: the run goes on with the last
-// fetched origin/main, and the next sync fetches.
+// fetched origin/main, and the next sync fetches. Before the first fetch it
+// records the start (startBase), so no fetch ever becomes the base it is
+// judged from; a start it cannot record fails the fetch.
 func (s *Syncer) fetch(ctx context.Context, rep *Report) fetched {
 	var f fetched
 	if f.base, f.err = s.Store.ResolveRef(ctx, store.RemoteMain); f.err != nil {
@@ -312,6 +314,13 @@ func (s *Syncer) fetch(ctx context.Context, rep *Report) fetched {
 		return f
 	}
 	defer release()
+	// Under the network lock no other fetch moves origin/main.
+	if f.base, f.err = s.Store.ResolveRef(ctx, store.RemoteMain); f.err != nil {
+		return f
+	}
+	if _, f.err = s.startBase(ctx, f.base); f.err != nil {
+		return f
+	}
 	f.err = s.Store.Fetch(ctx)
 	return f
 }
@@ -514,10 +523,9 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 	published := false
 	for attempt := 0; ; attempt++ {
 		// 5-8. Replay onto the fetched origin/main, apply, publish.
-		base := s.accepted()
-		if base == "" {
-			// First sync: the clone's own fetch is the trusted start.
-			base = f.base
+		base, err := s.startBase(ctx, f.base)
+		if err != nil {
+			return s.settle(ctx, rep, captured, committed, err)
 		}
 		local, err := s.Store.ResolveRef(ctx, store.RefMain)
 		if err != nil {

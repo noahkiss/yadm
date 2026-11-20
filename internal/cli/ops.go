@@ -885,8 +885,19 @@ func (a *app) cmdReviewNote(cmd *cobra.Command, args []string) (result, error) {
 	})
 	if err == nil && !noPush {
 		// The push runs after the sync lock is released, under the
-		// network lock.
-		if d.Pushed, err = sync.PushNotes(ctx, m.repo, m.lock(0), sync.FileNetLock(m.paths.State)); err != nil {
+		// network lock. Its fetch moves origin/main, so a machine with no
+		// accepted record records its start first.
+		var start model.CommitID
+		var holds []model.Hold
+		if start, err = m.repo.ResolveRef(ctx, store.RemoteMain); err == nil {
+			if holds, err = m.eng.Holds(ctx); err == nil {
+				_, err = sync.SeedStart(ctx, m.repo, m.paths.State, holds, start)
+			}
+		}
+		if err == nil {
+			d.Pushed, err = sync.PushNotes(ctx, m.repo, m.lock(0), sync.FileNetLock(m.paths.State))
+		}
+		if err != nil {
 			d.PushError = err.Error()
 		}
 		err = nil
