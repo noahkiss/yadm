@@ -95,6 +95,11 @@ schema = 1
 [defaults]
 quiet = "2m"                      # auto-commit quiet period
 
+[conditions]                      # named conditions (section 5.1)
+include = ["conditions.toml"]     # more [conditions] tables from the source tree
+desk = "type:work & !os:linux"
+editor.gui = "cond:desk | fact:editor=editor-one"
+
 [[file]]
 target = ".config/shell/aliases.sh"           # source: files/.config/shell/aliases.sh
 
@@ -147,6 +152,11 @@ on = [".config/packages/list"]
 command = ["pkg-tool", "bundle", "--file", ".config/packages/list"]
 timeout = "10m"
 
+[tasks.tool-config]
+on_render = true                  # run when types, facts or the fleet change
+outputs = [".config/tool/generated/**"]   # files it writes: generated, never captured
+command = ["yadm-tool-config"]
+
 [checks.secret-scan]
 paths = ["**"]
 command = ["secret-check"]
@@ -164,7 +174,9 @@ Resolution for one machine:
 - `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
 - A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
-`yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it.
+`yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it. When a `when` names a condition, `when_expanded` (winning entry) and `expanded` (each rejection) give it with every named condition inlined.
+
+`yadm manifest --json [--as <machine> | --fleet]` resolves the manifest for this machine, another fleet machine or every one. Per machine it returns each entry's target, source, `when` (raw and expanded), mode, enclave, scope, merge policy, a rules summary (format, keep, drop, volatile, seal key paths with their enclave, regions), and the owned roots and applying tasks. A machine whose resolve fails carries `error`. The query reads no file content, so it prints no plaintext. Another machine's observed facts come only from collectors it published `plain`; `observed` says which source applied (`local`, `published`, `none`).
 
 ## 5. Conditions and templates
 
@@ -179,6 +191,8 @@ observed:packages=tool-one
 !   &   |   ( )   true   false
 ```
 
+- `cond:NAME` stands for a named condition. The manifest's `[conditions]` table maps names to conditions; a name is dot-separated segments of letters, digits, `_` and `-`, so `editor.gui = "…"` and `"editor.gui" = "…"` name the same condition. `include` lists source files (no glob, not under `sealed/` or `keys/`) whose own `[conditions]` tables load too; other tables in them are ignored, and they cannot include further. A definition may use `cond:` itself. A cycle, an unknown name or a name defined twice (across files too) fails the load with the file and the name. Templates may use `cond:` in `{% if %}`; collector `when`s, which the fleet file holds, may not.
+- `yadm eval '<cond>' --json [--as <machine>]` evaluates a condition with the named conditions and returns the result, the expansion and the names used. With `--as` another machine, observed facts are only those it published `plain`; `unavailable` lists the collectors the condition reads that it cannot see, and those terms are false.
 - `machine:` matches a name or nickname.
 - Parsing checks every type, fact key and collector name against the fleet. A typo fails at load time.
 - A fact key the fleet knows but this machine lacks evaluates `fact:k` and `fact:k=v` to false.
@@ -223,6 +237,8 @@ Host private-box
 
 Behaviour:
 
+- **Predicate drops.** A `drop` entry `ARRAY[?FIELD~=VALUE]` (contains) or `ARRAY[?FIELD==VALUE]` (equals) selects the elements of each array `ARRAY` matches whose `FIELD` (a key path inside the element, `*` allowed; empty means the element itself) holds VALUE: `drop = ["hooks.*[?hooks.*.command~=tool run]"]`. Selected elements are machine-local: capture removes them, and apply removes the source's and puts the live file's back, each after the owned element that preceded it in the live file (found by value; failing that, by position). Unselected elements stay owned. A capture of an unchanged file round-trips byte for byte, comments included. A `drop` string that holds `[?` is always a predicate.
+- A keep or drop path may name a TOML table under a parent it does not own (`keep = ["hooks.pre"]`): a sibling table the app writes (`[hooks.state]`) stays local. This holds for `[t]` and `[[t]]` tables.
 - Key paths name nested keys separated by dots, with `*` for any one segment: `mcp.servers.*.env.TOKEN`. A literal dot or star inside a key is escaped with a backslash: the JSON key `"files.exclude"` is the path `files\.exclude`. Arrays are indexed by number. A path that names an object or table covers everything below it.
 - Edits are byte-level. A no-op round trip returns identical bytes. A change touches only the bytes of the values it changes.
 - The JSON and JSONC editor is this project's own scanner and span editor; `sjson` is not used, because its delete takes the comment above a key and it cannot expand `*`. The TOML span editor is this project's code too, on go-toml's `unstable` parser. Every edit re-parses its output and fails closed.
@@ -329,7 +345,7 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 
 The state database stores hashes, never rendered bytes. The one exception is the proposed patch of a `rendered_edit` hold on a shared template (section 8.4); an enclave template's hold carries none, so no enclave plaintext enters the state. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
-Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref, any `cachetextconv = true` setting, and any filter or merge driver in the source clone's own config.
+Plaintext never enters the source tree, the object store, a ref, a note (a review note on an enclave commit is sealed, section 9.6), a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref, any `cachetextconv = true` setting, and any filter or merge driver in the source clone's own config.
 
 Every change to sealing or delivery needs a test with `internal/secrecytest` that plants a canary in enclave plaintext and asserts it reaches neither a non-member's `$HOME` nor any repository's object store.
 
@@ -355,6 +371,8 @@ A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(H
 Every command starts with a scan. It is a stat pass over managed targets and owned roots that hashes a file only when its stat tuple changed. A full hash pass runs at most once a day. Scans are bounded by the managed set and owned roots; they never walk all of `$HOME`.
 
 Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
+
+A file that matches a task's `outputs` glob (section 12.1) is generated: scan never reports it, capture and retag never take it, so it is never committed or gated. `yadm status` lists such files under `generated`.
 
 ### 8.3 Apply
 
@@ -436,6 +454,13 @@ A message names paths only. No subject, body or trailer ever carries file conten
 ### 9.6 Review
 
 Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. `yadm review list [scope] --json` lists commits in `reviewed/<scope>..main` that touch the scope, with plaintext diffs for scopes this machine can open, and `deferred`: the decisions agents moved here with `yadm defer` (section 9.7) whose holds are still open. Agents act with `yadm review ok <scope> <commit>`, `yadm review revert <commit>` (a new commit), a fix-forward commit, or `yadm bisect --as <machine> -- <cmd>`, which renders each candidate commit into a sandbox and never touches `$HOME`.
+
+`yadm review note <commit> --why "<text>"` attaches a why note to a commit on `refs/yadm/notes/review`: a chain of commits whose tree holds `<commit id>.json` per note. The ref is fetched with the other yadm refs, and sync pushes it with `main`; a diverged notes ref is rebuilt on the remote one with the local notes it lacks, the newer note winning on one commit. `yadm log` and `review list` show each commit's note.
+
+- A note on a commit that touches no enclave is stored as written.
+- A free-text note on a commit that touches an enclave (`sealed/<e>/`, `keys/<e>/`, or a file whose entry seals values for `e`) is sealed to that enclave before it is written, with the file container bound to `notes/review/<commit>`. Members read it; every other machine sees `sealed note`. The note is refused (exit 6) when the commit touches more than one enclave, when it changes a file with sealed regions and `--seal` names no enclave, or when this machine is not a member.
+- `--paths-only` writes a note whose text the tool generates from the commit's paths, which every machine already sees. It is never refused.
+- The workflow that writes notes belongs to content, not core.
 
 ### 9.7 Agent hooks
 
@@ -532,7 +557,9 @@ command    = ["pkg-tool", "bundle", "--file", ".config/packages/list"]
 timeout    = "10m"
 ```
 
-- Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`).
+- Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`), `on_fact` (a listed input changed on this machine: a collector name for its observed items, or `fact:KEY` for a declared fact) and `on_render = true` (the render context changed: this machine's types, declared and observed facts, or the fleet file).
+- `on_fact` and `on_render` compare fingerprints (hashes, never values) of the inputs with what the task last ran against, kept per task in state. A task with no record runs once. A held task records nothing, so the change still runs it once it is allowed; a failed run records, as a failed path task does not retry. Only a full apply checks inputs, and adopt runs no task. The trigger is named `fact` or `render` in the result.
+- `outputs` lists target globs the task writes. They are generated (section 8.2). A managed target that matches one fails the resolve. Adding these fields to a definition changes its hash, so it needs a new allow; a definition without them keeps the hash it had.
 - A task runs once per apply, after all writes, with the matched targets in its request.
 - A failed task is recorded in state and the status ref, reported through notify, and never stops other tasks or the sync.
 - **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it. With `reload = "never"` a unit is never reloaded. On `auto`, the launchd reloader also skips a job whose plist sets `KeepAlive`, the job that runs the reload (`$XPC_SERVICE_NAME`), and a plist it cannot read as XML. A skip is recorded in the task result detail, not as a failure.
@@ -540,7 +567,7 @@ timeout    = "10m"
 
 ### 12.2 No package manager in core
 
-The core knows no package manager and does no machine provisioning. Bootstrap is a task with `first_apply = true`. Package-manager integration, if ever needed, ships as a separate `yadm-<name>` executable that a task or collector calls.
+The core knows no package manager and does no machine provisioning. Bootstrap is a task with `first_apply = true`. Package-manager integration, if ever needed, ships as a separate `yadm-<name>` executable that a task or collector calls. `docs/extensions.md` lists what such an extension may rely on: the JSON contracts, the exec contract, the manifest and eval queries and named conditions. A first-party extension in `cmd/yadm-<name>` imports only `cond`, `rules`, `extexec`, `model` and `render`, and no package under `internal/` names a coding-agent harness; tests enforce both.
 
 ### 12.3 Trust
 
@@ -633,17 +660,19 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `version` | Version and build | `{version, go, os, arch}` |
 | `where` | Directories | `{source, state, config}` |
 | `machine` | This machine | the fleet `Machine` plus `observed` and `enclaves` (opened, refused) |
-| `why <path>` | Manifest explanation | `{target, managed, resolved, rejected[], protected, in_root}` |
+| `why <path>` | Manifest explanation | `{target, managed, resolved, rejected[], protected, in_root, when_expanded?}` |
+| `manifest [--as <m> \| --fleet]` | Resolved manifest per machine (section 4) | `{schema, commit, outputs[], machines[{machine, name, types, observed, error?, entries[], roots[], tasks[]}]}` |
+| `eval <cond> [--as <m>]` | Evaluate a condition (section 5.1) | `{schema, machine, name, condition, expanded, names[], result, observed, unavailable[], note?}` |
 | `managed <path>` | Is it managed here | `{target, managed, scope, source}` |
 | `explain <command>` | Steps the command would take here | `{steps[]}` |
 | `init <remote> --machine <m>` | Clone, write `machine.toml`, create identity, install schedule | `{machine, recipient, sign_key, source}` |
-| `status` | Drift, holds, ahead/behind, last sync | `{machine, applied, ahead, behind, drift[], holds[], last_sync}` |
+| `status` | Drift, holds, ahead/behind, last sync | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?}` |
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff}]}` |
 | `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason}` |
-| `log [path]` | History, plaintext where openable | `{commits[]}` |
+| `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
@@ -651,7 +680,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff` |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
-| `review list` / `ok` / `revert` | Section 9.6 | `{items[{commit, scope, diff}], deferred[]}` |
+| `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |
 | `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` / `ignore <id>` | Holds; a take that captures commits and pushes; `ignore` leaves an unmanaged file in an owned root untracked on this machine | hold objects |
 | `hook post-edit` / `stop` / `session-start` | Section 9.7; harness JSON on stdin | a verdict (`docs/hooks.md`) |
 | `defer <hold-id> --reason <why>` | Move a decision to the review queue | the deferred record |

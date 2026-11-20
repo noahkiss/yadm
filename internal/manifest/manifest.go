@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"strings"
 
+	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -107,6 +108,17 @@ type TaskDef struct {
 	When       string         `toml:"when" json:"when,omitempty"`
 	Command    []string       `toml:"command" json:"command"`
 	Timeout    model.Duration `toml:"timeout" json:"timeout"` // default 5m
+	// OnFact runs the task when one of these inputs changes on this
+	// machine: a collector name (its observed items) or "fact:KEY" (a
+	// declared fact).
+	OnFact []string `toml:"on_fact" json:"on_fact,omitempty"`
+	// OnRender runs the task when the render context changes: this
+	// machine's types, declared facts and observed facts, or the fleet.
+	OnRender bool `toml:"on_render" json:"on_render,omitempty"`
+	// Outputs are target globs the task writes. They are generated: never
+	// captured or committed, never gated, and shown by status as
+	// generated. A managed target may not match one.
+	Outputs []string `toml:"outputs" json:"outputs,omitempty"`
 }
 
 // CheckDef declares a commit-gate check. Before every commit, manual or
@@ -160,6 +172,11 @@ type Manifest struct {
 	Checks    map[string]CheckDef `toml:"checks" json:"checks,omitempty"`
 	Units     []Unit              `toml:"unit" json:"units,omitempty"`
 	Protected []string            `toml:"protected" json:"protected,omitempty"` // extra never-auto-commit globs
+	// Conditions is the raw `[conditions]` table: named conditions and
+	// `include`. Parse turns it into Definitions and Includes.
+	Conditions map[string]any `toml:"conditions" json:"-"`
+
+	named namedConds
 }
 
 // Resolved is one target's winning entry.
@@ -180,6 +197,7 @@ type Plan struct {
 
 	m     *Manifest
 	cands [][]candidate // per entry: what it would produce
+	conds []cond.Expr   // per entry: its parsed `when`
 	apply []bool        // per entry: its `when` is true here
 }
 
@@ -191,6 +209,9 @@ type Explanation struct {
 	Rejected  []Rejection  `json:"rejected,omitempty"` // entries that named the target but did not apply
 	Protected bool         `json:"protected"`
 	InRoot    *Root        `json:"in_root,omitempty"`
+	// WhenExpanded is the winning entry's `when` with every `cond:NAME`
+	// inlined. It is set only when the `when` names a condition.
+	WhenExpanded string `json:"when_expanded,omitempty"`
 }
 
 // Rejection says why one entry did not apply.
@@ -198,6 +219,9 @@ type Rejection struct {
 	Index  int    `json:"index"`
 	When   string `json:"when"`
 	Reason string `json:"reason"`
+	// Expanded is When with every `cond:NAME` inlined, set only when When
+	// names a condition.
+	Expanded string `json:"expanded,omitempty"`
 }
 
 // BuiltinProtected lists the paths that never auto-commit, whatever the manifest says.

@@ -38,6 +38,11 @@ func (a *app) register(root *cobra.Command) {
 	leaf(root, "machine", "Show this machine: fleet entry, observed facts, enclaves", a.cmdMachine)
 	exact(leaf(root, "why <path>", "Explain how the manifest treats a path", a.cmdWhy), 1)
 	exact(leaf(root, "managed <path>", "Report whether a path is managed on this machine", a.cmdManaged), 1)
+	mf := leaf(root, "manifest", "Show the resolved manifest per machine (read-only)", a.cmdManifest)
+	mf.Flags().String("as", "", "resolve for this fleet machine")
+	mf.Flags().Bool("fleet", false, "resolve for every fleet machine")
+	ev := exact(leaf(root, "eval <condition>", "Evaluate a condition for a machine", a.cmdEval), 1)
+	ev.Flags().String("as", "", "evaluate for this fleet machine")
 	exact(leaf(root, "explain <command>", "Describe what a command would do here, step by step", a.cmdExplain), 1)
 
 	for _, use := range []string{"init <remote>", "clone <remote>"} {
@@ -94,6 +99,11 @@ func (a *app) register(root *cobra.Command) {
 	rl.Args = cobra.MaximumNArgs(1)
 	exact(leaf(rv, "ok <scope> <commit>", "Advance the reviewed ref", a.cmdReviewOK), 2)
 	exact(leaf(rv, "revert <commit>", "Revert a commit with a new commit", a.cmdReviewRevert), 1)
+	rn := exact(leaf(rv, "note <commit>", "Attach a why note to a commit; sealed when the commit touches an enclave", a.cmdReviewNote), 1)
+	rn.Flags().String("why", "", "the note text")
+	rn.Flags().String("seal", "", "seal the note to this enclave")
+	rn.Flags().Bool("paths-only", false, "write a note that names only the commit's paths")
+	rn.Flags().Bool("no-push", false, "write the note only; the next sync pushes it")
 
 	hd := a.group(root, "hold", "Held files, tasks and conflicts")
 	hl := leaf(hd, "list", "List holds", a.cmdHoldList(""))
@@ -362,6 +372,9 @@ type statusData struct {
 	Drift    []apply.Drift   `json:"drift"`
 	Holds    []model.Hold    `json:"holds"`
 	LastSync *time.Time      `json:"last_sync"`
+	// Generated lists files a task writes (its `outputs`); they are never
+	// captured or committed.
+	Generated []model.Target `json:"generated,omitempty"`
 }
 
 func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
@@ -376,6 +389,9 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	}
 	if d.Drift == nil {
 		d.Drift = []apply.Drift{}
+	}
+	if d.Generated, err = m.eng.Generated(ctx); err != nil {
+		return result{}, err
 	}
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {
@@ -410,6 +426,9 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	fmt.Fprintf(&b, "machine %s  applied %s  ahead %d  behind %d\n", d.Machine, short(d.Applied), d.Ahead, d.Behind)
 	for _, x := range d.Drift {
 		fmt.Fprintf(&b, "  %-10s %s\n", x.Kind, x.Target)
+	}
+	for _, t := range d.Generated {
+		fmt.Fprintf(&b, "  %-10s %s\n", "generated", t)
 	}
 	for _, h := range d.Holds {
 		fmt.Fprintf(&b, "  held %-8s %s %s\n", h.Reason, h.Target+model.Target(h.Task), h.ID[:min(12, len(h.ID))])
@@ -668,6 +687,7 @@ type logCommit struct {
 	Body     string             `json:"body,omitempty"`
 	Trailers []store.Trailer    `json:"trailers,omitempty"`
 	Paths    []model.SourcePath `json:"paths"`
+	Note     *sync.Note         `json:"note,omitempty"` // the review note; a sealed one opens only for members
 }
 
 func (a *app) cmdLog(cmd *cobra.Command, args []string) (result, error) {
@@ -714,9 +734,19 @@ func (a *app) cmdLog(cmd *cobra.Command, args []string) (result, error) {
 				Subject: c.Message.Subject, Body: c.Message.Body, Trailers: c.Message.Trailers, Paths: c.Paths})
 		}
 	}
+	if notes := m.notes(ctx); len(notes) > 0 {
+		for i := range commits {
+			if n, ok := notes[commits[i].ID]; ok {
+				commits[i].Note = &n
+			}
+		}
+	}
 	var b strings.Builder
 	for _, c := range commits {
 		fmt.Fprintf(&b, "%s %s\n", short(c.ID), c.Subject)
+		if c.Note != nil {
+			fmt.Fprintf(&b, "    why: %s\n", c.Note.Text())
+		}
 	}
 	return result{data: map[string]any{"commits": commits}, text: b.String()}, nil
 }
@@ -930,7 +960,7 @@ func losers(snap *apply.Snapshot, t model.Target, types []model.TypeName) []mode
 	}
 	expr := cond.Always()
 	if when != "" {
-		x, err := cond.Parse(when, snap.Fleet.Vocabulary())
+		x, err := cond.Parse(when, snapVocab(snap))
 		if err != nil {
 			return []model.MachineID{}
 		}

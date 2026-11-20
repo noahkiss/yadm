@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -58,6 +59,25 @@ func Parse(b []byte) (*Manifest, error) {
 	if err := m.validate(); err != nil {
 		return nil, err
 	}
+	if m.Conditions != nil {
+		defs, includes, err := flattenConditions(FileName, m.Conditions, true)
+		if err != nil {
+			return nil, err
+		}
+		var errs []error
+		for i, p := range includes {
+			if err := validInclude(p); err != nil {
+				errs = append(errs, fmt.Errorf("%s: conditions.include: %w", FileName, err))
+			}
+			if slices.Contains(includes[:i], p) {
+				errs = append(errs, fmt.Errorf("%s: conditions.include: %q listed twice", FileName, p))
+			}
+		}
+		if err := errors.Join(errs...); err != nil {
+			return nil, err
+		}
+		m.named = namedConds{defs: defs, includes: includes}
+	}
 	return &m, nil
 }
 
@@ -104,6 +124,14 @@ func (m *Manifest) validate() error {
 		}
 		for _, p := range append(append([]string{}, t.On...), t.OnRemove...) {
 			add(where, ValidPattern(p))
+		}
+		for _, p := range t.Outputs {
+			add(where+" outputs", ValidPattern(p))
+		}
+		for _, f := range t.OnFact {
+			if f == "" || f == "fact:" {
+				add(where+" on_fact", errors.New("empty input"))
+			}
 		}
 	}
 	for _, name := range sortedKeys(m.Checks) {

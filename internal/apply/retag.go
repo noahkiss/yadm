@@ -182,6 +182,9 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 			return Capture{}, fmt.Errorf("retag %s: glob entry %q covers it; edit the manifest", t, en.Target)
 		}
 	}
+	if snap.Manifest.Generated(t) {
+		return Capture{}, fmt.Errorf("retag %s: a task generates it (outputs); it is never tracked", t)
+	}
 	enc := opts.Enclave
 	if enc != "" && !snap.canOpen(enc) {
 		return Capture{}, fmt.Errorf("retag %s: %w: %s", t, crypt.ErrNotMember, enc)

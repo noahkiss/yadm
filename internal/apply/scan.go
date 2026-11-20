@@ -95,6 +95,16 @@ func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
 		}
 	}
 
+	if len(st.Outputs) > 0 {
+		kept := out[:0]
+		for _, d := range out {
+			if !generated(st, d.Target) {
+				kept = append(kept, d)
+			}
+		}
+		out = kept
+	}
+
 	if full && complete && len(opts.Paths) == 0 {
 		st.LastFullHash = now
 	}
@@ -311,4 +321,78 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	mu.Lock()
 	defer mu.Unlock()
 	return append([]Drift(nil), found...), finished
+}
+
+// generated reports whether t matches a task output glob of the last
+// applied manifest.
+func generated(st *State, t model.Target) bool {
+	for _, g := range st.Outputs {
+		if manifest.Match(g, string(t)) {
+			return true
+		}
+	}
+	return false
+}
+
+// Generated lists the files on disk that match a task `outputs` glob of the
+// last applied manifest, sorted. A literal output is checked with one stat;
+// a glob walks the directory of its fixed prefix within the scan budget.
+// Status shows the list; scan and capture never report or take these files.
+func (e *Engine) Generated(ctx context.Context) ([]model.Target, error) {
+	st, err := e.loadState()
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(e.ScanBudget)
+	found := map[model.Target]bool{}
+	for _, g := range st.Outputs {
+		if !manifest.IsGlob(g) {
+			abs, err := e.abs(model.Target(g))
+			if err != nil {
+				continue
+			}
+			if info, err := e.fs.Lstat(abs); err == nil && info.Mode().IsRegular() {
+				found[model.Target(g)] = true
+			}
+			continue
+		}
+		segs := strings.Split(g, "/")
+		i := 0
+		for i < len(segs) && !manifest.IsGlob(segs[i]) {
+			i++
+		}
+		dir := e.Home
+		if i > 0 {
+			abs, err := e.abs(model.Target(strings.Join(segs[:i], "/")))
+			if err != nil {
+				continue
+			}
+			dir = abs
+		}
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || ctx.Err() != nil || time.Now().After(deadline) {
+				if err == nil {
+					return filepath.SkipAll
+				}
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			rel, err := filepath.Rel(e.Home, p)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return nil
+			}
+			if t := model.Target(filepath.ToSlash(rel)); manifest.Match(g, string(t)) {
+				found[t] = true
+			}
+			return nil
+		})
+	}
+	out := make([]model.Target, 0, len(found))
+	for t := range found {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
 }

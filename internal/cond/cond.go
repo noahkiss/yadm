@@ -17,6 +17,9 @@ type Vocabulary struct {
 	// it; package manifest uses it to check `enclave` and `seal` names.
 	// Nil means unknown, and that check is skipped.
 	Enclaves map[string]bool
+	// Conditions holds the named conditions a `cond:NAME` term may
+	// reference, as Define returns them. Nil means none.
+	Conditions map[string]Expr
 }
 
 // Expr is a parsed condition.
@@ -44,6 +47,10 @@ func Parse(src string, v Vocabulary) (Expr, error) {
 		return Always(), nil
 	}
 	p := &parser{src: src, v: v}
+	return p.parse()
+}
+
+func (p *parser) parse() (Expr, error) {
 	if err := p.lex(); err != nil {
 		return nil, err
 	}
@@ -175,6 +182,8 @@ type parser struct {
 	v    Vocabulary
 	toks []token
 	pos  int
+	// named resolves a `cond:` name. Nil means look it up in v.Conditions.
+	named func(name string) (Expr, error)
 }
 
 func (p *parser) errAt(off int, msg string) error { return &Error{Src: p.src, Offset: off, Msg: msg} }
@@ -346,6 +355,25 @@ func (p *parser) term(t token) (Expr, error) {
 			return nil, p.errAt(argOff, fmt.Sprintf("unknown fact %q", key))
 		}
 		return factTerm{key: key, val: val, hasVal: hasVal}, nil
+	case "cond":
+		if err := plain(); err != nil {
+			return nil, err
+		}
+		if !ValidName(arg) {
+			return nil, p.errAt(argOff, fmt.Sprintf("bad condition name %q", arg))
+		}
+		if p.named != nil {
+			x, err := p.named(arg)
+			if err != nil {
+				return nil, err
+			}
+			return namedTerm{name: arg, x: x}, nil
+		}
+		x, ok := p.v.Conditions[arg]
+		if !ok {
+			return nil, p.errAt(argOff, fmt.Sprintf("unknown condition %q", arg))
+		}
+		return namedTerm{name: arg, x: x}, nil
 	case "observed":
 		col, item, hasItem := strings.Cut(arg, "=")
 		if col == "" {

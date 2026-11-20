@@ -7,6 +7,18 @@
 // apply (`first_apply`), run this command", scoped by a `when` condition and
 // bounded by a timeout. Results go into the machine's status record.
 //
+// Two more triggers watch this machine's inputs instead of paths:
+// `on_fact` (a collector's observed items, or "fact:KEY") and `on_render`
+// (the render context: types, declared and observed facts, the fleet). The
+// apply passes a fingerprint of each input (Event.Inputs) and what each task
+// last ran against (Event.LastInputs, kept in state); a task with no record
+// fires once. A held task records nothing, so the change still fires once it
+// is allowed. Only a full apply checks inputs; adopt runs no task.
+//
+// A task's `outputs` globs name files it generates. Apply records them, and
+// scan, capture and retag never report, take or track such a file, so it is
+// never committed or gated; status lists it as generated.
+//
 // A check is declared in the manifest too. The Gate runs matching checks on
 // the staged targets before any commit, manual or automatic, and fails closed:
 // a failing, timed-out or disallowed check holds its files; other files still
@@ -39,9 +51,11 @@
 //
 // Exported API:
 //
-//	type Event struct{ Commit model.CommitID; Changed, Removed []model.Target; Units []manifest.Unit; FirstApply bool }
+//	type Event struct{ Commit model.CommitID; Changed, Removed []model.Target; Units []manifest.Unit; FirstApply bool; Inputs map[string]string; LastInputs map[string]map[string]string }
+//	const TriggerPaths, TriggerRemove, TriggerFirstApply, TriggerUnit, TriggerFact, TriggerRender; const RenderInput = "@render"
+//	func InputKeys(def manifest.TaskDef) []string
 //	func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error)
-//	type Selected struct{ Name, Trigger string; Def manifest.TaskDef; Matched []model.Target }
+//	type Selected struct{ Name, Trigger string; Def manifest.TaskDef; Matched []model.Target; Inputs []string }
 //	type AllowList interface{ Allowed(kind extexec.Kind, name, hash string) bool; Allow(kind extexec.Kind, name, hash string) error }
 //	func DefinitionHash(def any) (string, error) // tasks, checks and collectors share the allow list
 //	func FileAllowList(stateDir string) AllowList

@@ -72,6 +72,12 @@ type State struct {
 	// (`yadm hold ignore`). Scan never reports them; naming one in a
 	// commit tracks it and drops it from this list.
 	Ignored map[model.Target]time.Time `json:"ignored,omitempty"`
+	// TaskInputs records, per task, the fingerprints (hashes, never
+	// values) of the on_fact and on_render inputs it last ran against.
+	TaskInputs map[string]map[string]string `json:"task_inputs,omitempty"`
+	// Outputs holds the task `outputs` globs of the last applied
+	// manifest. Scan never reports a file that matches one.
+	Outputs []string `json:"outputs,omitempty"`
 }
 
 // StateDB loads and saves State atomically.

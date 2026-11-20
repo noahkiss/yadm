@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"slices"
 	"strings"
 
@@ -74,6 +75,10 @@ type conds struct {
 }
 
 func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
+	v, err := m.Vocabulary(v)
+	if err != nil {
+		return nil, err
+	}
 	var errs []error
 	parse := func(where, src string) cond.Expr {
 		e, err := cond.Parse(src, v)
@@ -112,6 +117,15 @@ func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
 	}
 	for _, name := range sortedKeys(m.Tasks) {
 		c.tasks[name] = parse("tasks."+name, m.Tasks[name].When)
+		for _, in := range m.Tasks[name].OnFact {
+			if key, ok := strings.CutPrefix(in, "fact:"); ok {
+				if !v.FactKeys[key] {
+					errs = append(errs, fmt.Errorf("%s: tasks.%s: on_fact: unknown fact %q", FileName, name, key))
+				}
+			} else if !v.Collectors[in] {
+				errs = append(errs, fmt.Errorf("%s: tasks.%s: on_fact: unknown collector %q", FileName, name, in))
+			}
+		}
 	}
 	for _, name := range sortedKeys(m.Checks) {
 		c.checks[name] = parse("checks."+name, m.Checks[name].When)
@@ -214,6 +228,7 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		cs := candidates(e, tree)
 		ok := c.entries[i].Eval(ctx)
 		p.cands = append(p.cands, cs)
+		p.conds = append(p.conds, c.entries[i])
 		p.apply = append(p.apply, ok)
 		if !ok {
 			continue
@@ -239,6 +254,14 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 	if len(col) > 0 {
 		slices.SortFunc(col, func(a, b Collision) int { return cmp.Compare(a.Target, b.Target) })
 		return nil, &CollisionError{Collisions: col}
+	}
+	for _, t := range slices.Sorted(maps.Keys(p.Targets)) {
+		if task, glob, ok := m.output(t); ok {
+			errs = append(errs, fmt.Errorf("%s: tasks.%s: output %q matches managed target %s; a generated file cannot be managed", FileName, task, glob, t))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
 	}
 	for i, u := range m.Units {
 		if !c.units[i].Eval(ctx) {
@@ -270,6 +293,37 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		}
 	}
 	return p, nil
+}
+
+// output returns the task and output glob that t matches, if any.
+func (m *Manifest) output(t model.Target) (string, string, bool) {
+	for _, name := range sortedKeys(m.Tasks) {
+		for _, g := range m.Tasks[name].Outputs {
+			if Match(g, string(t)) {
+				return name, g, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// Generated reports whether t matches a task's `outputs` glob, whether or
+// not the task applies on this machine. A generated file is never captured,
+// committed or gated.
+func (m *Manifest) Generated(t model.Target) bool {
+	_, _, ok := m.output(t)
+	return ok
+}
+
+// Outputs returns every task's `outputs` globs, sorted and without
+// duplicates.
+func (m *Manifest) Outputs() []string {
+	var out []string
+	for _, d := range m.Tasks {
+		out = append(out, d.Outputs...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // Protected reports whether a target never auto-commits on its own: it
@@ -328,6 +382,7 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 	if r, ok := p.Targets[t]; ok {
 		x.Managed = true
 		x.Resolved = &r
+		x.WhenExpanded = p.expanded(r.Index)
 	}
 	if p.m == nil {
 		return x, nil
@@ -348,7 +403,7 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 		if !names {
 			continue
 		}
-		rej := Rejection{Index: i, When: e.When}
+		rej := Rejection{Index: i, When: e.When, Expanded: p.expanded(i)}
 		switch {
 		case !p.apply[i]:
 			rej.Reason = fmt.Sprintf("when %q is false on this machine", e.When)
@@ -362,6 +417,23 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 		x.Rejected = append(x.Rejected, rej)
 	}
 	return x, nil
+}
+
+// expanded returns entry i's `when` with named conditions inlined, or ""
+// when it names none.
+func (p *Plan) expanded(i int) string {
+	if i < 0 || i >= len(p.conds) || p.conds[i] == nil || len(cond.Names(p.conds[i])) == 0 {
+		return ""
+	}
+	return cond.Expand(p.conds[i])
+}
+
+// When returns entry i's parsed `when`, or nil when i is out of range.
+func (p *Plan) When(i int) cond.Expr {
+	if i < 0 || i >= len(p.conds) {
+		return nil
+	}
+	return p.conds[i]
 }
 
 func sortedKeys[V any](m map[string]V) []string {

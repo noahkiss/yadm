@@ -71,4 +71,11 @@
 //	type ReviewItem struct{ Commit store.Commit; Scope model.Scope; Diff string }
 //	func Unreviewed(ctx, st store.Store, keys *crypt.Set, scope model.Scope) ([]ReviewItem, error)
 //	func Ack(ctx, st store.Store, scope model.Scope, upTo model.CommitID) error
+//	const RefReviewNotes = "refs/yadm/notes/review"; const NoteSchema = 1; var ErrNoteNeedsSeal
+//	type NoteOptions struct{ Commit; Why; PathsOnly; Seal; Machine; Now }
+//	type Note struct{ Commit; Machine; Time; Why; PathsOnly; Sealed; Enclave; Opened }; func (Note) Text() string
+//	func WriteNote(ctx, st store.Store, snap *apply.Snapshot, opts NoteOptions) (Note, error) // seals before writing
+//	func ReadNotes(ctx, st store.Store, keys *crypt.Set) (map[model.CommitID]Note, error)
+//	func PushNotes(ctx, st store.Store) (bool, error)
+//	(ReviewItem gains Note *Note; pushSpecs also pushes the notes ref, merging a diverged one)
 package sync

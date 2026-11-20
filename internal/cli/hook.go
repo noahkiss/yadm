@@ -52,8 +52,9 @@ const (
 	DecisionAsk   = "ask"
 )
 
-// HookInput is what a harness writes on the hook's stdin: the Claude Code
-// hook envelope, plus optional normalized fields any harness glue may set.
+// HookInput is what a harness writes on the hook's stdin: the hook envelope
+// docs/hooks.md documents, plus optional normalized fields any harness glue
+// may set.
 // Unknown fields are ignored.
 type HookInput struct {
 	HookEventName  string          `json:"hook_event_name"`
@@ -787,7 +788,7 @@ func reach(snap *apply.Snapshot, when string, enc model.EnclaveName) *Reach {
 	}
 	expr := cond.Always()
 	if when != "" {
-		x, err := cond.Parse(when, snap.Fleet.Vocabulary())
+		x, err := cond.Parse(when, snapVocab(snap))
 		if err != nil {
 			return r
 		}
