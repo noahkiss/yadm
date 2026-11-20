@@ -1,0 +1,24 @@
+# Go gate on pull requests and pushes to main: gofmt, vet, tests.
+# The corpus test needs YADM_CORPUS=1 and a real dotfiles repository, so it
+# never runs here.
+#
+# An allow-list, not an ignore-list: testdata holds Markdown fixtures that the
+# tests read.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['**.go', 'go.mod', 'go.sum', '**/testdata/**', '.github/workflows/ci.yml']
+  pull_request:
+    paths: ['**.go', 'go.mod', 'go.sum', '**/testdata/**', '.github/workflows/ci.yml']
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  go:
+    permissions:
+      contents: read
+    uses: noahkiss/workflows/.github/workflows/go-ci.yml@main
