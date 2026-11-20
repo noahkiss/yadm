@@ -102,9 +102,17 @@ func fixture(t *testing.T, git string, withCrypt bool) string {
 }
 
 func TestRunFixture(t *testing.T) {
-	yadm, err := exec.LookPath("yadm")
-	if err != nil {
-		t.Skip("stock yadm not installed")
+	// The oracle drives upstream yadm. YADM_ORACLE_BIN names it when the yadm
+	// on PATH is this project's binary.
+	yadm := os.Getenv("YADM_ORACLE_BIN")
+	if yadm == "" {
+		var err error
+		if yadm, err = exec.LookPath("yadm"); err != nil {
+			t.Skip("stock yadm not installed")
+		}
+	}
+	if v, _ := exec.Command(yadm, "version").CombinedOutput(); !strings.Contains(string(v), "yadm version") {
+		t.Skipf("%s is not upstream yadm; set YADM_ORACLE_BIN", yadm)
 	}
 	git, err := exec.LookPath("git")
 	if err != nil {
