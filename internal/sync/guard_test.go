@@ -294,3 +294,55 @@ func TestPreExistingFileUnderNewRootNotCommitted(t *testing.T) {
 		t.Fatalf("manual commit of a named pre-existing file: %+v %v", rc, err)
 	}
 }
+
+// TestApplyGuardHoldsWeakenedManifest: with apply.Guard wired, a fetched
+// manifest that drops a target's region protection is refused until
+// `protection allow` names the fetched source, and the machine that pushed
+// a change never refuses it on its own next sync.
+func TestApplyGuardHoldsWeakenedManifest(t *testing.T) {
+	a, b := fixture.HostA, fixture.HostB
+	w := newWorld(t, nil, a, b)
+	w.syncAll(a, b)
+	A, B := w.machines[a], w.machines[b]
+	ctx := context.Background()
+	A.s.Guard = &apply.Guard{List: A.allows}
+	B.s.Guard = &apply.Guard{List: B.allows}
+
+	man, err := B.st.ReadPath(ctx, B.main(), "manifest.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	weak := strings.Replace(string(man), "target = \".ssh/config\"\nregions = true\n", "target = \".ssh/config\"\n", 1)
+	if weak == string(man) {
+		t.Fatal("fixture manifest changed; update the test")
+	}
+	pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(weak), Mode: 0o100644}})
+	before := A.main()
+	r := A.sync()
+	h := holdTask(r, HoldTaskGuard)
+	if h == nil || !strings.Contains(h.Detail, "regions were turned off") || !strings.Contains(h.Detail, "yadm protection allow .ssh/config") {
+		t.Fatalf("holds %+v", r.Holds)
+	}
+	if A.main() != before {
+		t.Fatal("refused source moved main")
+	}
+	if r = A.sync(); holdTask(r, HoldTaskGuard) == nil || A.main() != before {
+		t.Fatal("refusal did not persist")
+	}
+	remote, err := A.st.ResolveRef(ctx, store.RemoteMain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := A.eng.AllowProtection(ctx, remote, ".ssh/config"); err != nil {
+		t.Fatal(err)
+	}
+	r = A.sync()
+	if holdTask(r, HoldTaskGuard) != nil || A.main() == before {
+		t.Fatalf("after allow: main moved %v holds %+v", A.main() != before, r.Holds)
+	}
+
+	// B pushed the weakening itself: its own next sync takes it.
+	if r := B.sync(); holdTask(r, HoldTaskGuard) != nil {
+		t.Fatalf("B refused its own commit: %+v", r.Holds)
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
@@ -212,6 +213,21 @@ func policy(s *apply.Snapshot) sync.Policy {
 		}
 		p.Protected = append(p.Protected, s.Manifest.Protected...)
 	}
+	if s != nil && s.Plan != nil {
+		plan := s.Plan
+		p.MergeFor = func(t model.Target) sync.MergePolicy {
+			if r, ok := plan.Targets[t]; ok {
+				return sync.MergePolicy(r.Entry.Merge)
+			}
+			return ""
+		}
+		p.VolatileFor = func(t model.Target) []string {
+			if r, ok := plan.Targets[t]; ok {
+				return r.Entry.Volatile
+			}
+			return nil
+		}
+	}
 	return p
 }
 
@@ -249,6 +265,9 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Version:  version,
 		Now:      hooks.now,
 		Nudge:    hooks.nudge(),
+
+		Structural: rules.Structural{},
+		Guard:      &apply.Guard{List: m.allow},
 	}
 	var checks map[string]manifest.CheckDef
 	if m.snap != nil {
