@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -188,7 +189,10 @@ func TestImportSealerSecrecy(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := newImportSealer(by, rec.Member())
-	sealed, err := s.SealFile("personal", c.Bytes())
+	if _, err := s.SealFile("personal", c.Bytes()); !errors.Is(err, model.ErrNotImplemented) {
+		t.Fatalf("path-less SealFile must refuse: %v", err)
+	}
+	sealed, err := s.SealFileAt("personal", "sealed/personal/.secret", c.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +234,7 @@ func TestImportSealerSecrecy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pt, err := ring.OpenFile(sealed); err != nil || string(pt) != string(c.Bytes()) {
+	if pt, err := ring.OpenFile("sealed/personal/.secret", sealed); err != nil || string(pt) != string(c.Bytes()) {
 		t.Fatalf("open: %v", err)
 	}
 	secrecytest.AssertRepoClean(t, work, c)

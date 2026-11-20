@@ -263,7 +263,8 @@ func (a *app) cmdHoldShow(cmd *cobra.Command, args []string) (result, error) {
 				s.Sealed = true
 				return s
 			}
-			if b, err = snap.Crypto.OpenFile(enc, b); err != nil {
+			// Hold sides are old content: read them with every epoch's key.
+			if b, err = apply.SetCrypto(snap.Keys.History()).OpenFile(enc, holdSource(snap, h, enc), b); err != nil {
 				s.Sealed = true
 				return s
 			}
@@ -278,6 +279,20 @@ func (a *app) cmdHoldShow(cmd *cobra.Command, args []string) (result, error) {
 	data := map[string]any{"hold": h, "base": side(h.Base), "ours": side(h.Ours), "theirs": side(h.Theirs)}
 	text := fmt.Sprintf("%s %s %s%s since %s\n%s", h.ID, h.Reason, h.Target, h.Task, h.Since.UTC().Format(time.RFC3339), h.Detail)
 	return result{data: data, next: h.Next, text: text}, nil
+}
+
+// holdSource is the source path a hold's blobs were sealed under: the
+// hold's own, the plan's, or the default sealed path.
+func holdSource(snap *apply.Snapshot, h model.Hold, enc model.EnclaveName) model.SourcePath {
+	if h.Source != "" {
+		return h.Source
+	}
+	if snap.Plan != nil {
+		if r, ok := snap.Plan.Targets[h.Target]; ok {
+			return r.Source
+		}
+	}
+	return model.SourcePath("sealed/" + string(enc) + "/" + string(h.Target))
 }
 
 func isBinary(b []byte) bool {

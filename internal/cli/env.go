@@ -147,6 +147,7 @@ func open(ctx context.Context) (*machineEnv, error) {
 		Home:     home,
 		User:     usr,
 		StateDir: p.State,
+		Allow:    allow,
 		Tasks:    &tasks.Runner{Exec: ex, Allow: allow, Units: hooks.units()},
 		Now:      hooks.now,
 	})

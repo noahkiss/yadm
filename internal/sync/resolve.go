@@ -194,7 +194,14 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 		return ch, nil, RungText, nil
 	}
 
-	read := func(id string) ([]byte, error) {
+	// Either side may be the fetched one, so both open strictly (the current
+	// epoch and above min_epoch only): a merge never launders an old-epoch
+	// forgery into a fresh seal. The base is history and opens with any key.
+	var strict, history apply.Crypto
+	if sealed {
+		strict, history = apply.SetCrypto(r.snap.Keys.Strict()), apply.SetCrypto(r.snap.Keys.History())
+	}
+	read := func(id string, cr apply.Crypto) ([]byte, error) {
 		if id == "" {
 			return nil, nil
 		}
@@ -202,17 +209,17 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 		if err != nil || !sealed {
 			return b, err
 		}
-		return r.snap.Crypto.OpenFile(enc, c.Path, b)
+		return cr.OpenFile(enc, c.Path, b)
 	}
-	base, err := read(c.Base)
+	base, err := read(c.Base, history)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve %s: base: %w", c.Path, err)
 	}
-	ours, err := read(c.Ours)
+	ours, err := read(c.Ours, strict)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve %s: ours: %w", c.Path, err)
 	}
-	theirs, err := read(c.Theirs)
+	theirs, err := read(c.Theirs, strict)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("resolve %s: theirs: %w", c.Path, err)
 	}
@@ -221,7 +228,7 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 			return &store.Change{Path: c.Path, Delete: true}, nil, rung, nil
 		}
 		if sealed {
-			if b, err = r.snap.Crypto.SealFile(enc, c.Path, b); err != nil {
+			if b, err = strict.SealFile(enc, c.Path, b); err != nil {
 				return nil, nil, "", fmt.Errorf("resolve %s: seal: %w", c.Path, err)
 			}
 		}

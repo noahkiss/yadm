@@ -7,12 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/noahkiss/yadm/internal/apply"
+	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/store"
 )
 
 // RemoteGuard decides whether a fetched source may be applied on this
@@ -37,21 +38,73 @@ const (
 	AlertGuardRefused  = "remote_refused"
 )
 
-// keyLogPath parses keys/<enclave>/<seq>.toml.
+// keyLogPath reports a path under keys/: crypt.ParseLogPath's enclave and
+// seq for a canonical entry name, or the enclave and seq 0 for any other
+// file under keys/<enclave>/, which is a violation whatever it holds.
 func keyLogPath(p model.SourcePath) (model.EnclaveName, uint64, bool) {
+	if e, n, ok := crypt.ParseLogPath(p); ok {
+		return e, n, true
+	}
 	rest, ok := strings.CutPrefix(string(p), "keys/")
 	if !ok {
 		return "", 0, false
 	}
-	e, file, ok := strings.Cut(rest, "/")
-	if !ok || e == "" || strings.Contains(file, "/") {
+	e, _, ok := strings.Cut(rest, "/")
+	if !ok || e == "" {
 		return "", 0, false
 	}
-	n, err := strconv.ParseUint(strings.TrimSuffix(file, ".toml"), 10, 64)
-	if err != nil || !strings.HasSuffix(file, ".toml") {
-		return model.EnclaveName(e), 0, true // not a log entry name: any change is a violation
+	return model.EnclaveName(e), 0, true
+}
+
+// appendOnly runs crypt.CheckLogAppendOnly on every enclave's parsed log at
+// base against remote, so an entry whose bytes changed in a way the blob
+// check cannot judge (a re-signed fork at an existing seq) is refused too.
+func (s *Syncer) appendOnly(ctx context.Context, base, remote map[model.SourcePath]store.TreeEntry) ([]string, error) {
+	logs := func(tree map[model.SourcePath]store.TreeEntry) (map[model.EnclaveName][]crypt.LogEntry, error) {
+		var paths []model.SourcePath
+		for p := range tree {
+			if _, n, ok := keyLogPath(p); ok && n > 0 {
+				paths = append(paths, p)
+			}
+		}
+		sort.Slice(paths, func(i, j int) bool {
+			ei, ni, _ := keyLogPath(paths[i])
+			ej, nj, _ := keyLogPath(paths[j])
+			if ei != ej {
+				return ei < ej
+			}
+			return ni < nj
+		})
+		out := map[model.EnclaveName][]crypt.LogEntry{}
+		for _, p := range paths {
+			e, _, _ := keyLogPath(p)
+			b, err := s.Store.ReadBlob(ctx, tree[p].Blob)
+			if err != nil {
+				return nil, err
+			}
+			le, err := crypt.ParseLogEntry(b)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", p, err)
+			}
+			out[e] = append(out[e], le)
+		}
+		return out, nil
 	}
-	return model.EnclaveName(e), n, true
+	old, err := logs(base)
+	if err != nil {
+		return nil, nil // a base this machine accepted but cannot parse: the blob checks still run
+	}
+	next, err := logs(remote)
+	if err != nil {
+		return []string{"fetched key log does not parse: " + err.Error()}, nil
+	}
+	var out []string
+	for e, l := range old {
+		if err := crypt.CheckLogAppendOnly(l, next[e]); err != nil {
+			out = append(out, err.Error())
+		}
+	}
+	return out, nil
 }
 
 // keyLogViolations checks that remote only appends to key logs: every entry
@@ -71,6 +124,11 @@ func (s *Syncer) keyLogViolations(ctx context.Context, base, remote model.Commit
 	if err != nil {
 		return nil, err
 	}
+	more, err := s.appendOnly(ctx, baseTree, remoteTree)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, more...)
 	for p, e := range baseTree {
 		if _, _, ok := keyLogPath(p); !ok {
 			continue

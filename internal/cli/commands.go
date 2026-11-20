@@ -84,6 +84,11 @@ func (a *app) register(root *cobra.Command) {
 
 	a.registerEnclave(root)
 
+	pr := a.group(root, "protection", "Local allows for weakened protection of a target")
+	exact(leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow), 1)
+	ro := a.group(root, "root", "Local allows for owned roots")
+	exact(leaf(ro, "allow <path>", "Allow an owned root that is new, changed or removed here", a.cmdRootAllow), 1)
+
 	rv := a.group(root, "review", "Review auto-commits per scope")
 	rl := leaf(rv, "list [scope]", "List unreviewed commits with plaintext diffs", a.cmdReviewList)
 	rl.Args = cobra.MaximumNArgs(1)
@@ -600,7 +605,7 @@ func renderFor(ctx context.Context, st store.Store, snap *apply.Snapshot, r mani
 		if !open(enc) {
 			return nil, fmt.Errorf("sealed for %s; this machine cannot open it", enc)
 		}
-		if raw, err = snap.Crypto.OpenFile(enc, raw); err != nil {
+		if raw, err = snap.Crypto.OpenFile(enc, r.Source, raw); err != nil {
 			return nil, err
 		}
 	}
@@ -855,6 +860,45 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 		return result{data: data}, err
 	}
 	return result{data: data, text: "committed " + short(id)}, attention(holds)
+}
+
+func (a *app) cmdProtectionAllow(cmd *cobra.Command, args []string) (result, error) {
+	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
+		return m.eng.AllowProtection(cmd.Context(), m.snap.Commit, t)
+	})
+}
+
+func (a *app) cmdRootAllow(cmd *cobra.Command, args []string) (result, error) {
+	return a.allowOne(cmd, args[0], func(m *machineEnv, t model.Target) error {
+		return m.eng.AllowRoot(cmd.Context(), m.snap.Commit, t)
+	})
+}
+
+// allowOne records one local allow under the lock, then applies so the
+// allowed target or root takes effect now.
+func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, model.Target) error) (result, error) {
+	ctx := cmd.Context()
+	m, err := openLoaded(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	t, err := target(m.home, arg)
+	if err != nil {
+		return result{}, err
+	}
+	var res apply.Result
+	if err := m.locked(ctx, func() error {
+		if err := allow(m, t); err != nil {
+			return err
+		}
+		var err error
+		res, err = m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{})
+		return err
+	}); err != nil {
+		return lockedResult(err), err
+	}
+	res = normResult(res)
+	return result{data: map[string]any{"allowed": t, "apply": res}, text: "allowed " + string(t)}, attention(res.Holds)
 }
 
 func (a *app) cmdBisect(cmd *cobra.Command, args []string) (result, error) {

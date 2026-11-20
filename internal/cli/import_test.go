@@ -35,7 +35,8 @@ func transcryptBlob(pt []byte, password string, salt [8]byte) []byte {
 	return []byte(base64.StdEncoding.EncodeToString(append(append([]byte("Salted__"), salt[:]...), ct...)) + "\n")
 }
 
-// TestImportSealsThroughCLI runs a sealing import through Main: the output
+// TestImportSealsThroughCLI runs a sealing import through Main. Until the
+// importer passes source paths to its Sealer it must refuse cleanly; then the output
 // holds the enclave's key log on top of the import commit, a clean worktree,
 // and no plaintext anywhere.
 func TestImportSealsThroughCLI(t *testing.T) {
@@ -56,7 +57,22 @@ func TestImportSealsThroughCLI(t *testing.T) {
 	t.Setenv("LEGACY_PW", "pw")
 
 	out := filepath.Join(root, "out")
-	env := yadmOK(t, "import", legacy, "--output", out, "--password-env", "LEGACY_PW", "--default-enclave", "personal", "--new-recovery", filepath.Join(root, "recovery"))
+	env, code, raw := yadm(t, "import", legacy, "--output", out, "--password-env", "LEGACY_PW", "--default-enclave", "personal", "--new-recovery", filepath.Join(root, "recovery"))
+	if code != ExitOK {
+		// Sealed containers bind their source path, and importer.Sealer does
+		// not pass it yet: the import must refuse, commit nothing and leak
+		// nothing. Once the importer passes paths, the checks below run.
+		if code != ExitError || !strings.Contains(string(raw), "needs the source path") {
+			t.Fatalf("import: exit %d\n%s", code, raw)
+		}
+		if strings.Contains(string(raw), c.String()) {
+			t.Fatal("the refusal printed plaintext")
+		}
+		if _, err := os.Stat(filepath.Join(out, ".git")); err == nil {
+			secrecytest.AssertRepoClean(t, out, c)
+		}
+		return
+	}
 	d := decode[importData](t, env.Data)
 	if d.KeyLogs["personal"] == "" || d.Commit == "" {
 		t.Fatalf("import data: %+v", d)

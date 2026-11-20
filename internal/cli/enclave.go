@@ -37,6 +37,12 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	jn.Args = cobra.ExactArgs(1)
 	jn.Flags().String("expect", "", "required: fingerprint of the key-log entry that added this machine, received out of band")
 	leaf(en, "verify", "Verify every key log against the local pins", a.cmdEnclaveVerify)
+	rt := leaf(en, "retire", "Stop opening ciphertext of older epochs for delivery (after a remove's reseal)", a.cmdEnclaveRetire)
+	rt.Flags().String("enclave", "", "enclave to retire old epochs of (default: the only enclave this machine opens)")
+	sr := leaf(en, "set-recovery", "Name a new recovery identity, signed by the current one", a.cmdEnclaveSetRecovery)
+	sr.Flags().String("enclave", "", "enclave whose recovery identity changes")
+	sr.Flags().String("recovery-dir", "", "required: directory holding the current recovery identity")
+	addRecoveryFlags(sr)
 }
 
 func addRecoveryFlags(c *cobra.Command) {
@@ -180,6 +186,24 @@ type entryData struct {
 	Holds       []model.Hold      `json:"holds,omitempty"`
 }
 
+// pendingPins reads this machine's pins, so a write checks that its head is
+// the pinned one, but keeps the pin a write sets in memory: writeEntry moves
+// the file pin only after the commit lands.
+func (m *machineEnv) pendingPins() crypt.PinStore {
+	return pendingPins{file: crypt.FilePins(m.paths.State), mem: crypt.MemPins()}
+}
+
+type pendingPins struct{ file, mem crypt.PinStore }
+
+func (p pendingPins) Get(e model.EnclaveName) (*crypt.Pin, error) {
+	if x, err := p.mem.Get(e); err != nil || x != nil {
+		return x, err
+	}
+	return p.file.Get(e)
+}
+
+func (p pendingPins) Set(e model.EnclaveName, pin crypt.Pin) error { return p.mem.Set(e, pin) }
+
 // writeEntry commits a key-log entry (plus a reseal capture) on main through
 // sync.Commit, so the gate and the lock apply, pushes it, and pins it. The
 // pin moves only after the commit lands.
@@ -252,7 +276,7 @@ func (a *app) cmdEnclaveCreate(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	entry, _, err := crypt.Create(e, m.id, rec, crypt.MemPins())
+	entry, _, err := crypt.Create(e, m.id, rec, m.pendingPins())
 	if err != nil {
 		return result{}, err
 	}
@@ -288,7 +312,7 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	entry, err := ring.Add(head, crypt.Member{Machine: who, Recipient: recipient, SignKey: signKey}, m.id, crypt.MemPins())
+	entry, err := ring.Add(head, crypt.Member{Machine: who, Recipient: recipient, SignKey: signKey}, m.id, m.pendingPins())
 	if err != nil {
 		return result{}, err
 	}
@@ -333,7 +357,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	entry, newRing, err := ring.Remove(head, who, m.id, crypt.MemPins())
+	entry, newRing, err := ring.Remove(head, who, m.id, m.pendingPins())
 	if err != nil {
 		return result{}, err
 	}
@@ -352,12 +376,86 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, &c, fmt.Sprintf("enclave %s: remove %s", e, who))
 	d.Resealed = c.Paths
-	next := []string{
-		"yadm sync",
-		"revoke " + string(who) + "'s access to the repository remote",
-		"rotate every real secret stored in enclave " + string(e) + ": " + string(who) + " keeps all keys up to epoch " + fmt.Sprint(head.Epoch),
+	retired := false
+	if err == nil && d.Commit != "" {
+		// The reseal landed: retire the old epochs now, so a forgery pushed
+		// under an old key is never opened for delivery again.
+		var re crypt.LogEntry
+		if re, err = newRing.Retire(entry, m.id, m.pendingPins()); err == nil {
+			var rd entryData
+			rd, err = m.writeEntry(ctx, a.version, re, nil, fmt.Sprintf("enclave %s: retire epochs below %d", e, re.MinEpoch))
+			retired = err == nil && rd.Commit != ""
+		}
 	}
+	next := []string{}
+	if !retired {
+		next = append(next, "yadm enclave retire --enclave "+string(e))
+	}
+	next = append(next,
+		"revoke "+string(who)+"'s access to the repository remote",
+		"rotate every real secret stored in enclave "+string(e)+": "+string(who)+" keeps all keys up to epoch "+fmt.Sprint(head.Epoch),
+	)
 	return result{data: d, next: next}, err
+}
+
+func (a *app) cmdEnclaveRetire(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	m, err := requireIdentity(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	e, err := pickEnclave(cmd, m)
+	if err != nil {
+		return result{}, err
+	}
+	ring, head, err := ringFor(m, e)
+	if err != nil {
+		return result{}, err
+	}
+	entry, err := ring.Retire(head, m.id, m.pendingPins())
+	if err != nil {
+		return result{}, err
+	}
+	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: retire epochs below %d", e, entry.MinEpoch))
+	return result{data: d}, err
+}
+
+func (a *app) cmdEnclaveSetRecovery(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	dir, _ := cmd.Flags().GetString("recovery-dir")
+	if dir == "" {
+		return result{}, usagef("--recovery-dir with the current recovery identity is required")
+	}
+	m, err := openLoaded(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	e, _ := cmd.Flags().GetString("enclave")
+	if e == "" {
+		return result{}, usagef("name the enclave with --enclave")
+	}
+	l, ok := m.snap.Enclaves[model.EnclaveName(e)]
+	if !ok {
+		return result{}, fmt.Errorf("enclave %s has no key log", e)
+	}
+	if l.Err != nil {
+		return result{}, fmt.Errorf("enclave %s: %w", e, l.Err)
+	}
+	cur, err := crypt.LoadIdentity(dir)
+	if err != nil {
+		return result{}, fmt.Errorf("%w: recovery identity: %v", ErrRefused, err)
+	}
+	to, saved, err := recoveryMember(cmd, m.paths.Source, m.paths.State)
+	if err != nil {
+		return result{}, err
+	}
+	entry, err := crypt.SetRecovery(l.Head, cur, to, m.pendingPins())
+	if err != nil {
+		return result{}, err
+	}
+	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: set recovery", e))
+	d.Recovery = saved
+	return result{data: d}, err
 }
 
 func (a *app) cmdEnclaveJoin(cmd *cobra.Command, args []string) (result, error) {

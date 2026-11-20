@@ -32,8 +32,16 @@ func newImportSealer(by *crypt.Identity, recovery crypt.Member) *importSealer {
 	return &importSealer{by: by, recovery: recovery, rings: map[model.EnclaveName]*crypt.Keyring{}, entries: map[model.EnclaveName]crypt.LogEntry{}}
 }
 
-// SealFile implements importer.Sealer.
+// SealFile implements importer.Sealer. Sealed files now bind their source
+// path, which the importer's Sealer does not pass yet, so an import that
+// seals refuses until it does (a path-less container would not open).
 func (s *importSealer) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error) {
+	return nil, fmt.Errorf("import: sealing for %s needs the source path; the importer's Sealer must pass it: %w", e, model.ErrNotImplemented)
+}
+
+// SealFileAt seals plaintext for e, bound to its source path. It is the
+// Sealer the importer will call once it passes paths.
+func (s *importSealer) SealFileAt(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
 	ring, ok := s.rings[e]
 	if !ok {
 		entry, r, err := crypt.Create(e, s.by, s.recovery, crypt.MemPins())
@@ -42,7 +50,7 @@ func (s *importSealer) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, 
 		}
 		s.rings[e], s.entries[e], ring = r, entry, r
 	}
-	return ring.SealFile(plaintext)
+	return ring.SealFile(path, plaintext)
 }
 
 // changes returns the key-log files of every enclave the import created.
