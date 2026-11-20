@@ -451,7 +451,7 @@ A message names paths only. No subject, body or trailer ever carries file conten
 
 ### 9.5 Manual commits
 
-`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. Protected paths commit only when named. A named file that predates its owned root is captured too. With `--no-push`, the next sync pushes.
+`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. With `--no-push`, the next sync pushes.
 
 ### 9.6 Review
 
@@ -496,7 +496,7 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
    - other conflicts: the clean paths of the commit land; conflicted paths move to the local-only ref `refs/yadm/held/<machine>` and become `conflict` holds with all three stage blobs.
    Before a conflict is held, a ladder tries to resolve it in memory: a key-level merge for JSON, JSONC and TOML (edits to different keys never conflict; `volatile` keys keep this machine's value; one key changed differently on both sides fails), then the entry's `merge` policy (section 4). A rung that resolves a file records it in a `Yadm-Resolved` trailer.
    History stays linear. There is no autostash and no merge commit.
-6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes).
+6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes). `main` moves only over a clean clone, checked while `HEAD` still names the old `main`, so the clone's index never falls behind `HEAD`. A clean clone at a commit yadm reached (a `yadm git commit` on `main`, for example) counts as clean. The hold's advice returns the clone to `HEAD`.
 7. Apply.
 8. Publish this machine's status record (section 11).
 9. Push `main` and the status ref atomically. On rejection, go back to step 4, up to 5 retries with backoff. Never force. After a push that moved `main`, run the nudge (section 12.5).
