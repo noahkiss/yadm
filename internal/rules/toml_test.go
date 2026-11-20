@@ -10,7 +10,7 @@ import (
 	"github.com/noahkiss/yadm/internal/secrecytest"
 )
 
-var tomlSpec = Spec{
+var tomlSpec = Spec{Source: testSource,
 	Format: manifest.FormatTOML,
 	Drop:   []string{"state", "ui.last_opened", "history"},
 	Seal: map[string]model.EnclaveName{
@@ -143,7 +143,7 @@ func TestTOMLSealGuard(t *testing.T) {
 }
 
 func TestTOMLKeep(t *testing.T) {
-	spec := Spec{Format: manifest.FormatTOML, Keep: []string{"editor", "ui.theme"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatTOML, Keep: []string{"editor", "ui.theme"}}
 	live := []byte(`top = 1
 
 [ui]
@@ -245,7 +245,7 @@ func TestTOMLEditor(t *testing.T) {
 }
 
 func TestTOMLCRLF(t *testing.T) {
-	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"t.b"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatTOML, Drop: []string{"t.b"}}
 	live := []byte("[t]\r\na = 1\r\nb = 2\r\nc = 3\r\n")
 	src := mustSource(t, live, nil, spec, member())
 	if string(src) != "[t]\r\na = 1\r\nc = 3\r\n" {
@@ -257,7 +257,7 @@ func TestTOMLCRLF(t *testing.T) {
 }
 
 func TestTOMLDropMidFileTables(t *testing.T) {
-	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"history", "servers"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatTOML, Drop: []string{"history", "servers"}}
 	live := []byte(`top = 1
 
 [history]

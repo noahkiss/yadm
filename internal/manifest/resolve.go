@@ -141,6 +141,18 @@ func defaultSource(e Entry) (model.SourcePath, string) {
 	return model.SourcePath(base + "/" + prefix), prefix
 }
 
+// Expand returns every (target, source) pair entry e produces against tree,
+// whether or not its `when` applies to any machine. A literal entry gives
+// one pair; a glob entry gives one per matching source path. Index is -1.
+// Reseal uses it to reach every file that may hold an enclave's tokens.
+func Expand(e Entry, tree []model.SourcePath) []Resolved {
+	var out []Resolved
+	for _, c := range candidates(e, tree) {
+		out = append(out, Resolved{Target: c.target, Source: c.source, Entry: e, Index: -1})
+	}
+	return out
+}
+
 // candidates expands one entry against the source tree.
 func candidates(e Entry, tree []model.SourcePath) []candidate {
 	src, prefix := defaultSource(e)

@@ -16,8 +16,8 @@ const (
 	EpochKeySize = 32                  // random key per enclave per epoch
 	SIVKeySize   = daead.AESSIVKeySize // 64: AES-SIV-CMAC-256 needs two 256-bit keys
 	FileMagic    = "yadm-sealed\x00"   // whole-file container prefix
-	FormatV1     = 1
-	ValuePrefix  = "yadm:1:" // value token: yadm:1:<enclave>:<epoch>:<base64url>
+	FormatV2     = 2                   // container version: the AD binds the source path
+	ValuePrefix  = "yadm:1:"           // value token: yadm:1:<enclave>:<epoch>:<base64url>
 	RegionPrefix = "yadm:sealed 1 "
 )
 
@@ -42,6 +42,8 @@ var (
 	ErrAuthFailed   = errors.New("ciphertext failed authentication")
 	ErrInvalidLog   = errors.New("key log entry breaks a structural rule")
 	ErrNotPinned    = errors.New("this machine is listed as a member but has not pinned the enclave's key log")
+	ErrRetiredEpoch = errors.New("ciphertext is sealed under an epoch below the one this open accepts")
+	ErrRewritten    = errors.New("key log rewrites or drops an entry an earlier tree held")
 )
 
 // Identity is a machine's key pair: an age X25519 identity for unwrapping and
@@ -78,22 +80,34 @@ const (
 	OpAdd     Op = "add"
 	OpRemove  Op = "remove"  // always starts a new epoch
 	OpRotate  Op = "rotate"  // new epoch, same members
+	OpRetire  Op = "retire"  // raises min_epoch after a reseal; same epoch and members
 	OpRecover Op = "recover" // signed by the recovery identity
+	// OpSetRecovery replaces the recovery identity. Only the previous
+	// recovery identity signs it; epoch and members stay.
+	OpSetRecovery Op = "set-recovery"
 )
 
 // LogEntry is one file `keys/<enclave>/<seq>.toml` in the source tree.
 type LogEntry struct {
-	Enclave  model.EnclaveName `toml:"enclave" json:"enclave"`
-	Seq      uint64            `toml:"seq" json:"seq"`
-	Prev     string            `toml:"prev" json:"prev"` // hex SHA-256 of the previous entry's signed bytes; empty at seq 1
-	Epoch    model.Epoch       `toml:"epoch" json:"epoch"`
-	Op       Op                `toml:"op" json:"op"`
-	Subject  model.MachineID   `toml:"subject" json:"subject,omitempty"` // machine added or removed
-	Members  []Member          `toml:"members" json:"members"`
-	Recovery Member            `toml:"recovery" json:"recovery"`
-	Wrapped  model.Base64      `toml:"wrapped" json:"wrapped"` // age file: all epoch keys 1..Epoch
-	Signer   model.MachineID   `toml:"signer" json:"signer"`
-	Sig      model.Base64      `toml:"sig" json:"sig"` // Ed25519 over the canonical bytes with Sig empty
+	Enclave model.EnclaveName `toml:"enclave" json:"enclave"`
+	Seq     uint64            `toml:"seq" json:"seq"`
+	Prev    string            `toml:"prev" json:"prev"` // hex SHA-256 of the previous entry's signed bytes; empty at seq 1
+	Epoch   model.Epoch       `toml:"epoch" json:"epoch"`
+	// MinEpoch is the lowest epoch whose ciphertext members still open for
+	// delivery. Only a retire entry raises it, after the reseal commit.
+	MinEpoch model.Epoch     `toml:"min_epoch" json:"min_epoch"`
+	Op       Op              `toml:"op" json:"op"`
+	Subject  model.MachineID `toml:"subject" json:"subject,omitempty"` // machine added or removed
+	Members  []Member        `toml:"members" json:"members"`
+	Recovery Member          `toml:"recovery" json:"recovery"`
+	// KeyCommits holds, for each epoch 1..Epoch, the hex KeyCommit of its
+	// key. Every entry keeps the previous entry's list as its prefix, and
+	// Open checks the unwrapped keys against it, so no signer can swap the
+	// key of an earlier epoch.
+	KeyCommits []string        `toml:"key_commits" json:"key_commits"`
+	Wrapped    model.Base64    `toml:"wrapped" json:"wrapped"` // age file: all epoch keys 1..Epoch
+	Signer     model.MachineID `toml:"signer" json:"signer"`
+	Sig        model.Base64    `toml:"sig" json:"sig"` // Ed25519 over the canonical bytes with Sig empty
 }
 
 // LogDir returns the source directory of an enclave's key log.
@@ -142,9 +156,13 @@ func (m memPins) Get(e model.EnclaveName) (*Pin, error) {
 func (m memPins) Set(e model.EnclaveName, p Pin) error { m[e] = p; return nil }
 
 // Keyring holds one enclave's epoch keys on a member machine.
+//
+// Min is the lowest epoch the keyring opens; Open sets it from the head's
+// signed min_epoch. Strict and History return views with other floors.
 type Keyring struct {
 	Enclave model.EnclaveName
 	Current model.Epoch
+	Min     model.Epoch
 	keys    map[model.Epoch][]byte
 }
 
@@ -205,24 +223,51 @@ func (s *Set) OpenRegion(e model.EnclaveName, label, token string) ([]byte, erro
 	return r.OpenRegion(label, token)
 }
 
-// SealFile seals a whole file for an enclave under its current epoch. It
-// lets a *Set serve as the importer's Sealer.
-func (s *Set) SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error) {
+// SealFile seals a whole file for an enclave under its current epoch, bound
+// to its source path (sealed/<enclave>/...).
+func (s *Set) SealFile(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error) {
 	r, ok := s.ring(e)
 	if !ok {
 		return nil, ErrNotMember
 	}
-	return r.SealFile(plaintext)
+	return r.SealFile(path, plaintext)
 }
 
-// OpenFile opens a whole-file container of an enclave, sealed under any
-// epoch this machine holds.
-func (s *Set) OpenFile(e model.EnclaveName, container []byte) ([]byte, error) {
+// OpenFile opens a whole-file container of an enclave stored at path,
+// sealed under an epoch this view accepts.
+func (s *Set) OpenFile(e model.EnclaveName, path model.SourcePath, container []byte) ([]byte, error) {
 	r, ok := s.ring(e)
 	if !ok {
 		return nil, ErrNotMember
 	}
-	return r.OpenFile(container)
+	return r.OpenFile(path, container)
+}
+
+// Strict returns a view of s that opens only ciphertext of each enclave's
+// current epoch. Apply uses it for sealed content that is new to this
+// machine: after a remove, a removed member still holds the old keys, so
+// fresh content under an old epoch is held until a member reseals it.
+func (s *Set) Strict() *Set { return s.view(func(k *Keyring) model.Epoch { return k.Current }) }
+
+// History returns a view of s that opens every epoch it holds, retired ones
+// included. Use it only for bytes that are not delivered to $HOME: a merge
+// base, the previously applied source, a diff or log.
+func (s *Set) History() *Set { return s.view(func(*Keyring) model.Epoch { return 1 }) }
+
+func (s *Set) view(floor func(*Keyring) model.Epoch) *Set {
+	if s == nil {
+		return nil
+	}
+	out := &Set{Rings: make(map[model.EnclaveName]*Keyring, len(s.Rings))}
+	for e, k := range s.Rings {
+		if k == nil {
+			continue
+		}
+		v := *k
+		v.Min = floor(k)
+		out.Rings[e] = &v
+	}
+	return out
 }
 
 func (s *Set) ring(e model.EnclaveName) (*Keyring, bool) {

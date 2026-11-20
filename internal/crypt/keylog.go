@@ -5,12 +5,15 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -19,13 +22,23 @@ import (
 	"github.com/noahkiss/yadm/internal/model"
 )
 
-// ParseLogEntry decodes one entry file. It checks syntax only; VerifyLog checks trust.
+// ParseLogEntry decodes one entry file. It checks syntax only; VerifyLog
+// checks trust. The file must be exactly the canonical encoding
+// (MarshalLogEntry), so one entry has one spelling: no other base64, field
+// order, spacing or comments.
 func ParseLogEntry(b []byte) (LogEntry, error) {
 	var e LogEntry
 	d := toml.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&e); err != nil {
 		return LogEntry{}, fmt.Errorf("%w: %v", ErrInvalidLog, err)
+	}
+	canon, err := MarshalLogEntry(e)
+	if err != nil {
+		return LogEntry{}, fmt.Errorf("%w: %v", ErrInvalidLog, err)
+	}
+	if !bytes.Equal(canon, b) {
+		return LogEntry{}, fmt.Errorf("%w: entry is not in canonical form", ErrInvalidLog)
 	}
 	return e, nil
 }
@@ -64,6 +77,7 @@ func MarshalLogEntry(e LogEntry) ([]byte, error) {
 		return nil, err
 	}
 	fmt.Fprintf(&b, "epoch = %d\n", e.Epoch)
+	fmt.Fprintf(&b, "min_epoch = %d\n", e.MinEpoch)
 	if err := str("op", string(e.Op)); err != nil {
 		return nil, err
 	}
@@ -88,6 +102,18 @@ func MarshalLogEntry(e LogEntry) ([]byte, error) {
 		return nil, fmt.Errorf("recovery: %w", err)
 	}
 	b.WriteString("recovery = " + rs + "\n")
+	b.WriteString("key_commits = [")
+	for i, c := range e.KeyCommits {
+		q, err := tomlString(c)
+		if err != nil {
+			return nil, fmt.Errorf("key_commits: %w", err)
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(q)
+	}
+	b.WriteString("]\n")
 	fmt.Fprintf(&b, "wrapped = %q\n", base64.StdEncoding.EncodeToString(e.Wrapped))
 	if err := str("signer", string(e.Signer)); err != nil {
 		return nil, err
@@ -155,8 +181,10 @@ func PinOf(e LogEntry) (Pin, error) {
 //
 // Beyond the epoch rules, each op must change membership only as it says:
 // add appends exactly its subject, remove drops exactly its subject, rotate
-// keeps the members, and only recover (signed by the recovery identity) may
-// set an arbitrary member list. No entry may change the recovery identity.
+// and retire keep the members, and only recover may set an arbitrary member
+// list. The recovery identity signs only recover and set-recovery, and only
+// set-recovery changes the recovery identity. Each entry keeps the previous
+// key commitments as its prefix, and only retire raises min_epoch.
 func VerifyLog(entries []LogEntry, pin *Pin) (LogEntry, error) {
 	if len(entries) == 0 {
 		return LogEntry{}, fmt.Errorf("%w: empty key log", ErrInvalidLog)
@@ -204,6 +232,17 @@ func checkShape(e LogEntry) error {
 	if e.Epoch == 0 {
 		return fmt.Errorf("%w: entry %d has epoch 0", ErrInvalidLog, e.Seq)
 	}
+	if e.MinEpoch == 0 || e.MinEpoch > e.Epoch {
+		return fmt.Errorf("%w: entry %d has min_epoch %d outside 1..%d", ErrInvalidLog, e.Seq, e.MinEpoch, e.Epoch)
+	}
+	if len(e.KeyCommits) != int(e.Epoch) {
+		return fmt.Errorf("%w: entry %d commits to %d keys for %d epochs", ErrInvalidLog, e.Seq, len(e.KeyCommits), e.Epoch)
+	}
+	for _, c := range e.KeyCommits {
+		if len(c) != 64 || strings.Trim(c, "0123456789abcdef") != "" {
+			return fmt.Errorf("%w: entry %d has a malformed key commitment", ErrInvalidLog, e.Seq)
+		}
+	}
 	if len(e.Members) == 0 {
 		return fmt.Errorf("%w: entry %d has no members", ErrInvalidLog, e.Seq)
 	}
@@ -247,7 +286,7 @@ func checkEnclaveName(e model.EnclaveName) error {
 }
 
 func verifyFirst(e LogEntry) error {
-	if e.Op != OpCreate || e.Epoch != 1 || e.Prev != "" {
+	if e.Op != OpCreate || e.Epoch != 1 || e.MinEpoch != 1 || e.Prev != "" {
 		return fmt.Errorf("%w: entry 1 must be a create at epoch 1 with no prev", ErrInvalidLog)
 	}
 	if len(e.Members) != 1 || e.Signer != e.Members[0].Machine {
@@ -263,6 +302,9 @@ func verifyNext(prev LogEntry, prevFP string, e LogEntry) error {
 	// The signer's key comes from the previous entry, never from this one.
 	var signer Member
 	if e.Signer == RecoveryMachine {
+		if e.Op != OpRecover && e.Op != OpSetRecovery {
+			return fmt.Errorf("%w: entry %d: the recovery identity signs only recover and set-recovery, not %s", ErrBadSignature, e.Seq, e.Op)
+		}
 		signer = prev.Recovery
 	} else {
 		m, ok := findMember(prev.Members, e.Signer)
@@ -274,11 +316,17 @@ func verifyNext(prev LogEntry, prevFP string, e LogEntry) error {
 	if err := verifySig(e, signer); err != nil {
 		return err
 	}
-	if e.Recovery != prev.Recovery {
+	if e.Recovery != prev.Recovery && e.Op != OpSetRecovery {
 		return fmt.Errorf("%w: entry %d changes the recovery identity", ErrInvalidLog, e.Seq)
 	}
 	bad := func(why string) error {
 		return fmt.Errorf("%w: entry %d (%s): %s", ErrInvalidLog, e.Seq, e.Op, why)
+	}
+	if len(e.KeyCommits) < len(prev.KeyCommits) || !slices.Equal(e.KeyCommits[:len(prev.KeyCommits)], prev.KeyCommits) {
+		return bad("key commitments of earlier epochs changed")
+	}
+	if e.Op != OpRetire && e.MinEpoch != prev.MinEpoch {
+		return bad("only retire may change min_epoch")
 	}
 	switch e.Op {
 	case OpAdd:
@@ -308,12 +356,35 @@ func verifyNext(prev LogEntry, prevFP string, e LogEntry) error {
 		if !equalMembers(e.Members, prev.Members) {
 			return bad("rotate must keep the members")
 		}
+	case OpRetire:
+		if e.Epoch != prev.Epoch {
+			return bad("retire must keep the epoch")
+		}
+		if e.MinEpoch <= prev.MinEpoch {
+			return bad("retire must raise min_epoch")
+		}
+		if !equalMembers(e.Members, prev.Members) {
+			return bad("retire must keep the members")
+		}
 	case OpRecover:
 		if e.Signer != RecoveryMachine {
 			return fmt.Errorf("%w: entry %d: recover must be signed by the recovery identity", ErrBadSignature, e.Seq)
 		}
 		if e.Epoch != prev.Epoch+1 {
 			return bad("recover must start the next epoch")
+		}
+	case OpSetRecovery:
+		if e.Signer != RecoveryMachine {
+			return fmt.Errorf("%w: entry %d: set-recovery must be signed by the previous recovery identity", ErrBadSignature, e.Seq)
+		}
+		if e.Epoch != prev.Epoch {
+			return bad("set-recovery must keep the epoch")
+		}
+		if !equalMembers(e.Members, prev.Members) {
+			return bad("set-recovery must keep the members")
+		}
+		if e.Recovery == prev.Recovery {
+			return bad("set-recovery must name a new recovery identity")
 		}
 	default:
 		return bad("unknown or misplaced op")
@@ -434,4 +505,70 @@ func (p filePins) Set(e model.EnclaveName, pin Pin) error {
 		return err
 	}
 	return writeSecret(filepath.Join(dir, string(e)), append(b, '\n'))
+}
+
+// KeyCommit is the commitment to one epoch key that a key-log entry
+// carries: the hex SHA-256 of a domain tag, the enclave and the epoch, each
+// length-prefixed or fixed-size, and the key.
+func KeyCommit(e model.EnclaveName, epoch model.Epoch, key []byte) string {
+	h := sha256.New()
+	h.Write([]byte("yadm v1 epoch key\x00"))
+	var n [4]byte
+	binary.BigEndian.PutUint32(n[:], uint32(len(e)))
+	h.Write(n[:])
+	h.Write([]byte(e))
+	binary.BigEndian.PutUint32(n[:], uint32(epoch))
+	h.Write(n[:])
+	h.Write(key)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CheckLogAppendOnly reports whether next keeps every entry of old
+// unchanged: the same length or longer, with each entry of old present at
+// its seq with the same fingerprint and signature. Sync calls it with the
+// log of the previous tree and the log of a fetched commit, and refuses a
+// commit that rewrites or drops a key-log entry (ErrRewritten). A signed
+// competing entry at an existing seq is exactly how a removed member forks
+// the log for machines whose pin has not reached the removal yet.
+func CheckLogAppendOnly(old, next []LogEntry) error {
+	if len(next) < len(old) {
+		return fmt.Errorf("%w: log shrank from %d to %d entries", ErrRewritten, len(old), len(next))
+	}
+	for i, o := range old {
+		n := next[i]
+		fo, err := Fingerprint(o)
+		if err != nil {
+			return err
+		}
+		fn, err := Fingerprint(n)
+		if err != nil {
+			return err
+		}
+		if fo != fn || !bytes.Equal(o.Sig, n.Sig) {
+			return fmt.Errorf("%w: entry %d of %s changed", ErrRewritten, o.Seq, o.Enclave)
+		}
+	}
+	return nil
+}
+
+// ParseLogPath splits a source path keys/<enclave>/<seq>.toml, as LogPath
+// writes it. ok is false for any other path, a non-canonical seq included.
+func ParseLogPath(p model.SourcePath) (model.EnclaveName, uint64, bool) {
+	rest, ok := strings.CutPrefix(string(p), "keys/")
+	if !ok {
+		return "", 0, false
+	}
+	enc, file, ok := strings.Cut(rest, "/")
+	if !ok || checkEnclaveName(model.EnclaveName(enc)) != nil {
+		return "", 0, false
+	}
+	num, ok := strings.CutSuffix(file, ".toml")
+	if !ok {
+		return "", 0, false
+	}
+	seq, err := strconv.ParseUint(num, 10, 64)
+	if err != nil || seq == 0 || LogPath(model.EnclaveName(enc), seq) != p {
+		return "", 0, false
+	}
+	return model.EnclaveName(enc), seq, true
 }

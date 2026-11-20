@@ -152,8 +152,8 @@ func regionToken(body []byte) (string, bool) {
 	return t, true
 }
 
-// regionsToTarget opens the regions of a source file.
-func regionsToTarget(src []byte, s Sealer) ([]byte, error) {
+// regionsToTarget opens the regions of the source file at path.
+func regionsToTarget(src []byte, path model.SourcePath, s Sealer) ([]byte, error) {
 	regs, vio := parseRegions(src)
 	if len(vio) > 0 {
 		return nil, fmt.Errorf("source regions: %s: %s", vio[0].Path, vio[0].Detail)
@@ -169,8 +169,11 @@ func regionsToTarget(src []byte, s Sealer) ([]byte, error) {
 				return nil, fmt.Errorf("source %s: body is not one sealed token line", r.path())
 			}
 			if s.CanOpen(r.enclave) {
-				var err error
-				plain, err = s.OpenRegion(r.enclave, r.label, tok)
+				name, err := partName(path, r.label)
+				if err != nil {
+					return nil, err
+				}
+				plain, err = s.OpenRegion(r.enclave, name, tok)
 				if err != nil {
 					return nil, fmt.Errorf("open %s: %w", r.path(), err)
 				}
@@ -183,7 +186,7 @@ func regionsToTarget(src []byte, s Sealer) ([]byte, error) {
 
 // regionsToSource seals the regions of a target. It returns the sealed text,
 // the region plaintexts for the leak check, and any Violations.
-func regionsToSource(target, prev []byte, s Sealer) ([]byte, [][]byte, []Violation, error) {
+func regionsToSource(target, prev []byte, path model.SourcePath, s Sealer) ([]byte, [][]byte, []Violation, error) {
 	regs, vio := parseRegions(target)
 	if len(vio) > 0 {
 		return nil, nil, vio, nil
@@ -216,7 +219,11 @@ func regionsToSource(target, prev []byte, s Sealer) ([]byte, [][]byte, []Violati
 		body := target[r.bodyFrom:r.bodyTo]
 		var repl []byte
 		if s.CanOpen(r.enclave) {
-			tok, err := s.SealRegion(r.enclave, r.label, body)
+			name, err := partName(path, r.label)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tok, err := s.SealRegion(r.enclave, name, body)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("seal %s: %w", r.path(), err)
 			}

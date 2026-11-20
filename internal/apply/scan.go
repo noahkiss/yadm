@@ -209,8 +209,13 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	if root.Enclave != "" {
 		scope = model.Scope(root.Enclave)
 	}
-	managed := make(map[model.Target]bool, len(st.Targets))
+	// Managed files and the baseline (files that predate their root) are
+	// never new. Both maps are copied: the walk may outlive this call.
+	managed := make(map[model.Target]bool, len(st.Targets)+len(st.Baseline))
 	for t := range st.Targets {
+		managed[t] = true
+	}
+	for t := range st.Baseline {
 		managed[t] = true
 	}
 	var (
