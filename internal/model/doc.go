@@ -13,6 +13,7 @@
 //   - HoldID, SameHold, KeepSince: the stable hold id, shared by every package that makes holds
 //   - Status, TaskResult: the record published in a machine's status ref
 //   - Duration, Base64: text forms ("2h", base64) for TOML and JSON fields
+//   - ShellQuote, HasControl: suggested commands quote every path; names with control characters are refused
 //   - ErrNotImplemented: the sentinel every stub returns
 //
 // Import direction for the module: model is at the bottom; cli is at the top.

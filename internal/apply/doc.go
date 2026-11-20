@@ -31,12 +31,19 @@
 //   - Every command starts with Scan; scanning is a stat pass that hashes only
 //     on a stat mismatch, plus a full hash pass at most once a day.
 //   - The manifest cannot weaken secrecy on its own (docs/design.md 7.4). The
-//     state records each target's protection (enclave, sealed keys, regions);
-//     a weaker manifest entry holds the target with model.HoldSealGuard in
-//     apply and capture until AllowProtection. An owned root that is new or
-//     changed its enclave takes effect only after AllowRoot
-//     (model.HoldRootUntrusted until then); files already in it go into
-//     State.Baseline and are never captured automatically.
+//     state records each target's protection (enclave, sealed keys, regions,
+//     and the machine-local keys of keep, drop and volatile) and the explicit
+//     mode of a file with enclave plaintext; a weaker manifest entry or a
+//     wider mode holds the target with model.HoldSealGuard in apply and
+//     capture until AllowProtection. A new keep, drop or volatile entry over
+//     a file yadm never wrote is held with model.HoldNeedsDecision. An owned
+//     root that is new or changed its enclave takes effect, for capture and
+//     delivery, only after AllowRoot (model.HoldRootUntrusted until then);
+//     files already in it, or copied in by adopt, go into State.Baseline and
+//     are never captured automatically.
+//   - A target whose parent directory resolves outside $HOME (InsideHome,
+//     ErrOutsideHome), or whose name holds a control character, is held:
+//     never read, written or captured.
 //   - Sealed content new to this machine opens only under the enclave's
 //     current epoch; content that does not open is held, never fatal. An
 //     explicit mode wider than an enclave file's source mode is held.
@@ -48,20 +55,21 @@
 //
 //	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs }
 //	func (e *Engine) Generated(ctx) ([]model.Target, error) // files on disk matching a task's outputs
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; RenderHash; ApplyKey; ChangedAt }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
 //	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
-//	const KindProtection, KindRoot extexec.Kind // allow-list kinds
+//	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
+//	func InsideHome(home, p string) error; var ErrOutsideHome // p's real parent directory stays under $HOME
 //	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
 //	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error
 //	type Rules interface{ ToTarget; ToSource; Reseal } // default: package rules
 //	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
-//	func ExpandRoots(man, plan, tree); const RootIndex // owned roots share their entry-less source files; Load calls it
+//	func ExpandRoots(man, plan, tree, allowed); const RootIndex // owned roots share their entry-less source files; Load calls it with this machine's accepted or allowed roots
 //	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
 //	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
 //	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write
