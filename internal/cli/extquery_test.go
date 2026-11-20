@@ -51,6 +51,9 @@ drop = ["list[?name==gen]"]
 target = ".config/tool/other"
 when = "!cond:desk"
 
+[[file]]
+target = ".ssh/config.d/extra"
+
 [[root]]
 path = ".config/tool"
 
@@ -67,6 +70,7 @@ func queryTree() map[string]string {
 		"conds.toml":                "[conditions]\ngui.any = \"os:linux | os:darwin\"\n",
 		"files/.config/tool/config": "{\"a\": 1}\n",
 		"files/.config/tool/other":  "other\n",
+		"files/.ssh/config.d/extra": "Host x\n",
 	}
 }
 
@@ -89,8 +93,12 @@ func TestManifestAndEvalQueries(t *testing.T) {
 		t.Errorf("outputs: %v", q.Outputs)
 	}
 	es := q.Machines[0].Entries
-	if len(es) != 1 || es[0].Target != ".config/tool/config" || es[0].Mode != "0600" || es[0].Merge != "text" || es[0].Scope != "shared" {
+	if len(es) != 2 || es[0].Target != ".config/tool/config" || es[0].Mode != "0600" || es[0].Merge != "text" || es[0].Scope != "shared" {
 		t.Fatalf("entries: %+v", es)
+	}
+	// No explicit mode under .ssh: owner-only, as apply writes it.
+	if es[1].Target != ".ssh/config.d/extra" || es[1].Mode != "0600" {
+		t.Errorf("private target mode: %+v", es[1])
 	}
 	if es[0].When != "cond:desk" || es[0].WhenExpanded != "type:work & (os:linux | os:darwin)" {
 		t.Errorf("when: %q / %q", es[0].When, es[0].WhenExpanded)
@@ -107,7 +115,7 @@ func TestManifestAndEvalQueries(t *testing.T) {
 	if len(q.Machines) != 2 || q.Machines[1].Name != "host-b" || q.Machines[1].Observed != observedNone {
 		t.Fatalf("fleet: %+v", q.Machines)
 	}
-	if es := q.Machines[1].Entries; len(es) != 1 || es[0].Target != ".config/tool/other" || es[0].WhenExpanded != "!(type:work & (os:linux | os:darwin))" {
+	if es := q.Machines[1].Entries; len(es) != 2 || es[0].Target != ".config/tool/other" || es[0].WhenExpanded != "!(type:work & (os:linux | os:darwin))" {
 		t.Errorf("host-b entries: %+v", es)
 	}
 	q = decode[manifestQuery](t, yadmOK(t, "manifest", "--as", "host-b").Data)

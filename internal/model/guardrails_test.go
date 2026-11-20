@@ -131,8 +131,12 @@ func boundaryViolations(pkgs []listedPackage) []string {
 	}
 	var out []string
 	for _, pkg := range pkgs {
-		name := pkg.ImportPath[strings.LastIndex(pkg.ImportPath, "/")+1:]
-		if !strings.HasPrefix(pkg.ImportPath, modulePath+"/cmd/") || !strings.HasPrefix(name, "yadm-") || extensionExempt[name] != "" {
+		rest, ok := strings.CutPrefix(pkg.ImportPath, modulePath+"/cmd/")
+		if !ok {
+			continue
+		}
+		name, _, _ := strings.Cut(rest, "/") // cmd/yadm-x/sub counts as yadm-x
+		if !strings.HasPrefix(name, "yadm-") || extensionExempt[name] != "" {
 			continue
 		}
 		for _, imp := range pkg.Imports {
@@ -150,9 +154,11 @@ func TestBoundaryViolations(t *testing.T) {
 		{ImportPath: modulePath + "/cmd/yadm-oracle", Imports: []string{modulePath + "/internal/oracle"}},
 		{ImportPath: modulePath + "/cmd/yadm-good", Imports: []string{"os", modulePath + "/internal/cond", modulePath + "/internal/extexec"}},
 		{ImportPath: modulePath + "/cmd/yadm-bad", Imports: []string{modulePath + "/internal/rules", modulePath + "/internal/store"}},
+		{ImportPath: modulePath + "/cmd/yadm-good/gen", Imports: []string{modulePath + "/internal/crypt"}},
+		{ImportPath: modulePath + "/cmd/yadm-oracle/sub", Imports: []string{modulePath + "/internal/oracle"}},
 	}
 	got := boundaryViolations(pkgs)
-	if len(got) != 1 || !strings.Contains(got[0], "yadm-bad imports "+modulePath+"/internal/store") {
-		t.Fatalf("violations = %q, want one for yadm-bad's store import", got)
+	if len(got) != 2 || !strings.Contains(got[0], "yadm-bad imports "+modulePath+"/internal/store") || !strings.Contains(got[1], "yadm-good/gen imports "+modulePath+"/internal/crypt") {
+		t.Fatalf("violations = %q, want yadm-bad's store and yadm-good/gen's crypt imports", got)
 	}
 }

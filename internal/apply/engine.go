@@ -226,6 +226,10 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	return sourceDefaultMode(snap, r)
 }
 
+// TargetMode is the mode apply writes r's target with in snap: an explicit
+// `mode`, else the source's (0755 or 0644), owner-only under .ssh and .gnupg.
+func TargetMode(snap *Snapshot, r manifest.Resolved) fs.FileMode { return modeOf(snap, r) }
+
 // sourceDefaultMode is the mode a target gets from its source alone.
 func sourceDefaultMode(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	plain := r

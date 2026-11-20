@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
@@ -175,10 +176,9 @@ func resolveFor(m *machineEnv, pub map[model.MachineID]model.Status, id model.Ma
 	for _, t := range targets {
 		r := plan.Targets[t]
 		e := r.Entry
-		exec := m.snap.Tree[r.Source].Mode&0o111 != 0
 		me := manifestEntry{
 			Target: t, Source: r.Source, Index: r.Index, When: e.When, WhenExpanded: e.When,
-			Mode: fmt.Sprintf("%04o", uint32(r.FileMode(exec))), Enclave: e.Enclave, Scope: e.Scope(),
+			Mode: fmt.Sprintf("%04o", uint32(apply.TargetMode(m.snap, r))), Enclave: e.Enclave, Scope: e.Scope(),
 			Merge: string(e.Merge), Template: e.Template, Review: e.Review, Unit: r.Unit,
 		}
 		if x := plan.When(r.Index); x != nil && e.When != "" {
