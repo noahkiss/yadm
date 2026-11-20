@@ -540,6 +540,11 @@ func reportHolds(st *apply.State, pend []model.Target) []model.Hold {
 	for _, t := range pend {
 		skip[t] = true
 	}
+	for _, h := range st.Holds {
+		if h.Reason == model.HoldConflict && h.Target != "" {
+			skip[h.Target] = true // the conflict hold says it all
+		}
+	}
 	out := []model.Hold{}
 	for _, h := range st.Holds {
 		if h.Reason == model.HoldDrifted && skip[h.Target] {
