@@ -14,7 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/secrecytest"
 )
 
-// Hook payloads in the shapes Claude Code documents for its hook events
+// Hook payloads in the shapes docs/hooks.md documents for its hook events
 // (common fields plus each event's own). Paths are filled per test.
 const (
 	payloadWrite = `{

@@ -52,8 +52,9 @@ const (
 	DecisionAsk   = "ask"
 )
 
-// HookInput is what a harness writes on the hook's stdin: the Claude Code
-// hook envelope, plus optional normalized fields any harness glue may set.
+// HookInput is what a harness writes on the hook's stdin: the hook envelope
+// docs/hooks.md documents, plus optional normalized fields any harness glue
+// may set.
 // Unknown fields are ignored.
 type HookInput struct {
 	HookEventName  string          `json:"hook_event_name"`
