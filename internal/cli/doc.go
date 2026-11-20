@@ -20,6 +20,9 @@
 //
 //	version, where                 cli (implemented)
 //	machine, why, managed          apply.Engine.Load -> Snapshot (Fleet, Plan.Why); explain: cli over the same
+//	manifest [--as|--fleet]        manifest.Resolve per fleet machine over the loaded snapshot; reads no file content
+//	eval <cond> [--as]             cond.Parse with the named conditions, cond.Expand; another machine's observed
+//	                               facts only from plain-published status refs
 //	init, clone                    store.Clone, crypt.GenerateIdentity + Save, schedule.ForOS().Install
 //	status                         apply.Engine.Scan, apply.Engine.Holds, store.IsAncestor
 //	apply                          apply.Engine.Load, Plan, Apply
@@ -57,6 +60,7 @@
 //	type Envelope struct{ Schema int; Command string; OK bool; Data any; Next []string; Error *ErrorBody }
 //	type ErrorBody struct{ Code, Message string; Details any }
 //	const ExitOK, ExitError, ExitUsage, ExitAttention, ExitLocked, ExitNotImplemented, ExitRefused
+//	const ManifestQuerySchema, EvalQuerySchema // data schemas of the manifest and eval queries
 //	type Paths struct{ Source, State, Config string }
 //	func DefaultPaths() (Paths, error)
 //	func NewRoot(version string) *cobra.Command

@@ -38,6 +38,11 @@ func (a *app) register(root *cobra.Command) {
 	leaf(root, "machine", "Show this machine: fleet entry, observed facts, enclaves", a.cmdMachine)
 	exact(leaf(root, "why <path>", "Explain how the manifest treats a path", a.cmdWhy), 1)
 	exact(leaf(root, "managed <path>", "Report whether a path is managed on this machine", a.cmdManaged), 1)
+	mf := leaf(root, "manifest", "Show the resolved manifest per machine (read-only)", a.cmdManifest)
+	mf.Flags().String("as", "", "resolve for this fleet machine")
+	mf.Flags().Bool("fleet", false, "resolve for every fleet machine")
+	ev := exact(leaf(root, "eval <condition>", "Evaluate a condition for a machine", a.cmdEval), 1)
+	ev.Flags().String("as", "", "evaluate for this fleet machine")
 	exact(leaf(root, "explain <command>", "Describe what a command would do here, step by step", a.cmdExplain), 1)
 
 	for _, use := range []string{"init <remote>", "clone <remote>"} {
