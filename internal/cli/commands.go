@@ -324,7 +324,7 @@ func installSchedule(ctx context.Context, skip bool) scheduleOutcome {
 const ScheduleInterval = time.Minute
 
 func scheduleSpec() schedule.Spec {
-	return schedule.Spec{Binary: hooks.binary(), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
+	return schedule.Spec{Binary: schedule.StableBinary(hooks.binary()), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
 }
 
 // lockedResult suggests a retry when err is the lock timeout.
