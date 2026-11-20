@@ -597,6 +597,19 @@ func TestCheckSecrecyConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refs/notes/textconv") {
 		t.Fatalf("textconv notes ref: %v", err)
 	}
+	rawGit(t, a.Dir(), "update-ref", "-d", "refs/notes/textconv/sealed")
+	for _, kv := range [][2]string{{"filter.sealed.clean", "tool --clean"}, {"merge.sealed.driver", "tool %O %A %B"}} {
+		rawGit(t, a.Dir(), "config", kv[0], kv[1])
+		err = a.CheckSecrecyConfig(ctx)
+		if err == nil || !strings.Contains(err.Error(), kv[0]) {
+			t.Fatalf("%s: %v", kv[0], err)
+		}
+		rawGit(t, a.Dir(), "config", "--unset", kv[0])
+	}
+	if err := a.CheckSecrecyConfig(ctx); err != nil {
+		t.Fatalf("clean again: %v", err)
+	}
+	rawGit(t, a.Dir(), "update-ref", "refs/notes/textconv/sealed", string(head))
 	// The harness agrees on both checks.
 	probs, _ := secrecytest.SecrecyConfigProblems(a.Dir())
 	if len(probs) == 0 {

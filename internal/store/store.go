@@ -132,7 +132,8 @@ type Store interface {
 	// SyncWorktree moves the clone's worktree and index to rev; ErrDirty if it has local edits.
 	SyncWorktree(ctx context.Context, rev model.CommitID) error
 	// CheckSecrecyConfig fails if any setting could write plaintext into the repo,
-	// such as diff.*.cachetextconv or a refs/notes/textconv ref.
+	// such as diff.*.cachetextconv, a refs/notes/textconv ref, or a filter or
+	// merge driver in the clone's own config.
 	CheckSecrecyConfig(ctx context.Context) error
 	// ListRefs returns every ref under prefix (for example "refs/yadm/status/")
 	// with the commit it points at.
@@ -828,7 +829,8 @@ func (r *Repo) recordWorktree(id model.CommitID) error {
 
 // CheckSecrecyConfig fails if any setting could write plaintext into the
 // repository: a true diff.*.cachetextconv in any config scope the clone sees,
-// or a ref under refs/notes/textconv.
+// a ref under refs/notes/textconv, or a filter.*.clean/smudge/process or
+// merge.*.driver in the clone's local config.
 func (r *Repo) CheckSecrecyConfig(ctx context.Context) error {
 	var problems []string
 	out, err := r.git(ctx, "config", "--null", "--get-regexp", `^diff\.(.*\.)?cachetextconv$`)
@@ -844,6 +846,20 @@ func (r *Repo) CheckSecrecyConfig(ctx context.Context) error {
 			problems = append(problems, "config "+key+" = "+val)
 		}
 	}
+	// The tool installs no filter or merge driver (design section 1). One in
+	// the clone's own config would see blobs the tool hands git. Global
+	// filters such as an LFS setup are left alone: they act only on paths
+	// the repository's attributes assign them to.
+	local, err := r.git(ctx, "config", "--local", "--null", "--get-regexp", `^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$`)
+	if err != nil && exitCode(err) != 1 {
+		return err
+	}
+	for _, rec := range strings.Split(string(local), "\x00") {
+		key, _, _ := strings.Cut(rec, "\n")
+		if key != "" {
+			problems = append(problems, "config "+key)
+		}
+	}
 	refs, err := r.git(ctx, "for-each-ref", "--format=%(refname)", "refs/notes/textconv")
 	if err != nil {
 		return err
@@ -853,7 +869,7 @@ func (r *Repo) CheckSecrecyConfig(ctx context.Context) error {
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
-		return fmt.Errorf("secrecy: textconv cache can write plaintext into the repository: %s", strings.Join(problems, "; "))
+		return fmt.Errorf("secrecy: a textconv cache, filter or merge driver can write plaintext into the repository: %s", strings.Join(problems, "; "))
 	}
 	return nil
 }
