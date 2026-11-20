@@ -153,8 +153,53 @@ sig = "AQID"
 }
 
 func TestBuild(t *testing.T) {
-	f := Build(t) // skips until crypt is implemented
+	f := Build(t)
 	if len(f.Identities) != 3 {
 		t.Fatalf("identities: %d", len(f.Identities))
+	}
+	// The key logs on disk parse and verify, and each enclave's members open them.
+	for e, members := range Members {
+		var log []crypt.LogEntry
+		for seq := uint64(1); ; seq++ {
+			b, err := os.ReadFile(filepath.Join(f.Root, string(crypt.LogPath(e, seq))))
+			if os.IsNotExist(err) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry, err := crypt.ParseLogEntry(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log = append(log, entry)
+		}
+		head, err := crypt.VerifyLog(log, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", e, err)
+		}
+		for _, m := range members {
+			if _, err := crypt.Open(head, f.Identities[m]); err != nil {
+				t.Errorf("%s: member %s cannot open: %v", e, m, err)
+			}
+		}
+	}
+	// No placeholder is left, and no canary is in the tree.
+	err := filepath.WalkDir(f.Root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, _ := os.ReadFile(p)
+		if bytes.Contains(b, []byte("@@")) {
+			t.Errorf("%s: placeholder left", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := os.ReadFile(filepath.Join(f.Root, "sealed", "personal", ".config", "notes", "private.md"))
+	if err != nil || !crypt.IsSealedFile(sealed) {
+		t.Fatalf("sealed file: %v", err)
 	}
 }
