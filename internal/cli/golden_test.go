@@ -70,6 +70,7 @@ func normalize(t *testing.T, raw []byte, root string) []byte {
 			s = reMID.ReplaceAllString(s, "<machine-id>")
 			s = reAge.ReplaceAllString(s, "<recipient>")
 			s = reSignArg.ReplaceAllString(s, "--sign-key <sign_key>")
+			s = strings.ReplaceAll(s, "a systemd user timer", "a launchd user agent") // the schedule kind is per-OS
 			return s
 		}
 		return v
