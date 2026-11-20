@@ -10,6 +10,7 @@ import (
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/cond"
+	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/store"
@@ -25,7 +26,7 @@ const (
 // Where a query's observed facts come from.
 const (
 	observedLocal     = "local"     // this machine's own local state
-	observedPublished = "published" // another machine's collectors published plain
+	observedPublished = "published" // another machine's published facts: plain, and sealed ones this machine opens
 	observedNone      = "none"      // another machine that published none
 )
 
@@ -73,7 +74,8 @@ type manifestQuery struct {
 }
 
 // machineCtx builds the condition Context of fleet machine id. This machine
-// uses its own observed facts; another uses only what it published plain.
+// uses its own observed facts; another uses what it published plain, and on
+// a member the sealed facts of its enclaves (see statuses).
 func machineCtx(m *machineEnv, published map[model.MachineID]model.Status, id model.MachineID) (model.Context, string) {
 	if id == m.local.Machine {
 		return m.snap.Context, observedLocal
@@ -88,13 +90,17 @@ func machineCtx(m *machineEnv, published map[model.MachineID]model.Status, id mo
 	return ctx, observedNone
 }
 
-// statuses reads every status ref; a failure reads as none published.
+// statuses reads every status ref for a read-only query; a failure reads as
+// none published. Each record's Observed holds what this machine sees
+// (fleet.WithVisible): the plain facts, plus the sealed facts of every
+// enclave it is a member of. The records are never published.
 func statuses(ctx context.Context, m *machineEnv) map[model.MachineID]model.Status {
 	all, err := store.StatusRefs(m.repo, m.local.Machine).ReadAll(ctx)
 	if err != nil {
 		return nil
 	}
-	return all
+	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Keys)
+	return visible
 }
 
 // pickMachines returns the machine ids a query covers: --fleet gives every
@@ -211,8 +217,9 @@ type evalQuery struct {
 	Result    bool            `json:"result"`
 	Observed  string          `json:"observed"`
 	// Unavailable lists the collectors the condition reads that this query
-	// could not see: another machine's collectors that were not published
-	// plain. Their observed: terms evaluate to false.
+	// could not see: another machine's collectors that were neither published
+	// plain nor sealed for an enclave this machine is a member of. Their
+	// observed: terms evaluate to false.
 	Unavailable []string `json:"unavailable"`
 	Note        string   `json:"note,omitempty"`
 }
@@ -250,7 +257,7 @@ func (a *app) cmdEval(cmd *cobra.Command, args []string) (result, error) {
 			}
 		}
 		if len(q.Unavailable) > 0 {
-			q.Note = "observed facts of another machine are visible only when its collector publishes plain; " +
+			q.Note = "observed facts of another machine are visible only when its collector publishes plain, or sealed for an enclave this machine is a member of; " +
 				strings.Join(q.Unavailable, ", ") + " read as false here"
 		}
 	}

@@ -32,7 +32,7 @@ Fields are only added within a schema version. An extension ignores fields it do
 ## Queries
 
 - `yadm manifest --json [--as <machine> | --fleet]`: resolved entries per machine with target, source, `when` and `when_expanded`, mode, enclave, scope, merge and a rules summary, plus roots, applying tasks and every task's `outputs`. Read-only; it prints no plaintext.
-- `yadm eval '<cond>' --json [--as <machine>]`: `result`, `expanded`, `names`. For another machine, `unavailable` lists the collectors it did not publish `plain`; their terms read false.
+- `yadm eval '<cond>' --json [--as <machine>]`: `result`, `expanded`, `names`. For another machine, `unavailable` lists the collectors it published neither `plain` nor `sealed:<enclave>` for an enclave this machine is a member of; their terms read false.
 - `yadm why <path> --json`, `yadm managed <path> --json`, `yadm machine --json`, `yadm where --json`.
 - `yadm status --json`: `generated` lists the files task outputs cover.
 

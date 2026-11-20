@@ -16,7 +16,9 @@
 //     output is stored locally and, per the collector's publish mode, in the
 //     machine's status ref. Templates and conditions read only this machine's
 //     observed facts, from local state, so a render never depends on another
-//     machine's status ref.
+//     machine's status ref. A member of an enclave opens the facts other
+//     machines sealed for it (OpenAll, Visible) for read-only queries; a
+//     non-member gets none.
 //
 // Exported API:
 //
@@ -36,6 +38,9 @@
 //	func CollectWith(ctx, f, mctx, r, allowed, base extexec.Request) (...) // base carries source and commit
 //	func Published(f *File, facts map[string]model.ObservedFact, s FactSealer) (plain map[string]model.ObservedFact, sealed map[model.EnclaveName][]byte, problems []error)
 //	func OpenSealed(st model.Status, e model.EnclaveName, o FactOpener) (map[string]model.ObservedFact, error)
+//	func OpenAll(f *File, st model.Status, o FactOpener) (map[model.EnclaveName]map[string]model.ObservedFact, []error)
+//	func Visible(f *File, st model.Status, o FactOpener, opened map[model.EnclaveName]map[string]model.ObservedFact) map[string]model.ObservedFact
+//	func WithVisible(f *File, statuses map[model.MachineID]model.Status, o FactOpener) (map[model.MachineID]model.Status, []error)
 //	type StatusRefs interface{ ReadAll(ctx) (map[model.MachineID]model.Status, error); Publish(ctx, model.Status) error }
 //	func NewMemoryStatusRefs(self model.MachineID, seed map[model.MachineID]model.Status) *MemoryStatusRefs
 //	func StatusRef(id model.MachineID) string

@@ -177,7 +177,7 @@ Resolution for one machine:
 
 `yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it. When a `when` names a condition, `when_expanded` (winning entry) and `expanded` (each rejection) give it with every named condition inlined.
 
-`yadm manifest --json [--as <machine> | --fleet]` resolves the manifest for this machine, another fleet machine or every one. Per machine it returns each entry's target, source, `when` (raw and expanded), mode, enclave, scope, merge policy, a rules summary (format, keep, drop, volatile, seal key paths with their enclave, regions), and the owned roots and applying tasks. A machine whose resolve fails carries `error`. The query reads no file content, so it prints no plaintext. Another machine's observed facts come only from collectors it published `plain`; `observed` says which source applied (`local`, `published`, `none`).
+`yadm manifest --json [--as <machine> | --fleet]` resolves the manifest for this machine, another fleet machine or every one. Per machine it returns each entry's target, source, `when` (raw and expanded), mode, enclave, scope, merge policy, a rules summary (format, keep, drop, volatile, seal key paths with their enclave, regions), and the owned roots and applying tasks. A machine whose resolve fails carries `error`. The query reads no file content, so it prints no plaintext. Another machine's observed facts come from collectors it published `plain`, and from collectors it published `sealed:<enclave>` when this machine is a member of that enclave (section 11); `observed` says which source applied (`local`, `published`, `none`).
 
 ## 5. Conditions and templates
 
@@ -193,7 +193,7 @@ observed:packages=tool-one
 ```
 
 - `cond:NAME` stands for a named condition. The manifest's `[conditions]` table maps names to conditions; a name is dot-separated segments of letters, digits, `_` and `-`, so `editor.gui = "…"` and `"editor.gui" = "…"` name the same condition. `include` lists source files (no glob, not under `sealed/` or `keys/`) whose own `[conditions]` tables load too; other tables in them are ignored, and they cannot include further. A definition may use `cond:` itself. A cycle, an unknown name or a name defined twice (across files too) fails the load with the file and the name. Templates may use `cond:` in `{% if %}`; collector `when`s, which the fleet file holds, may not.
-- `yadm eval '<cond>' --json [--as <machine>]` evaluates a condition with the named conditions and returns the result, the expansion and the names used. With `--as` another machine, observed facts are only those it published `plain`; `unavailable` lists the collectors the condition reads that it cannot see, and those terms are false.
+- `yadm eval '<cond>' --json [--as <machine>]` evaluates a condition with the named conditions and returns the result, the expansion and the names used. With `--as` another machine, observed facts are those it published `plain`, plus those it published `sealed:<enclave>` when this machine is a member of that enclave; `unavailable` lists the collectors the condition reads that it cannot see, and those terms are false.
 - `machine:` matches a name or nickname.
 - Parsing checks every type, fact key and collector name against the fleet. A typo fails at load time.
 - A fact key the fleet knows but this machine lacks evaluates `fact:k` and `fact:k=v` to false.
@@ -537,12 +537,20 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
 
 `yadm fleet list --json` reads every status ref and flags machines whose last sync is older than a day. `yadm fleet diff <collector> --json` compares a published collector across machines: the union of items, what each machine lacks, and machines with no value.
 
+A member of an enclave reads the facts other machines sealed for it:
+
+- `fleet list` and `fleet show` keep `status` as the published record. Each row adds `sealed_observed`, the opened facts per enclave, and `sealed_errors` for a member's enclave whose facts fail to open.
+- `fleet diff`, `eval --as` and `manifest --as` or `--fleet` read the opened facts as that machine's observed facts.
+- A reader opens only the enclaves it is a member of. It takes an opened fact only when `fleet.toml` declares its collector `sealed:<that enclave>`, and for such a collector it ignores a plain value, which any writer can publish.
+- A non-member sees only the plain facts. Its output never holds another enclave's facts.
+- The sealed facts are bound to their enclave and epoch, not to the machine whose status ref carries them. A writer can copy one machine's sealed facts into its own status ref, and members then read them as that machine's.
+
 Observed facts:
 
 - A collector is a name, a command, a timeout and a `when` condition in `fleet.toml`.
 - It runs on sync through the exec contract. Line output is normalized: trimmed, empty lines dropped, sorted, de-duplicated. A JSON response may carry `items` or `data`.
 - `publish = "local"` (default) keeps the result in local state. `plain` also puts it in the status ref, readable by every machine. `sealed:<enclave>` puts it there sealed for that enclave.
-- Templates and conditions read only this machine's own observed facts, from local state.
+- Templates, and conditions evaluated for this machine, read only its own observed facts, from local state.
 - A failed collector records its error and never fails the sync.
 
 ## 12. Tasks, checks, collectors and extensions
@@ -679,7 +687,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded, last sync age, holds, secrecy config |
-| `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff` |
+| `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |
@@ -728,7 +736,7 @@ Adopt runs no task: no path task, unit reload or first-apply task. `--allow-task
 - Every machine can push. A non-member is a writer, not only a reader.
 - An enclave protects against reading. A non-member can still delete or roll back sealed files, edit shared scripts members run, or forge a `Machine:` trailer. The notify hook reports non-member commits that touch an enclave; members see them in review.
 - Key-log changes are signed and chained, so a writer cannot add itself or substitute a key. Key commitments stop a signer from swapping an earlier epoch's key. Key-log files are append-only in history, so a removed member cannot replace an entry for a machine that has not pinned the removal.
-- A writer can move or swap sealed blobs, values and regions; each is bound to its path and key, so a moved one fails to open and is held.
+- A writer can move or swap sealed blobs, values and regions; each is bound to its path and key, so a moved one fails to open and is held. Sealed observed facts are the exception: they are bound to the enclave only, so a writer can copy them between status refs (section 11).
 - Task, check and collector definitions run only after a local allow. So do a manifest change that weakens a target's protection (enclave, seals, regions, an explicit mode, or the machine-local keys of `keep`, `drop` and `volatile`) and a new or changed owned root.
 - A writer can push `refs/yadm/reviewed/<scope>`. A machine never takes a fetched reviewed ref that skips commits it has not reviewed.
 - A writer chooses target names. Suggested commands shell-quote them, and names with control characters are held.
