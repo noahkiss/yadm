@@ -57,8 +57,9 @@ func TestContractsCompose(t *testing.T) {
 	ni("manifest.Parse", err)
 	_, err = eng.Render("t", nil, model.Context{})
 	ni("render", err)
-	_, err = rules.ToTarget(nil, nil, rules.Spec{}, keys)
-	ni("rules.ToTarget", err)
+	if _, err = rules.ToTarget(nil, nil, rules.Spec{}, keys); err != nil {
+		t.Errorf("rules.ToTarget: %v", err)
+	}
 	_, err = crypt.LoadIdentity(t.TempDir())
 	ni("crypt.LoadIdentity", err)
 	_, err = runner.Run(ctx, extexec.Spec{}, extexec.Request{})
@@ -83,8 +84,9 @@ func TestContractsCompose(t *testing.T) {
 	ni("apply.MergeSealed", err)
 	_, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil)
 	ni("crypt.LoadSet", err)
-	_, _, err = textmerge.Merge3(nil, nil, nil)
-	ni("textmerge.Merge3", err)
+	if _, _, err = textmerge.Merge3(nil, nil, nil); err != nil {
+		t.Errorf("textmerge.Merge3: %v", err)
+	}
 	_, err = tasks.DefinitionHash(manifest.TaskDef{})
 	ni("tasks.DefinitionHash", err)
 
