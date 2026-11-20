@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -113,7 +110,7 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 	} else {
 		add("secrecy_config", true, "no textconv cache or textconv notes")
 	}
-	if found, err := gitDrivers(ctx, m.paths.Source); err != nil {
+	if found, err := m.repo.ConfigKeys(ctx, `^(merge\..+\.driver|filter\..+)$`, false); err != nil {
 		add("git_drivers", false, "%v", err)
 	} else if len(found) > 0 {
 		add("git_drivers", false, "git config sets merge drivers or filters the tool never uses: %s", strings.Join(found, ", "))
@@ -171,56 +168,4 @@ func membershipDiff(f *fleet.File, e model.EnclaveName, head crypt.LogEntry) str
 
 func membershipDetail(f *fleet.File, e model.EnclaveName, head crypt.LogEntry) string {
 	return fmt.Sprintf("%s: %d members agree with the fleet", e, len(head.Members))
-}
-
-// gitDrivers lists merge.*.driver and filter.* keys in every git config
-// scope the source clone sees. The tool installs neither, so any is a finding.
-func gitDrivers(ctx context.Context, dir string) ([]string, error) {
-	out, err := gitOutput(ctx, dir, "config", "--null", "--name-only", "--get-regexp", `^(merge\..+\.driver|filter\..+)$`)
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && ee.ExitCode() == 1 {
-			return nil, nil // no match
-		}
-		return nil, err
-	}
-	var keys []string
-	for _, k := range strings.Split(string(out), "\x00") {
-		if k = strings.TrimSpace(k); k != "" {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	return keys, nil
-}
-
-// gitSecrecyArgs go before every git subcommand the cli runs, the same
-// overrides package store uses.
-var gitSecrecyArgs = []string{
-	"-c", "diff.cachetextconv=false",
-	"-c", "core.hooksPath=/dev/null",
-	"-c", "core.fsmonitor=false",
-}
-
-// gitEnv drops variables that would point git away from the source clone.
-func gitEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		switch k {
-		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-			"GIT_NAMESPACE", "GIT_PREFIX", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES":
-			continue
-		}
-		env = append(env, kv)
-	}
-	return append(env, "GIT_TERMINAL_PROMPT=0")
-}
-
-func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	c := exec.CommandContext(ctx, "git", append(append([]string{"-C", dir}, gitSecrecyArgs...), args...)...)
-	c.Env = gitEnv()
-	return c.Output()
 }

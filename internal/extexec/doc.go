@@ -30,6 +30,8 @@
 //	type Runner interface{ Run(ctx, Spec, Request) (Result, error) }
 //	type Spec struct{ Argv []string; Timeout time.Duration }
 //	func NewRunner() Runner
+//	type ExitError struct{ Name string; Code int; Stderr string } // errors.Is(err, ErrExit)
+//	var ErrNoCommand, ErrExit, ErrTimeout, ErrBadResponse, ErrNotOK, ErrTooLarge
 //	func FindSubcommand(name string) (path string, err error)
 //	func Normalize(stdout []byte) []string
 package extexec

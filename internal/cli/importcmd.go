@@ -176,9 +176,9 @@ func addKeyLogs(ctx context.Context, dir, branch string, parent model.CommitID, 
 	if err := repo.UpdateRef(ctx, "refs/heads/"+branch, id, parent); err != nil {
 		return "", err
 	}
-	if out, err := gitOutput(ctx, dir, "rev-parse", "--is-bare-repository"); err == nil && strings.TrimSpace(string(out)) == "false" {
-		if head, err := gitOutput(ctx, dir, "symbolic-ref", "-q", "HEAD"); err == nil && strings.TrimSpace(string(head)) == "refs/heads/"+branch {
-			if _, err := gitOutput(ctx, dir, "read-tree", "-u", "-m", string(parent), string(id)); err != nil {
+	if out, err := store.Output(ctx, dir, "rev-parse", "--is-bare-repository"); err == nil && strings.TrimSpace(string(out)) == "false" {
+		if head, err := store.Output(ctx, dir, "symbolic-ref", "-q", "HEAD"); err == nil && strings.TrimSpace(string(head)) == "refs/heads/"+branch {
+			if _, err := store.Output(ctx, dir, "read-tree", "-u", "-m", string(parent), string(id)); err != nil {
 				return id, fmt.Errorf("committed %s but the worktree did not move: %w", id, err)
 			}
 		}

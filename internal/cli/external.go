@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/noahkiss/yadm/internal/extexec"
+	"github.com/noahkiss/yadm/internal/store"
 )
 
 // SubcommandTimeout bounds an external yadm-<name> subcommand.
@@ -56,7 +56,11 @@ func (a *app) runExternal(name string, args []string) (result, error) {
 		out.data = map[string]any{"items": nonNil(res.Items)}
 		out.text = strings.Join(res.Items, "\n")
 	}
+	var ee *extexec.ExitError
 	switch {
+	case errors.As(err, &ee):
+		out.details = map[string]any{"exit_code": ee.Code, "stderr": ee.Stderr}
+		return out, fmt.Errorf("yadm-%s exited %d", name, ee.Code)
 	case res.TimedOut:
 		return out, fmt.Errorf("yadm-%s timed out after %s", name, SubcommandTimeout)
 	case res.ExitCode != 0:
@@ -90,17 +94,9 @@ func (a *app) runGit(cmd *cobra.Command, args []string) error {
 		a.code = ExitError
 		return nil
 	}
-	c := exec.CommandContext(cmd.Context(), "git", append(append([]string{"-C", p.Source}, gitSecrecyArgs...), args...)...)
-	c.Env = gitEnv()
-	c.Stdin, c.Stdout, c.Stderr = os.Stdin, a.stdout, a.stderr
-	err = c.Run()
-	var ee *exec.ExitError
-	switch {
-	case err == nil:
-		a.code = ExitOK
-	case errors.As(err, &ee):
-		a.code = ee.ExitCode()
-	default:
+	code, err := store.Passthrough(cmd.Context(), p.Source, os.Stdin, a.stdout, a.stderr, args...)
+	a.code = code
+	if err != nil {
 		fmt.Fprintf(a.stderr, "yadm git: %v\n", err)
 		a.code = ExitError
 	}

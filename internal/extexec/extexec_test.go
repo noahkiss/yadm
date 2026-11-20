@@ -114,8 +114,14 @@ func TestRunFailures(t *testing.T) {
 			if !errors.Is(err, c.want) {
 				t.Fatalf("err = %v, want %v", err, c.want)
 			}
-			if c.name == "exit" && (res.ExitCode != 3 || !strings.Contains(res.Stderr, "oops")) {
-				t.Errorf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+			if c.name == "exit" {
+				if res.ExitCode != 3 || !strings.Contains(res.Stderr, "oops") {
+					t.Errorf("exit=%d stderr=%q", res.ExitCode, res.Stderr)
+				}
+				var ee *ExitError
+				if !errors.As(err, &ee) || ee.Code != 3 || !strings.Contains(ee.Stderr, "oops") {
+					t.Errorf("typed exit error: %#v", err)
+				}
 			}
 			if c.name == "notok" && (res.Response == nil || res.Response.OK) {
 				t.Errorf("response not kept: %+v", res.Response)

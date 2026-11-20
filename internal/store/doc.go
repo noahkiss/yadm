@@ -34,6 +34,12 @@
 //	type Conflict struct{ Path model.SourcePath; Base, Ours, Theirs string }
 //	var ErrRejected, ErrStaleRef, ErrDirty
 //	func CheckGitVersion(ctx) error
+//	func (r *Repo) HashBlob(ctx, b) (string, error)
+//	func (r *Repo) ConfigKeys(ctx, re string, localOnly bool) ([]string, error)
+//	func (r *Repo) Git(ctx, stdin, stdout, stderr, args...) (exit int, err error) // `yadm git`
+//	func (r *Repo) RemoteHeads(ctx) (map[string]model.CommitID, error)            // ls-remote main and refs/yadm/*
+//	func Passthrough(ctx, dir, stdin, stdout, stderr, args...) (int, error); func Output(ctx, dir, args...) ([]byte, error)
+//	func GitExitCode(err) int
 //	func FormatMessage(Message) string; func ParseMessage(raw string) Message
 //	Ref names: RefMain, RefReviewed(scope), RefHeld(machine), fleet.StatusRef(machine)
 package store

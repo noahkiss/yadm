@@ -186,6 +186,20 @@ var (
 	ErrTooLarge    = errors.New("stdout exceeds limit")
 )
 
+// ExitError is the error of a run that exited non-zero. It matches ErrExit
+// with errors.Is, so callers that only test the cause keep working; callers
+// that need the code or the stderr tail use errors.As.
+type ExitError struct {
+	Name   string // argv[0]
+	Code   int
+	Stderr string // bounded tail, never parsed
+}
+
+func (e *ExitError) Error() string { return fmt.Sprintf("%s: %v %d", e.Name, ErrExit, e.Code) }
+
+// Is reports ErrExit as the cause.
+func (e *ExitError) Is(target error) bool { return target == ErrExit }
+
 // NewRunner returns the process runner.
 func NewRunner() Runner { return runner{} }
 
@@ -250,7 +264,7 @@ func (runner) Run(ctx context.Context, spec Spec, req Request) (Result, error) {
 		var ee *exec.ExitError
 		switch {
 		case errors.As(runErr, &ee):
-			return res, fmt.Errorf("%s: %w %d", name, ErrExit, res.ExitCode)
+			return res, &ExitError{Name: name, Code: res.ExitCode, Stderr: res.Stderr}
 		case errors.Is(runErr, exec.ErrWaitDelay) && res.ExitCode == 0:
 			// Exited 0, but a descendant held stdout open past killGrace.
 			// The group is killed above; the output read so far stands.
