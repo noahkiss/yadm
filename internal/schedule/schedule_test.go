@@ -55,6 +55,7 @@ After=network-online.target
 Type=oneshot
 Environment="PATH=/opt/yadm/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 ExecStart=/opt/yadm/bin/yadm sync --auto
+SuccessExitStatus=3
 Nice=10
 IOSchedulingClass=idle
 `

@@ -1,7 +1,6 @@
 package sync
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -318,41 +317,7 @@ func conflictHold(st *apply.State, now time.Time, t model.Target, scope model.Sc
 
 // unionLines keeps every line either side has, minus lines either side
 // removed from base. Order: ours, then lines only theirs added.
-func unionLines(base, ours, theirs []byte) []byte {
-	split := func(b []byte) []string {
-		s := strings.TrimSuffix(string(b), "\n")
-		if s == "" {
-			return nil
-		}
-		return strings.Split(s, "\n")
-	}
-	set := func(ls []string) map[string]bool {
-		m := map[string]bool{}
-		for _, l := range ls {
-			m[l] = true
-		}
-		return m
-	}
-	b, o, th := split(base), split(ours), split(theirs)
-	inB, inO, inT := set(b), set(o), set(th)
-	removed := func(l string) bool { return inB[l] && (!inO[l] || !inT[l]) }
-	var out []string
-	seen := map[string]bool{}
-	for _, l := range append(o, th...) {
-		if seen[l] || removed(l) {
-			continue
-		}
-		seen[l] = true
-		out = append(out, l)
-	}
-	if len(out) == 0 {
-		return []byte{}
-	}
-	var buf bytes.Buffer
-	buf.WriteString(strings.Join(out, "\n"))
-	buf.WriteByte('\n')
-	return buf.Bytes()
-}
+func unionLines(base, ours, theirs []byte) []byte { return textmerge.Union(base, ours, theirs) }
 
 // addOnly merges files whose lines are only ever added: both sides must keep
 // every base line in order. The result is base, then lines ours added, then

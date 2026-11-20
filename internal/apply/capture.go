@@ -248,6 +248,7 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	if bytes.Equal(newRaw, prevRaw) {
 		// Nothing to commit: the drift is only in parts the source does not own.
 		ts.Written = hashOf(target)
+		ts.Want = uint32(ts.want())
 		ts.Size, ts.ModTime, ts.Mode = lv.info.Size(), lv.info.ModTime(), uint32(lv.info.Mode().Perm())
 		ts.RenderHash = rh
 		ts.ChangedAt = time.Time{}

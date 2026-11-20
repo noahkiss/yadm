@@ -107,6 +107,7 @@ type PlannedCommit struct {
 	Info    MessageInfo // rebuilds Message when only some targets land
 
 	direct []bool // direct[i]: Changes[i] is not a target (a key-log entry)
+	atomic bool   // every change lands, or none does (CommitOptions.Atomic)
 }
 
 // Deps are the collaborators a Syncer needs.
@@ -209,6 +210,9 @@ type CommitOptions struct {
 	// them: its paths name targets, and these hold no plaintext.
 	Changes      []store.Change
 	ChangesScope model.Scope
+	// Atomic commits everything or nothing: when the gate holds a target,
+	// Changes do not land without it (a manifest entry without its source).
+	Atomic bool
 
 	Trigger string // Yadm-Auto trailer: TriggerManual (default), TriggerHook or TriggerStop
 	Session string // Yadm-Session trailer, the harness session id

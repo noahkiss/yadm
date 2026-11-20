@@ -306,6 +306,7 @@ After=network-online.target
 Type=oneshot
 Environment=` + systemdEnv("PATH", pathValue(s)) + `
 ExecStart=` + strings.Join(words, " ") + `
+SuccessExitStatus=3
 Nice=10
 IOSchedulingClass=idle
 `), nil

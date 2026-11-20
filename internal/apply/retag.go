@@ -55,7 +55,11 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 		return Capture{}, err
 	}
 	if idx < 0 {
-		return e.track(ctx, head, snap, t, opts)
+		var conds []string
+		for _, ty := range opts.Types {
+			conds = append(conds, "type:"+string(ty))
+		}
+		return e.track(ctx, head, snap, t, strings.Join(conds, " | "), opts.Enclave, "retag")
 	}
 	entry := snap.Manifest.Entries[idx]
 	oldEnc, newEnc := entry.Enclave, opts.Enclave
@@ -172,22 +176,67 @@ func checkRetagTypes(snap *Snapshot, opts RetagOptions) error {
 	return nil
 }
 
-// track is Retag for a file no manifest entry names: an unmanaged regular
-// file in $HOME. It appends a [[file]] entry with the types' `when` (and
-// the enclave) and captures the live bytes into its source, in one change.
-// A file a glob entry already produces is refused: edit the manifest.
-func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, opts RetagOptions) (Capture, error) {
+// Track starts syncing a file no manifest entry, glob or owned root
+// covers: an unmanaged regular file in $HOME. It appends a [[file]] entry
+// with opts.When (and the enclave) and captures the live bytes into the
+// entry's source, sealed under sealed/<enclave>/ for an enclave, in one
+// change. It refuses a path an entry, a glob or an owned root covers
+// (naming which), a directory, and an enclave this machine is not a member
+// of (crypt.ErrNotMember).
+func (e *Engine) Track(ctx context.Context, t model.Target, opts TrackOptions) (Capture, error) {
+	head, err := e.Store.Head(ctx)
+	if err != nil {
+		return Capture{}, err
+	}
+	snap, err := e.snapshot(ctx, head)
+	if err != nil {
+		return Capture{}, err
+	}
+	if snap.Manifest == nil {
+		return Capture{}, errors.New("track: snapshot has no manifest")
+	}
+	for _, en := range snap.Manifest.Entries {
+		if en.Target == t {
+			return Capture{}, fmt.Errorf("track %s: %w: a manifest entry names it; change who gets it with yadm retag", t, ErrCovered)
+		}
+	}
+	var root *manifest.Root
+	for i, r := range snap.Manifest.Roots {
+		prefix := strings.TrimSuffix(string(r.Path), "/") + "/"
+		if strings.HasPrefix(string(t), prefix) && (root == nil || len(r.Path) > len(root.Path)) {
+			root = &snap.Manifest.Roots[i]
+		}
+	}
+	if root != nil {
+		return Capture{}, fmt.Errorf("track %s: %w: owned root %q covers it; commit it with yadm commit, or give it its own entry with yadm retag", t, ErrCovered, root.Path)
+	}
+	if opts.Enclave != "" && snap.Fleet != nil {
+		if d, ok := snap.Fleet.Types[model.TypeName(opts.Enclave)]; !ok || !d.Enclave {
+			return Capture{}, fmt.Errorf("track %s: %q is not an enclave type", t, opts.Enclave)
+		}
+	}
+	return e.track(ctx, head, snap, t, opts.When, opts.Enclave, "track")
+}
+
+// ErrCovered reports a path that a manifest entry, glob or owned root
+// already covers, so track has nothing to add.
+var ErrCovered = errors.New("already covered")
+
+// track appends a [[file]] entry for t with when (and the enclave) and
+// captures the live bytes into its source, in one change. A file a glob
+// entry already produces is refused: edit the manifest. verb names the
+// command in errors.
+func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, when string, enc model.EnclaveName, verb string) (Capture, error) {
 	for _, en := range snap.Manifest.Entries {
 		if manifest.IsGlob(string(en.Target)) && manifest.Match(string(en.Target), string(t)) {
-			return Capture{}, fmt.Errorf("retag %s: glob entry %q covers it; edit the manifest", t, en.Target)
+			return Capture{}, fmt.Errorf("%s %s: %w: glob entry %q covers it; edit the manifest", verb, t, ErrCovered, en.Target)
 		}
 	}
 	if snap.Manifest.Generated(t) {
-		return Capture{}, fmt.Errorf("retag %s: a task generates it (outputs); it is never tracked", t)
+		return Capture{}, fmt.Errorf("%s %s: a task generates it (outputs); it is never tracked", verb, t)
 	}
-	enc := opts.Enclave
 	if enc != "" && !snap.canOpen(enc) {
-		return Capture{}, fmt.Errorf("retag %s: %w: %s", t, crypt.ErrNotMember, enc)
+		return Capture{}, fmt.Errorf("%s %s: %w: %s", verb, t, crypt.ErrNotMember, enc)
 	}
 	abs, err := e.abs(t)
 	if err != nil {
@@ -197,14 +246,12 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 	if err != nil {
 		return Capture{}, err
 	}
-	if !lv.exists || !lv.info.Mode().IsRegular() {
-		return Capture{}, fmt.Errorf("retag %s: no manifest entry names it, and it is not a regular file in $HOME to track", t)
+	switch {
+	case lv.exists && lv.info.IsDir():
+		return Capture{}, fmt.Errorf("%s %s: %w: it is a directory; share a directory with a [[root]] in the manifest", verb, t, ErrNotFile)
+	case !lv.exists || !lv.info.Mode().IsRegular():
+		return Capture{}, fmt.Errorf("%s %s: %w: no manifest entry names it, and it is not a regular file in $HOME to track", verb, t, ErrNotFile)
 	}
-	var conds []string
-	for _, ty := range opts.Types {
-		conds = append(conds, "type:"+string(ty))
-	}
-	when := strings.Join(conds, " | ")
 	mb, err := e.Store.ReadPath(ctx, head, manifest.FileName)
 	if err != nil {
 		return Capture{}, err
@@ -213,24 +260,47 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 	if len(mb) > 0 && mb[len(mb)-1] != '\n' {
 		add.WriteString("\n")
 	}
-	fmt.Fprintf(&add, "\n[[file]]\ntarget = %s\nwhen = %s\n", tomlString(string(t)), tomlString(when))
+	fmt.Fprintf(&add, "\n[[file]]\ntarget = %s\n", tomlString(string(t)))
+	if when != "" {
+		fmt.Fprintf(&add, "when = %s\n", tomlString(when))
+	}
 	if enc != "" {
 		fmt.Fprintf(&add, "enclave = %s\n", tomlString(string(enc)))
 	}
 	nm := append(append([]byte{}, mb...), add.String()...)
 	check, err := manifest.Parse(nm)
 	if err != nil {
-		return Capture{}, fmt.Errorf("retag %s: edited manifest does not parse: %w", t, err)
+		return Capture{}, fmt.Errorf("%s %s: edited manifest does not parse: %w", verb, t, err)
 	}
 	last := check.Entries[len(check.Entries)-1]
 	if last.Target != t || last.When != when || last.Enclave != enc {
-		return Capture{}, fmt.Errorf("retag %s: edited manifest does not say what was asked", t)
+		return Capture{}, fmt.Errorf("%s %s: edited manifest does not say what was asked", verb, t)
+	}
+	if snap.Fleet != nil {
+		// Every machine resolves the new entry: a typo in when would fail
+		// them all, so it fails here first.
+		if err := check.LoadIncludes(func(p model.SourcePath) ([]byte, error) { return e.Store.ReadPath(ctx, head, p) }); err != nil {
+			return Capture{}, fmt.Errorf("%s %s: %w", verb, t, err)
+		}
+		if err := check.Validate(snap.Fleet.Vocabulary()); err != nil {
+			return Capture{}, fmt.Errorf("%s %s: %w", verb, t, err)
+		}
 	}
 	src := defaultSource(t, enc)
+	for _, en := range snap.Manifest.Entries {
+		if en.Source == src {
+			return Capture{}, fmt.Errorf("%s %s: %w: entry %q already uses %s as its source", verb, t, ErrCovered, en.Target, src)
+		}
+	}
+	// Retag gives a file an owned root already shares its own entry, over
+	// the source the root holds; track starts only what nothing holds.
+	if _, ok := snap.Tree[src]; ok && verb == "track" {
+		return Capture{}, fmt.Errorf("%s %s: %w: %s already exists in the source tree", verb, t, ErrCovered, src)
+	}
 	blob := lv.bytes
 	if enc != "" {
 		if blob, err = snap.cr().SealFile(enc, src, lv.bytes); err != nil {
-			return Capture{}, fmt.Errorf("retag %s: seal: %w", t, err)
+			return Capture{}, fmt.Errorf("%s %s: seal: %w", verb, t, err)
 		}
 	}
 	mode := uint32(gitModeFile)
@@ -247,6 +317,9 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 		Scopes:  map[model.Target]model.Scope{t: scope},
 	}, nil
 }
+
+// ErrNotFile reports a track of a path that is not a regular file.
+var ErrNotFile = errors.New("not a regular file")
 
 // tomlString quotes s as a TOML basic string.
 func tomlString(s string) string {

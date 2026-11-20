@@ -12,6 +12,7 @@
 //	func Merge3(base, ours, theirs []byte) (merged []byte, conflicts []Region, err error)
 //	func Diff(aLabel, bLabel string, a, b []byte) (string, error)
 //	func PatchTemplate(tmpl, lastRender, target []byte) ([]byte, error)
+//	func Union(base, ours, theirs []byte) []byte // line-set merge of a union file; no binary check
 //	type Region struct{ OursStart, OursEnd int; Base, Ours, Theirs []byte }  // 0-based lines in ours, end exclusive
 //	func IsBinary(b []byte) bool
 //	var ErrBinary, ErrPatch error

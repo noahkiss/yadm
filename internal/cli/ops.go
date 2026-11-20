@@ -730,12 +730,27 @@ func (a *app) cmdTaskList(cmd *cobra.Command, args []string) (result, error) {
 }
 
 func (a *app) cmdTaskAllow(cmd *cobra.Command, args []string) (result, error) {
-	m, err := openLoaded(cmd.Context())
+	ctx := cmd.Context()
+	m, err := openLoaded(ctx)
 	if err != nil {
 		return notInit(err), err
 	}
-	done, err := allowDefinitions(m.allow, m.snap.Manifest, m.snap.Fleet, args)
-	return result{data: map[string]any{"allowed": done}}, err
+	// The allow list is state a sync reads: write it under the lock, from
+	// the definitions at main once the lock is held.
+	var done []string
+	if err := m.locked(ctx, func() error {
+		if _, err := m.reload(ctx); err != nil {
+			return err
+		}
+		done, err = allowDefinitions(m.allow, m.snap.Manifest, m.snap.Fleet, args)
+		return err
+	}); err != nil {
+		if errors.Is(err, sync.ErrLocked) {
+			return lockedResult(err), err
+		}
+		return result{data: map[string]any{"allowed": done}}, err
+	}
+	return result{data: map[string]any{"allowed": done}}, nil
 }
 
 func (a *app) cmdTaskRun(cmd *cobra.Command, args []string) (result, error) {

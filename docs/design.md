@@ -171,7 +171,7 @@ Resolution for one machine:
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
-- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
+- `merge` picks the sync conflict policy (section 10), and `union` also lets apply merge a target changed on both sides (section 8.3): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
 - An owned root shares the files under its source directory: a file at `files/<root>/<rest>` (plain root) or `sealed/<enclave>/<root>/<rest>` (enclave root) that no entry names, by target, source or glob, is a target with the root's enclave on every machine the root applies to. Capture writes a new file of a root there, so committing it shares it. To narrow who gets it, `yadm retag` gives it its own entry.
 - A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
@@ -366,7 +366,7 @@ A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(H
 
 ### 8.1 State
 
-`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content, except the proposed patch of a `rendered_edit` hold on a shared template, and never leaves the machine.
+`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the mode the entry wanted, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content, except the proposed patch of a `rendered_edit` hold on a shared template, and never leaves the machine.
 
 ### 8.2 Scan
 
@@ -374,17 +374,21 @@ Every command starts with a scan. It is a stat pass over managed targets and own
 
 Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
+A mode is drift only when it is wider than the entry wants or breaks a script. A live mode that grants a subset of the wanted bits (`live &^ want == 0`, such as 0640 from a tool writing under umask 027 where 0644 is wanted) is not drift and makes no hold. Apply and adopt take over a file yadm never wrote, whose bytes match, at such a stricter mode too, except a read-only one, which takes the entry's mode (section 15.2). A mode with any bit outside the wanted one drifts. One exception: a wanted mode with the owner's execute bit drifts when the live mode lacks it (0644 where 0755 is wanted), since the file stops running; 0750 there is not drift.
+
 A file that matches a task's `outputs` glob (section 12.1) is generated: scan never reports it, capture and retag never take it, so it is never committed or gated. `yadm status` lists such files under `generated`.
 
 ### 8.3 Apply
 
 1. Resolve the manifest for this machine; render each target in memory.
 2. Skip a target whose bytes already match.
-3. Hold a target whose current hash differs from the last written hash (`drifted`). Apply never overwrites it. The usual path captures it first.
-4. Write changed targets atomically (temp file and rename), with the entry's mode. Copy the replaced bytes into `backup/` for 30 days.
+3. Hold a target whose current hash differs from the last written hash (`drifted`). Apply never overwrites it. The usual path captures it first. One exception: a `merge = "union"` target whose source changed too is merged, not held (see below).
+4. Write changed targets atomically (temp file and rename), with the entry's mode. Copy the replaced bytes into `backup/` for 30 days. Apply never changes only the mode of a target whose stricter mode is not drift (section 8.2): it widens that mode only when it writes new bytes. When the entry's mode changes, apply sets the new mode on a target whose mode is still the one it last recorded.
 5. Delete a target that left the plan, only if it is unchanged since written; otherwise hold it.
 6. On a non-member, skip sealed files (`sealed` action) and leave sealed values and regions out.
 7. Run triggered tasks (section 12): path tasks, remove tasks, unit reloads and, once per machine, first-apply tasks.
+
+A `merge = "union"` target can change here while a sync brings a new source, for example an append-only list appended on two machines before either committed. Apply then writes the line union instead of holding the target. The base is the source as last written (opened, for a sealed file on a member), ours is the new source and theirs is the target. The union keeps every line either side added, the source's lines first, then the lines only the target has; a line either side removed stays removed, and a line that appears twice is written once. The state still records the source as written, so the next scan finds the union as drift and capture commits it. The write follows the mode rules of section 8.2 and backs up the replaced bytes. The target is held as `drifted` when the union cannot be computed: binary content, a template or intra-file rules on the entry, or a last-written source that is gone or does not open. Without a source change, a local edit of a union target is ordinary drift for capture.
 
 ### 8.4 Capture
 
@@ -396,7 +400,13 @@ A file that matches a task's `outputs` glob (section 12.1) is generated: scan ne
 
 ### 8.5 Retag
 
-`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
+`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. Its changes land together or not at all: when the gate holds the target, the manifest edit and the move are not committed either. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
+
+### 8.6 Track
+
+`yadm track <path> [--when <condition>] [--enclave <name>] [--no-push]` starts syncing a file that nothing covers yet. It appends a `[[file]]` entry for the path to `manifest.toml`, with `when` and `enclave` when given, and adds the file's bytes as its source: `files/<target>`, or `sealed/<enclave>/<target>` sealed under the enclave's current epoch, so a non-member only ever receives ciphertext. Both changes land in one commit (subject `track <path>`) through the commit gate, or neither does: when the gate holds the file, nothing is committed. The commit is pushed in the same call; with `--no-push`, the next sync publishes it. The new `when` is checked against the fleet before anything is committed.
+
+Track refuses, with exit 2 and nothing committed, a path that a manifest entry names, a glob entry matches or an owned root contains (the error names which; `yadm retag` and `yadm commit` handle those), a path outside `$HOME`, a directory (share one with a `[[root]]`), and a path that is not a regular file. An `--enclave` that is not an enclave type fails; one this machine is not a member of is refused with exit 6.
 
 ## 9. Commits
 
@@ -408,7 +418,7 @@ Every commit operation builds its own fresh index file in the state directory, s
 
 Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
-Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
+Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag or a track. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
 
 ### 9.3 Auto-commit
 
@@ -482,7 +492,7 @@ A **decision packet** says what happened, the diff size (line counts, never cont
 
 ## 10. Sync
 
-`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout. Apply, capture, collect, hold resolve, retag and enclave writes take the same lock, and every commit goes through `sync.Commit`.
+`yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4. No command waits without a bound; every git and external call has a timeout. Apply, capture, collect, hold resolve, retag, enclave writes and the local allows (`task allow`, `root allow`, `protection allow`) take the same lock, and every commit goes through `sync.Commit`. `apply` and the local allows read `main` again once they hold the lock, since the sync they waited for may have moved it.
 
 A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them.
 
@@ -684,6 +694,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
+| `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded, last sync age, holds, secrecy config |

@@ -207,6 +207,16 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	for i := range staged {
 		staged[i].Plaintext = nil
 	}
+	// An atomic commit lands only whole: one held target holds it all,
+	// deletions included.
+	atomicHeld := false
+	for _, pc := range planned {
+		for i, t := range pc.Targets {
+			if pc.atomic && !pc.Changes[i].Delete && !pass[t] {
+				atomicHeld = true
+			}
+		}
+	}
 
 	hashes := map[model.Target]string{}
 	for _, d := range drift {
@@ -225,7 +235,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		var mergeNote string
 		for i, ch := range pc.Changes {
 			t := pc.Targets[i]
-			if !ch.Delete && !pass[t] {
+			if (!ch.Delete && !pass[t]) || (pc.atomic && atomicHeld) {
 				continue // held by the gate, or unreadable
 			}
 			base := baseBlob(st, appliedTree, t, ch.Path)
@@ -465,7 +475,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	plan := func(scope model.Scope) *PlannedCommit {
 		pc := byScope[scope]
 		if pc == nil {
-			pc = &PlannedCommit{Scope: scope, Info: info}
+			pc = &PlannedCommit{Scope: scope, Info: info, atomic: opts.Atomic}
 			byScope[scope] = pc
 		}
 		return pc

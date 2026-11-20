@@ -75,6 +75,10 @@ func (a *app) register(root *cobra.Command) {
 	rt := exact(leaf(root, "retag <path> <type>[,<type>...]", "Change which types receive a path, resealing as needed", a.cmdRetag), 2)
 	rt.Flags().String("enclave", "", "seal for this enclave; empty stores plaintext")
 	rt.Flags().Bool("dry-run", false, "plan only")
+	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry, glob or owned root covers yet", a.cmdTrack), 1)
+	tr.Flags().String("when", "", "condition for the new entry; empty sends it to every machine")
+	tr.Flags().String("enclave", "", "seal for this enclave (this machine must be a member); empty stores plaintext")
+	tr.Flags().Bool("no-push", false, "commit only; the next sync pushes")
 	bi := leaf(root, "bisect", "Bisect by rendering commits for a machine into a sandbox", a.cmdBisect)
 	bi.Flags().String("as", "", "machine to render for")
 	leaf(root, "collect", "Run collectors now and show observed facts", a.cmdCollect)
@@ -324,7 +328,7 @@ func installSchedule(ctx context.Context, skip bool) scheduleOutcome {
 const ScheduleInterval = time.Minute
 
 func scheduleSpec() schedule.Spec {
-	return schedule.Spec{Binary: hooks.binary(), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
+	return schedule.Spec{Binary: schedule.StableBinary(hooks.binary()), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
 }
 
 // lockedResult suggests a retry when err is the lock timeout.
@@ -498,7 +502,12 @@ func (a *app) cmdApply(cmd *cobra.Command, args []string) (result, error) {
 	if dry {
 		err = run()
 	} else {
-		err = m.locked(ctx, run)
+		err = m.locked(ctx, func() error {
+			if _, err := m.reload(ctx); err != nil {
+				return err
+			}
+			return run()
+		})
 	}
 	if err != nil {
 		return lockedResult(err), err
@@ -850,7 +859,7 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	target := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
 		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &target,
-		Changes: c.Changes[:last], ChangesScope: scope, Push: true,
+		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: true,
 	})
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()
@@ -864,6 +873,71 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	for _, h := range rep.Holds {
 		if h.Target == t {
 			holds = append(holds, h) // other holds on this machine are not the retag's
+		}
+	}
+	data["holds"] = withHoldNext(holds)
+	if err != nil {
+		return result{data: data}, err
+	}
+	return result{data: data, text: "committed " + short(id)}, attention(holds)
+}
+
+// cmdTrack starts syncing an unmanaged file: a new manifest entry and the
+// file's source, sealed for --enclave, in one commit through the gate.
+func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	when, _ := cmd.Flags().GetString("when")
+	enclave, _ := cmd.Flags().GetString("enclave")
+	noPush, _ := cmd.Flags().GetBool("no-push")
+	m, err := openLoaded(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	t, err := target(m.home, args[0])
+	if err != nil {
+		return result{}, err
+	}
+	var c apply.Capture
+	if err := m.locked(ctx, func() error {
+		var err error
+		c, err = m.eng.Track(ctx, t, apply.TrackOptions{When: when, Enclave: model.EnclaveName(enclave)})
+		return err
+	}); err != nil {
+		switch {
+		case errors.Is(err, apply.ErrCovered):
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
+		case errors.Is(err, apply.ErrNotFile):
+			return result{}, usagef("%v", err)
+		}
+		return lockedResult(err), err
+	}
+	scope := model.ScopeShared
+	if enclave != "" {
+		scope = model.Scope(enclave)
+	}
+	data := map[string]any{"target": t, "source": "", "scope": scope, "commit": "", "pushed": false, "holds": []model.Hold{}}
+	// The last change is the file's source: the gate reads the target. The
+	// manifest edit commits with it.
+	last := len(c.Changes) - 1
+	data["source"] = c.Changes[last].Path
+	src := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
+		Message: "track " + string(t), Capture: &src,
+		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: !noPush,
+	})
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	if err != nil {
+		return result{data: data}, err
+	}
+	id, err := m.landed(ctx, rep, manifest.FileName)
+	data["commit"] = id
+	data["pushed"] = rep.Pushed
+	var holds []model.Hold
+	for _, h := range rep.Holds {
+		if h.Target == t {
+			holds = append(holds, h)
 		}
 	}
 	data["holds"] = withHoldNext(holds)
@@ -919,6 +993,9 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 	var res apply.Result
 	fetched := false
 	if err := m.locked(ctx, func() error {
+		if _, err := m.reload(ctx); err != nil {
+			return err
+		}
 		rev := m.allowRev(ctx)
 		fetched = rev != m.snap.Commit
 		if err := allow(m, rev, t); err != nil {

@@ -8,8 +8,12 @@
 //   - Apply writes a target atomically (temp file plus rename) and only when its
 //     bytes change. It never overwrites a target whose current hash differs from
 //     the hash it last wrote: that target is drifted, and apply captures it
-//     first or holds it (model.HoldDrifted). Bytes it does replace go to a
-//     backup directory in the state directory for 30 days.
+//     first or holds it (model.HoldDrifted). The exception is a
+//     `merge = "union"` target whose source changed too: apply writes the
+//     line union (textmerge.Union, the source's lines first) and records the
+//     source as written, so the next capture commits the union. Bytes it
+//     does replace go to a backup directory in the state directory for 30
+//     days.
 //   - Capture is accepted only if rendering the new source for this machine
 //     reproduces the target byte for byte (the round-trip check). Otherwise the
 //     file is held as uncapturable. Templates capture with
@@ -59,13 +63,14 @@
 //
 //	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs }
 //	func (e *Engine) Generated(ctx) ([]model.Target, error) // files on disk matching a task's outputs
-//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
+//	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; Want; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
 //	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
 //	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
+//	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode is not drift, unless it drops the owner's execute bit
 //	func InsideHome(home, p string) error; var ErrOutsideHome // p's real parent directory stays under $HOME
 //	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
 //	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error
@@ -85,6 +90,7 @@
 //	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error)
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
+//	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error)

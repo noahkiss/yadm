@@ -55,7 +55,7 @@
 // Exported API:
 //
 //	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick bool }
-//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries }
+//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Atomic; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries }
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
 //	const FullEvery, WakeGap

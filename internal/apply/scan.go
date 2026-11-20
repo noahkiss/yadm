@@ -53,7 +53,11 @@ func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
 			if d.Kind == "" {
 				ts.ChangedAt = time.Time{}
 				if d.info != nil {
-					ts.Size, ts.ModTime = d.info.Size(), d.info.ModTime()
+					// A stricter mode that is not drift becomes the cached
+					// one; ts.want keeps what the entry asked for.
+					w := ts.want()
+					ts.Size, ts.ModTime, ts.Mode = d.info.Size(), d.info.ModTime(), uint32(d.info.Mode().Perm())
+					ts.Want = uint32(w)
 				}
 				st.Targets[t] = ts
 			}
@@ -178,7 +182,7 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 	case h != ts.Written:
 		d.Kind, d.Hash = DriftModified, h
 		return d, true, nil
-	case mode != ts.Mode:
+	case mode != ts.Mode && !ModeAccepted(fs.FileMode(mode), ts.want()):
 		d.Kind, d.Hash = DriftMode, h
 		return d, true, nil
 	}
