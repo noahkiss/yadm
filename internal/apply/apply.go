@@ -342,6 +342,12 @@ type RetagOptions struct {
 	DryRun  bool
 }
 
+// TrackOptions says which machines a tracked file goes to.
+type TrackOptions struct {
+	When    string            // condition for the new entry; empty means every machine
+	Enclave model.EnclaveName // seal for this enclave; empty stores plaintext
+}
+
 // ResolveOptions says how to resolve a hold.
 type ResolveOptions struct {
 	Take string // "source", "target", or a path to a file with the merged content

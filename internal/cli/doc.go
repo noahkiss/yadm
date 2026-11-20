@@ -36,6 +36,7 @@
 //	protection allow, root allow   apply.Engine.AllowProtection / AllowRoot, then Apply
 //	log                            store.Log + crypt.Set + textmerge.Diff
 //	retag                          apply.Engine.Retag, committed through sync.Commit (Capture + Changes)
+//	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes)
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status,

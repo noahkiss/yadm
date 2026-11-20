@@ -181,6 +181,7 @@ var explainSteps = map[string][]string{
 		"install the sync schedule ({{schedule}}) unless --no-schedule",
 	},
 	"retag":   {"change the manifest entry's when and enclave", "move the source between files/ and sealed/<enclave>/, opening and resealing", "commit once on main (protected, manual only)"},
+	"track":   {"refuse a path an entry, glob or owned root covers, a directory, or an enclave this machine is not a member of", "append a [[file]] entry with when and enclave to manifest.toml", "add the file's bytes as its source, sealed under sealed/<enclave>/ for an enclave", "commit both once through the gate and push (--no-push: the next sync pushes)"},
 	"check":   {"verify identity keys and modes", "verify key logs against pins and fleet membership", "resolve the manifest (collisions)", "check the schedule and last sync age", "count holds and conflicts", "check git config for textconv caches, merge drivers and filters"},
 	"collect": {"run every collector whose when matches and whose definition is allowed here", "store results in local state"},
 	"import":  {"read the legacy repository's head tree; never run upstream yadm", "convert alternates, templates and transcrypt files", "write one commit in --output whose parent is the legacy head", "commit nothing on any problem; never push"},

@@ -402,6 +402,12 @@ A `merge = "union"` target can change here while a sync brings a new source, for
 
 `yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
 
+### 8.6 Track
+
+`yadm track <path> [--when <condition>] [--enclave <name>] [--no-push]` starts syncing a file that nothing covers yet. It appends a `[[file]]` entry for the path to `manifest.toml`, with `when` and `enclave` when given, and adds the file's bytes as its source: `files/<target>`, or `sealed/<enclave>/<target>` sealed under the enclave's current epoch, so a non-member only ever receives ciphertext. Both changes land in one commit (subject `track <path>`) through the commit gate, and the commit is pushed in the same call; with `--no-push`, the next sync publishes it. The new `when` is checked against the fleet before anything is committed.
+
+Track refuses, with exit 2 and nothing committed, a path that a manifest entry names, a glob entry matches or an owned root contains (the error names which; `yadm retag` and `yadm commit` handle those), a path outside `$HOME`, a directory (share one with a `[[root]]`), and a path that is not a regular file. An `--enclave` that is not an enclave type fails; one this machine is not a member of is refused with exit 6.
+
 ## 9. Commits
 
 ### 9.1 Private index
@@ -412,7 +418,7 @@ Every commit operation builds its own fresh index file in the state directory, s
 
 Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
-Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
+Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag or a track. They hold no plaintext, and check `paths` name targets. They still commit through the lock and a private index.
 
 ### 9.3 Auto-commit
 
@@ -688,6 +694,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
+| `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded, last sync age, holds, secrecy config |

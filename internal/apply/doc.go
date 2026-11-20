@@ -90,6 +90,7 @@
 //	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error)
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
+//	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error)
