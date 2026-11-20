@@ -45,6 +45,7 @@
 //	func CheckGitVersion(ctx) error
 //	func (r *Repo) HashBlob(ctx, b) (string, error)
 //	func (r *Repo) ConfigKeys(ctx, re string, localOnly bool) ([]string, error)
+//	func (r *Repo) AttributeDrivers(ctx) (map[string]bool, error)                // "filter.<name>", "merge.<name>" any attribute source assigns
 //	func (r *Repo) Git(ctx, stdin, stdout, stderr, args...) (exit int, err error) // `yadm git`
 //	func (r *Repo) RemoteHeads(ctx) (map[string]model.CommitID, error)            // ls-remote main and refs/yadm/*
 //	func Passthrough(ctx, dir, stdin, stdout, stderr, args...) (int, error); func Output(ctx, dir, args...) ([]byte, error)
