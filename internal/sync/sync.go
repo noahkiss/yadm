@@ -20,7 +20,7 @@ import (
 
 // Defaults.
 const (
-	DefaultQuiet      = 2 * time.Hour
+	DefaultQuiet      = 2 * time.Minute
 	DefaultMaxRetries = 5
 	DefaultMassChange = 50 // more changed files than this in one scope are held
 	LockFile          = "lock"
@@ -38,6 +38,9 @@ type Options struct {
 	Push       bool
 	DryRun     bool // scan, capture and plan; commit, fetch, apply and push nothing
 	MaxRetries int  // push retries; 0 means DefaultMaxRetries
+	// Quick first runs the cheap check (scan, `git ls-remote`) and stops
+	// there when nothing moved and no full sync is due (FullEvery, WakeGap).
+	Quick bool
 }
 
 // Report is the outcome of one sync.
@@ -54,6 +57,8 @@ type Report struct {
 	Alerts      []Alert            `json:"alerts,omitempty"`
 	Tasks       []model.TaskResult `json:"tasks,omitempty"`
 	Resolutions []Resolution       `json:"resolutions,omitempty"`
+	Skipped     bool               `json:"skipped,omitempty"` // a quick sync found nothing to do
+	Reason      string             `json:"reason,omitempty"`  // why a quick sync ran in full
 }
 
 // Alert is an event sent through the notify hook and kept in the status record.
@@ -100,6 +105,9 @@ type PlannedCommit struct {
 	Changes []store.Change
 	Targets []model.Target
 	Message store.Message
+	Info    MessageInfo // rebuilds Message when only some targets land
+
+	direct []bool // direct[i]: Changes[i] is not a target (a key-log entry)
 }
 
 // Deps are the collaborators a Syncer needs.
@@ -121,6 +129,11 @@ type Deps struct {
 	Structural Structural    // key-level merge for json, jsonc and toml; nil decides nothing
 	Guard      RemoteGuard   // refuses a fetched source this machine has not allowed; nil allows all
 	Backoff    time.Duration // first push-retry delay; doubles per retry; default 200ms
+
+	// Nudge is an optional extexec argv run after a push that moved main,
+	// so peers sync now instead of on their next timer tick (they run
+	// `yadm sync --quick`). Its failure never fails the sync.
+	Nudge []string
 }
 
 // Syncer runs the sync loop.
@@ -173,12 +186,33 @@ func (s *Syncer) check() error {
 
 // CommitOptions tunes a manual commit.
 type CommitOptions struct {
-	Message string
+	Message string         // subject; empty builds `<verb> <path>` from the paths
 	Paths   []model.Target // empty means every captured, unheld, unprotected path
 	DryRun  bool
 	// Capture, when set, commits these changes as they are (for example a
 	// retag) instead of scanning. They still pass the gate.
 	Capture *apply.Capture
+	// Changes are source changes that are not targets, such as key-log
+	// entries and a retag's manifest edit. They commit in ChangesScope
+	// (default shared) against the current source. The gate does not see
+	// them: its paths name targets, and these hold no plaintext.
+	Changes      []store.Change
+	ChangesScope model.Scope
+
+	Trigger string // Yadm-Auto trailer: TriggerManual (default), TriggerHook or TriggerStop
+	Session string // Yadm-Session trailer, the harness session id
+	Tool    string // Yadm-Tool trailer, the tool that made the edit
+
+	// Unattended commits for an agent hook: naming a path does not lift its
+	// protection, and a new file in an owned root is held for a decision.
+	Unattended bool
+	// Resolve settles the conflict holds of the named paths: they commit over
+	// the current source blob and the hold is dropped.
+	Resolve bool
+	// Push fetches, replays, applies, publishes and pushes after the commit,
+	// under the same lock.
+	Push       bool
+	MaxRetries int
 }
 
 // LockTimeout bounds how long any command waits for the lock before failing
@@ -198,6 +232,19 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	defer release()
 	s.snaps = nil
 	defer func() { s.snaps = nil }()
+
+	if opts.Quick && !opts.DryRun {
+		why, err := s.quickDue(ctx)
+		if err != nil {
+			return rep, err
+		}
+		if why == "" {
+			rep.Skipped = true
+			rep.Captured, rep.Committed = []model.Target{}, []model.CommitID{}
+			return s.finish(ctx, rep, nil, nil)
+		}
+		rep.Reason = why
+	}
 
 	start, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -259,7 +306,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		if err := s.Apply.State.Save(st); err != nil {
 			return rep, err
 		}
-		out, err := s.commit(ctx, &rep, snap, planned, drift)
+		out, err := s.commit(ctx, &rep, snap, planned, drift, nil)
 		if err != nil {
 			return rep, err
 		}
@@ -281,6 +328,14 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, nil
 	}
 
+	return s.exchange(ctx, rep, start, cp.Paths, committed, opts)
+}
+
+// exchange runs steps 3 to 9 under the lock the caller holds: collectors,
+// fetch, replay, apply, publish and push, retrying a lost push race. Run and
+// Commit (with CommitOptions.Push) both end here, so a commit reaches the
+// remote in the same call.
+func (s *Syncer) exchange(ctx context.Context, rep Report, start model.CommitID, captured []model.Target, committed map[model.Target]bool, opts Options) (Report, error) {
 	// 3. Collectors.
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -308,7 +363,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		}
 		if err := s.Store.Fetch(ctx); err != nil {
 			// A network that returns late: the next run catches up once.
-			rep.Holds = s.currentHolds(cp.Paths, committed)
+			rep.Holds = s.currentHolds(captured, committed)
 			return rep, err
 		}
 		local, err := s.Store.ResolveRef(ctx, store.RefMain)
@@ -327,13 +382,13 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		tip := res.tip
 		rep.Alerts = append(rep.Alerts, res.alerts...)
 		if res.dirty {
-			return s.finish(ctx, rep, cp.Paths, committed)
+			return s.finish(ctx, rep, captured, committed)
 		}
 
 		// 8. Status record.
 		changed := tip != start || len(rep.Committed) > 0 || len(rep.Alerts) > 0
 		if !published || tip != publishedTip {
-			if err := s.publish(ctx, tip, changed || published, len(pending(cp.Paths, committed, nil))); err != nil {
+			if err := s.publish(ctx, tip, changed || published, len(pending(captured, committed, nil))); err != nil {
 				return rep, fmt.Errorf("status: %w", err)
 			}
 			published, publishedTip = true, tip
@@ -355,17 +410,23 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		err = s.Store.Push(ctx, specs)
 		if err == nil {
 			rep.Pushed = len(specs) > 0
+			if pushTip != "" && pushTip != remote {
+				s.nudge(ctx, pushTip)
+			}
 			break
 		}
 		if !errors.Is(err, store.ErrRejected) || attempt >= maxRetries {
-			return s.finishErr(rep, cp.Paths, committed, err)
+			return s.finishErr(rep, captured, committed, err)
 		}
 		rep.Retries++
 		if err := s.backoff(ctx, attempt); err != nil {
 			return rep, err
 		}
 	}
-	return s.finish(ctx, rep, cp.Paths, committed)
+	if opts.Push {
+		s.recordFull(ctx)
+	}
+	return s.finish(ctx, rep, captured, committed)
 }
 
 // stepResult is the outcome of steps 5 to 7.
@@ -740,6 +801,17 @@ func (s *Syncer) notify(ctx context.Context, a model.Alert) {
 	req := extexec.Request{Schema: extexec.Schema, Kind: extexec.KindNotify, Name: a.Kind, Home: s.Apply.Home, Source: s.Store.Dir(),
 		Commit: a.Commit, Event: map[string]any{"kind": a.Kind, "commit": string(a.Commit), "machine": string(a.Machine), "detail": a.Detail}}
 	_, _ = s.Exec.Run(ctx, extexec.Spec{Argv: s.Identity.Notify, Timeout: 10 * time.Second}, req)
+}
+
+// nudge runs the Nudge argv after a push that moved main. A failing nudge
+// never fails the sync.
+func (s *Syncer) nudge(ctx context.Context, tip model.CommitID) {
+	if len(s.Nudge) == 0 || s.Exec == nil {
+		return
+	}
+	req := extexec.Request{Schema: extexec.Schema, Kind: extexec.KindNudge, Name: "pushed", Home: s.Apply.Home, Source: s.Store.Dir(),
+		Commit: tip, Event: map[string]any{"kind": "pushed", "commit": string(tip), "machine": string(s.self())}}
+	_, _ = s.Exec.Run(ctx, extexec.Spec{Argv: s.Nudge, Timeout: 10 * time.Second}, req)
 }
 
 // sortedEnclaves returns the keys of m in order.

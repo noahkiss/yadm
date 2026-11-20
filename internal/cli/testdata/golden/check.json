@@ -30,7 +30,7 @@
       {
         "detail": "<detail>",
         "name": "last_sync",
-        "ok": false
+        "ok": true
       },
       {
         "detail": "<detail>",
@@ -49,11 +49,8 @@
       }
     ]
   },
-  "error": {
-    "code": "error",
-    "message": "1 of 9 checks failed"
-  },
+  "error": null,
   "next": [],
-  "ok": false,
+  "ok": true,
   "schema": 1
 }

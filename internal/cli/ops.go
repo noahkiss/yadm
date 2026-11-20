@@ -312,20 +312,37 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	if err != nil {
 		return result{}, err
 	}
-	res, err := m.eng.ResolveHold(ctx, h.ID, apply.ResolveOptions{Take: take})
-	if err != nil {
-		return result{}, err
+	var res apply.Result
+	if err := m.locked(ctx, func() error {
+		var err error
+		res, err = m.eng.ResolveHold(ctx, h.ID, apply.ResolveOptions{Take: take})
+		return err
+	}); err != nil {
+		return lockedResult(err), err
 	}
 	res = normResult(res)
-	var next []string
-	if res.Capture != nil && len(res.Capture.Paths) > 0 {
-		var ps []string
-		for _, p := range res.Capture.Paths {
-			ps = append(ps, string(p))
-		}
-		next = []string{"yadm commit " + strings.Join(ps, " ")}
+	data := map[string]any{"resolved": h.ID, "result": res}
+	if res.Capture == nil || len(res.Capture.Paths) == 0 {
+		return result{data: data, text: actionsText(res)}, attention(res.Holds)
 	}
-	return result{data: map[string]any{"resolved": h.ID, "result": res}, next: next, text: actionsText(res)}, attention(res.Holds)
+	// Taking the target (or a merged file) captured it: commit it now, over
+	// the current source when it settles a conflict, and push.
+	_, _ = m.load(ctx)
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
+		Paths: res.Capture.Paths, Resolve: h.Reason == model.HoldConflict, Push: true,
+		Message: "resolve " + string(h.Target) + " (" + string(h.Reason) + ")",
+	})
+	if err != nil {
+		return result{data: data, next: []string{"yadm commit " + string(h.Target)}}, err
+	}
+	rep = reportData(rep)
+	data["commits"] = rep.Committed
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	holds := append(res.Holds, rep.Holds...)
+	data["holds"] = withHoldNext(holds)
+	return result{data: data, text: actionsText(res)}, attention(holds)
 }
 
 // ---- leases ----

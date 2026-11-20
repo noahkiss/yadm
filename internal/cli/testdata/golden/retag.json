@@ -8,9 +8,7 @@
     ]
   },
   "error": null,
-  "next": [
-    "yadm sync"
-  ],
+  "next": [],
   "ok": true,
   "schema": 1
 }

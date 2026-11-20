@@ -55,9 +55,13 @@ func (a *app) register(root *cobra.Command) {
 	leaf(root, "diff [path...]", "Show plaintext differences between targets and the source", a.cmdDiff)
 	cm := leaf(root, "commit [path...]", "Capture, gate and commit now, one commit per scope", a.cmdCommit)
 	cm.Flags().StringP("message", "m", "", "commit subject")
+	cm.Flags().String("why", "", "short intent; used as the subject when -m is not given")
+	cm.Flags().Bool("no-push", false, "commit only; the next sync pushes")
 	cm.Flags().Bool("dry-run", false, "plan only")
 	sy := leaf(root, "sync", "Capture, commit by policy, fetch, replay, apply and push", a.cmdSync)
-	sy.Flags().Bool("auto", false, "timer mode: auto-commit by policy")
+	sy.Flags().Bool("auto", false, "timer mode: auto-commit by policy; implies --quick unless --full")
+	sy.Flags().Bool("quick", false, "check cheaply first (scan, ls-remote); sync in full only when something moved")
+	sy.Flags().Bool("full", false, "never stop after the quick check")
 	sy.Flags().Bool("no-push", false, "do not push")
 	sy.Flags().Bool("dry-run", false, "plan only")
 	lg := leaf(root, "log [path]", "Show history of the source", a.cmdLog)
@@ -290,8 +294,21 @@ func installSchedule(ctx context.Context, skip bool) scheduleOutcome {
 	return scheduleOutcome{Installed: true}
 }
 
+// ScheduleInterval is how often the timer runs `yadm sync --auto`. Each run
+// starts with the quick check, so a tick where nothing moved costs one stat
+// pass and one `git ls-remote`.
+const ScheduleInterval = time.Minute
+
 func scheduleSpec() schedule.Spec {
-	return schedule.Spec{Binary: hooks.binary(), Interval: schedule.DefaultInterval, Label: schedule.DefaultLabel}
+	return schedule.Spec{Binary: hooks.binary(), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
+}
+
+// lockedResult suggests a retry when err is the lock timeout.
+func lockedResult(err error) result {
+	if errors.Is(err, sync.ErrLocked) {
+		return result{next: []string{"retry in a moment: a sync is running"}}
+	}
+	return result{}
 }
 
 func (a *app) cmdAdopt(cmd *cobra.Command, args []string) (result, error) {
@@ -439,9 +456,19 @@ func (a *app) cmdApply(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	res, err := m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{DryRun: dry, Paths: paths})
+	var res apply.Result
+	run := func() error {
+		var err error
+		res, err = m.eng.Apply(ctx, m.snap.Commit, apply.ApplyOptions{DryRun: dry, Paths: paths})
+		return err
+	}
+	if dry {
+		err = run()
+	} else {
+		err = m.locked(ctx, run)
+	}
 	if err != nil {
-		return result{}, err
+		return lockedResult(err), err
 	}
 	res = normResult(res)
 	return result{data: res, text: actionsText(res)}, attention(res.Holds)
@@ -457,13 +484,16 @@ func (a *app) cmdCapture(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	drift, err := m.eng.Scan(ctx, apply.ScanOptions{Paths: paths})
-	if err != nil {
-		return result{}, err
-	}
-	c, err := m.eng.Capture(ctx, drift)
-	if err != nil {
-		return result{}, err
+	var c apply.Capture
+	if err := m.locked(ctx, func() error {
+		drift, err := m.eng.Scan(ctx, apply.ScanOptions{Paths: paths})
+		if err != nil {
+			return err
+		}
+		c, err = m.eng.Capture(ctx, drift)
+		return err
+	}); err != nil {
+		return lockedResult(err), err
 	}
 	if c.Paths == nil {
 		c.Paths = []model.Target{}
@@ -638,7 +668,12 @@ func reportData(r sync.Report) sync.Report {
 func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	msg, _ := cmd.Flags().GetString("message")
+	why, _ := cmd.Flags().GetString("why")
+	noPush, _ := cmd.Flags().GetBool("no-push")
 	dry, _ := cmd.Flags().GetBool("dry-run")
+	if msg == "" {
+		msg = why
+	}
 	m, err := open(ctx)
 	if err != nil {
 		return notInit(err), err
@@ -648,17 +683,27 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	_, _ = m.load(ctx) // the syncer reports a source that does not load
-	rep, err := m.syncer(a.version).Commit(ctx, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry})
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry, Push: !noPush && !dry})
 	if err != nil {
 		return result{}, err
 	}
 	rep = reportData(rep)
-	return result{data: map[string]any{"commits": rep.Committed, "holds": rep.Holds}, next: []string{"yadm sync"}}, attention(rep.Holds)
+	data := map[string]any{"commits": rep.Committed, "holds": rep.Holds, "pushed": rep.Pushed}
+	var next []string
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+		next = []string{"yadm sync"}
+	} else if noPush && len(rep.Committed) > 0 {
+		next = []string{"yadm sync"}
+	}
+	return result{data: data, next: next}, attention(rep.Holds)
 }
 
 func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	auto, _ := cmd.Flags().GetBool("auto")
+	quick, _ := cmd.Flags().GetBool("quick")
+	full, _ := cmd.Flags().GetBool("full")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	dry, _ := cmd.Flags().GetBool("dry-run")
 	m, err := open(ctx)
@@ -666,7 +711,7 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 		return notInit(err), err
 	}
 	_, _ = m.load(ctx)
-	rep, err := m.syncer(a.version).Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries})
+	rep, err := m.syncer(a.version).Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries, Quick: (quick || auto) && !full})
 	if err != nil {
 		if errors.Is(err, sync.ErrLocked) {
 			return result{next: []string{"yadm sync"}}, err
@@ -766,8 +811,12 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if len(types) == 0 {
 		return result{}, usagef("retag needs at least one type")
 	}
-	c, err := m.eng.Retag(ctx, t, apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), DryRun: dry})
-	if err != nil {
+	var c apply.Capture
+	if err := m.locked(ctx, func() error {
+		var err error
+		c, err = m.eng.Retag(ctx, t, apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), DryRun: dry})
+		return err
+	}); err != nil {
 		return result{}, err
 	}
 	removed := losers(m.snap, t, types)
@@ -779,12 +828,33 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if enclave != "" {
 		scope = model.Scope(enclave)
 	}
-	id, err := m.commitDirect(ctx, c.Changes, fmt.Sprintf("retag %s: %s", t, args[1]), scope)
-	data["commit"] = id
+	// The last change is the target's new source: the gate reads the target.
+	// The manifest edit and the old source's removal commit with it.
+	last := len(c.Changes) - 1
+	target := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
+		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &target,
+		Changes: c.Changes[:last], ChangesScope: scope, Push: true,
+	})
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
 	if err != nil {
 		return result{data: data}, err
 	}
-	return result{data: data, next: []string{"yadm sync"}, text: "committed " + short(id)}, attention(c.Holds)
+	id, err := m.landed(ctx, rep, manifest.FileName)
+	data["commit"] = id
+	holds := append([]model.Hold(nil), c.Holds...)
+	for _, h := range rep.Holds {
+		if h.Target == t {
+			holds = append(holds, h) // other holds on this machine are not the retag's
+		}
+	}
+	data["holds"] = withHoldNext(holds)
+	if err != nil {
+		return result{data: data}, err
+	}
+	return result{data: data, text: "committed " + short(id)}, attention(holds)
 }
 
 func (a *app) cmdBisect(cmd *cobra.Command, args []string) (result, error) {
@@ -807,23 +877,28 @@ func (a *app) cmdCollect(cmd *cobra.Command, args []string) (result, error) {
 		return err == nil && m.allow.Allowed(extexec.KindCollector, name, h)
 	}
 	base := m.request(extexec.KindCollector, "", a.json)
-	obs, skipped, err := fleet.CollectWith(ctx, snap.Fleet, snap.Context, m.exec, allowed, base)
-	if err != nil {
-		return result{}, err
-	}
-	db := apply.FileStateDB(m.paths.State)
-	st, err := db.Load()
-	if err != nil {
-		return result{}, err
-	}
-	if st.Observed == nil {
-		st.Observed = map[string]model.ObservedFact{}
-	}
-	for k, v := range obs {
-		st.Observed[k] = v
-	}
-	if err := db.Save(st); err != nil {
-		return result{}, err
+	var obs map[string]model.ObservedFact
+	var skipped []string
+	if err := m.locked(ctx, func() error {
+		var err error
+		obs, skipped, err = fleet.CollectWith(ctx, snap.Fleet, snap.Context, m.exec, allowed, base)
+		if err != nil {
+			return err
+		}
+		db := apply.FileStateDB(m.paths.State)
+		st, err := db.Load()
+		if err != nil {
+			return err
+		}
+		if st.Observed == nil {
+			st.Observed = map[string]model.ObservedFact{}
+		}
+		for k, v := range obs {
+			st.Observed[k] = v
+		}
+		return db.Save(st)
+	}); err != nil {
+		return lockedResult(err), err
 	}
 	if obs == nil {
 		obs = map[string]model.ObservedFact{}

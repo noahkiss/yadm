@@ -14,6 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/store"
+	"github.com/noahkiss/yadm/internal/sync"
 )
 
 func (a *app) registerEnclave(root *cobra.Command) {
@@ -175,11 +176,14 @@ type entryData struct {
 	Commit      model.CommitID    `json:"commit"`
 	Recovery    string            `json:"recovery_dir,omitempty"`
 	Resealed    []model.Target    `json:"resealed,omitempty"`
+	PushError   string            `json:"push_error,omitempty"` // the commit landed; the next sync pushes it
+	Holds       []model.Hold      `json:"holds,omitempty"`
 }
 
-// writeEntry commits a key-log entry (plus extra changes) on main and pins it.
-// The pin moves only after the commit lands.
-func (m *machineEnv) writeEntry(ctx context.Context, e crypt.LogEntry, extra []store.Change, subject string) (entryData, error) {
+// writeEntry commits a key-log entry (plus a reseal capture) on main through
+// sync.Commit, so the gate and the lock apply, pushes it, and pins it. The
+// pin moves only after the commit lands.
+func (m *machineEnv) writeEntry(ctx context.Context, version string, e crypt.LogEntry, reseal *apply.Capture, subject string) (entryData, error) {
 	b, err := crypt.MarshalLogEntry(e)
 	if err != nil {
 		return entryData{}, err
@@ -192,8 +196,27 @@ func (m *machineEnv) writeEntry(ctx context.Context, e crypt.LogEntry, extra []s
 	for _, mb := range e.Members {
 		d.Members = append(d.Members, mb.Machine)
 	}
-	changes := append([]store.Change{{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}}, extra...)
-	id, err := m.commitDirect(ctx, changes, subject, model.Scope(e.Enclave))
+	opts := sync.CommitOptions{
+		Message:      subject,
+		Changes:      []store.Change{{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}},
+		ChangesScope: model.Scope(e.Enclave),
+		Capture:      reseal,
+		Push:         true,
+	}
+	if reseal == nil {
+		opts.Capture = &apply.Capture{}
+	}
+	rep, pushErr, err := m.commitThrough(ctx, version, opts)
+	if pushErr != nil {
+		d.PushError = pushErr.Error()
+	}
+	if len(rep.Holds) > 0 {
+		d.Holds = withHoldNext(rep.Holds)
+	}
+	var id model.CommitID
+	if err == nil {
+		id, err = m.landed(ctx, rep, crypt.LogPath(e.Enclave, e.Seq))
+	}
 	d.Commit = id
 	if id == "" {
 		return d, err
@@ -233,7 +256,7 @@ func (a *app) cmdEnclaveCreate(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, entry, nil, "enclave "+string(e)+": create")
+	d, err := m.writeEntry(ctx, a.version, entry, nil, "enclave "+string(e)+": create")
 	d.Recovery = dir
 	next := []string{"yadm sync"}
 	if dir != "" {
@@ -269,7 +292,7 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
+	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
 	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --expect %s", who, e, d.Fingerprint)}
 	return result{data: d, next: next, text: "fingerprint " + d.Fingerprint}, err
 }
@@ -327,7 +350,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, entry, c.Changes, fmt.Sprintf("enclave %s: remove %s", e, who))
+	d, err := m.writeEntry(ctx, a.version, entry, &c, fmt.Sprintf("enclave %s: remove %s", e, who))
 	d.Resealed = c.Paths
 	next := []string{
 		"yadm sync",

@@ -9,17 +9,11 @@
         "target": ".config/tool/config"
       },
       {
-        "kind": "write",
-        "scope": "shared",
-        "source": "files/.config/tool/extra",
-        "target": ".config/tool/extra"
-      },
-      {
         "kind": "hold",
         "reason": "drifted",
         "scope": "shared",
-        "source": "files/.config/tool/retag-me",
-        "target": ".config/tool/retag-me"
+        "source": "files/.config/tool/extra",
+        "target": ".config/tool/extra"
       }
     ],
     "commit": "<oid>",
@@ -35,7 +29,7 @@
         "reason": "drifted",
         "scope": "shared",
         "since": "<since>",
-        "target": ".config/tool/retag-me"
+        "target": ".config/tool/extra"
       }
     ]
   },

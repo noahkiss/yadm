@@ -246,7 +246,7 @@ func TestGolden(t *testing.T) {
 	run("conflicts-empty", ExitOK, "conflicts")
 	run("hold-resolve-no-take", ExitUsage, "hold", "resolve", "abc")
 	run("schedule-status", ExitOK, "schedule", "status")
-	run("check", ExitError, "check")
+	run("check", ExitOK, "check")
 
 	writeFile(t, filepath.Join(a.Home, ".config/tool/config"), "color = red\n")
 	run("status-drift", ExitOK, "status")
@@ -274,14 +274,15 @@ func TestGolden(t *testing.T) {
 		t.Fatalf("retag tree:\n%s", out)
 	}
 
-	// Adopt on host-b: one identical target, one differing, one missing.
+	// Adopt on host-b: one identical target and one differing. The retag
+	// was pushed with its commit, so host-b no longer receives retag-me.
 	b := useMachine(t, root, "b")
 	yadmOK(t, "init", remote, "--machine", "host-b", "--no-schedule")
 	writeFile(t, filepath.Join(b.Home, ".config/tool/config"), "color = blue\n")
-	writeFile(t, filepath.Join(b.Home, ".config/tool/retag-me"), "mine\n")
+	writeFile(t, filepath.Join(b.Home, ".config/tool/extra"), "mine\n")
 	run("adopt-dry-run", ExitAttention, "adopt", "--dry-run", "--allow-tasks")
 	for _, p := range []string{
-		filepath.Join(b.Home, ".config/tool/extra"),
+		filepath.Join(b.Home, ".config/tool/retag-me"),
 		filepath.Join(b.State, "allowed.json"),
 		filepath.Join(b.State, "state.json"),
 		filepath.Join(b.Home, ".config/systemd/user/yadm-sync.timer"),
@@ -290,14 +291,14 @@ func TestGolden(t *testing.T) {
 			t.Fatalf("adopt --dry-run wrote %s", p)
 		}
 	}
-	if got := readFile(t, filepath.Join(b.Home, ".config/tool/retag-me")); got != "mine\n" {
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/extra")); got != "mine\n" {
 		t.Fatalf("adopt --dry-run changed a differing target: %q", got)
 	}
 	run("adopt", ExitAttention, "adopt", "--no-schedule")
-	if got := readFile(t, filepath.Join(b.Home, ".config/tool/extra")); got != "extra\n" {
-		t.Fatalf("adopt did not write the missing target: %q", got)
+	if _, err := os.Stat(filepath.Join(b.Home, ".config/tool/retag-me")); err == nil {
+		t.Fatal("adopt wrote a target host-b lost to the retag")
 	}
-	if got := readFile(t, filepath.Join(b.Home, ".config/tool/retag-me")); got != "mine\n" {
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/extra")); got != "mine\n" {
 		t.Fatalf("adopt overwrote a differing target: %q", got)
 	}
 }

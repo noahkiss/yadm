@@ -46,7 +46,12 @@ func (s *Syncer) gateFor(snap *apply.Snapshot) tasks.Gate {
 // up the resolution ladder first, so a commit never silently reverts a
 // change it did not see. Then main moves by compare-and-swap, the worktree
 // follows, and apply records the committed targets.
-func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, planned []PlannedCommit, drift []apply.Drift) (commitOut, error) {
+//
+// resolve names targets whose conflict the caller settled: they commit over
+// the current source blob instead of going up the ladder again. A change in
+// direct is not a target (a key-log entry, a manifest edit): it skips the
+// gate, whose paths name targets, and commits against the current source.
+func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, planned []PlannedCommit, drift []apply.Drift, resolve map[model.Target]bool) (commitOut, error) {
 	out := commitOut{committed: map[model.Target]bool{}}
 	if len(planned) == 0 {
 		return out, nil
@@ -74,9 +79,17 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	// The commit gate sees the target plaintext of every staged, non-deleted file.
 	var staged []tasks.Staged
 	unreadable := map[model.Target]bool{}
+	direct := map[model.Target]bool{}
 	for _, pc := range planned {
 		for i, t := range pc.Targets {
 			if pc.Changes[i].Delete {
+				continue
+			}
+			if pc.isDirect(i) {
+				// Not a target: a key-log entry or a manifest edit is tool
+				// output (signed or structural) that holds no plaintext.
+				// The gate's paths name targets, so it does not see these.
+				direct[t] = true
 				continue
 			}
 			b, err := os.ReadFile(filepath.Join(s.Apply.Home, filepath.FromSlash(string(t))))
@@ -89,6 +102,9 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		}
 	}
 	pass := map[model.Target]bool{}
+	for t := range direct {
+		pass[t] = true
+	}
 	if g := s.gateFor(snap); g == nil {
 		for _, x := range staged {
 			pass[x.Target] = true
@@ -117,6 +133,8 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		var changes []store.Change
 		var landed []model.Target
 		var trailers []store.Trailer
+		merged := 0
+		var mergeNote string
 		for i, ch := range pc.Changes {
 			t := pc.Targets[i]
 			if !ch.Delete && !pass[t] {
@@ -124,6 +142,9 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			}
 			base := baseBlob(st, appliedTree, t, ch.Path)
 			cur := headTree[ch.Path].Blob
+			if pc.isDirect(i) || resolve[t] {
+				base = cur
+			}
 			if base == cur && !ch.Delete && cur != "" {
 				// Already in the source (a root file no entry manages yet): no commit.
 				id, err := s.blobID(ctx, ch.Blob)
@@ -170,21 +191,26 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			landed = append(landed, t)
 			written[t] = hashes[t]
 			trailers = append(trailers, store.Trailer{Key: TrailerResolved, Value: rung + " " + string(ch.Path)})
+			merged++
+			mergeNote = "merge " + string(t) + " (" + rung + ")"
 		}
 		if len(changes) == 0 {
 			continue
 		}
-		msg := pc.Message
-		if len(landed) != len(pc.Targets) {
-			kind, _, _ := strings.Cut(msg.Subject, "(")
-			auto := trailer(msg, store.TrailerAuto) == "1"
-			subj := msg.Subject
-			msg = commitMessage(kind, hostOf(msg.Subject), s.self(), pc.Scope, landed, auto)
-			if !strings.HasPrefix(subj, kind+"(") || !strings.Contains(subj, " file") {
-				msg.Subject = subj // a custom subject stays
+		var msg store.Message
+		if pc.Info.Trigger != "" || pc.Info.Subject != "" {
+			info := pc.Info
+			if merged == len(landed) {
+				info.Trigger = TriggerMerge
+				if merged == 1 && info.Subject == "" {
+					info.Subject = mergeNote
+				}
 			}
+			msg = commitMessage(info, s.self(), pc.Scope, itemsOf(st, landed, changes), trailers...)
+		} else {
+			msg = pc.Message
+			msg.Trailers = append(append([]store.Trailer(nil), msg.Trailers...), trailers...)
 		}
-		msg.Trailers = append(append([]store.Trailer(nil), msg.Trailers...), trailers...)
 		id, err := s.Store.CommitPaths(ctx, tip, changes, msg)
 		if err != nil {
 			return out, fmt.Errorf("commit %s: %w", pc.Scope, err)
@@ -217,16 +243,6 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	return out, err
 }
 
-// hostOf extracts the host from "kind(host): ...".
-func hostOf(subject string) string {
-	_, rest, ok := strings.Cut(subject, "(")
-	if !ok {
-		return ""
-	}
-	h, _, _ := strings.Cut(rest, ")")
-	return h
-}
-
 // baseBlob is the source blob a capture of t was made against.
 func baseBlob(st *apply.State, applied map[model.SourcePath]store.TreeEntry, t model.Target, p model.SourcePath) string {
 	if ts, ok := st.Targets[t]; ok && ts.Source == p && ts.SourceBlob != "" {
@@ -237,8 +253,10 @@ func baseBlob(st *apply.State, applied map[model.SourcePath]store.TreeEntry, t m
 
 // Commit makes a manual commit: capture, gate, one commit per scope through a
 // fresh private index. It bypasses the quiet period and leases but never the
-// gate or the seal guard. Protected paths need to be named in Paths. It does
-// not fetch or push; the next sync does.
+// gate or the seal guard. Protected paths need to be named in Paths, unless
+// the commit is Unattended. With Push it then fetches, replays, applies,
+// publishes and pushes under the same lock, so the commit reaches the remote
+// in this call; without it the next sync pushes.
 func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error) {
 	var rep Report
 	if err := s.check(); err != nil {
@@ -260,7 +278,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	var drift []apply.Drift
 	if opts.Capture != nil {
 		cp = *opts.Capture
-	} else {
+	} else if len(opts.Changes) == 0 || len(opts.Paths) > 0 {
 		// Scan everything (owned roots included), then keep the named paths.
 		all, err := s.Apply.Scan(ctx, apply.ScanOptions{})
 		if err != nil {
@@ -289,28 +307,61 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	}
 	pol := s.policyFor(snap)
 	now := s.now()
+	info := MessageInfo{Trigger: opts.Trigger, Subject: opts.Message, Session: opts.Session, Tool: opts.Tool}
+	if info.Trigger == "" {
+		info.Trigger = TriggerManual
+	}
 
+	resolve := map[model.Target]bool{}
 	byScope := map[model.Scope]*PlannedCommit{}
+	plan := func(scope model.Scope) *PlannedCommit {
+		pc := byScope[scope]
+		if pc == nil {
+			pc = &PlannedCommit{Scope: scope, Info: info}
+			byScope[scope] = pc
+		}
+		return pc
+	}
 	for i, t := range cp.Paths {
 		ch := cp.Changes[i]
 		scope := scopeOf(cp, t)
-		named := opts.Capture != nil || (len(opts.Paths) > 0 && named(opts.Paths, t))
+		isNamed := opts.Capture != nil || (len(opts.Paths) > 0 && named(opts.Paths, t))
 		if hasHold(st, t, model.HoldConflict) {
-			continue
+			if !opts.Resolve || !isNamed {
+				continue
+			}
+			// The caller settled the conflict: commit this side over the
+			// current source and drop the hold.
+			dropHolds(st, t, model.HoldConflict)
+			resolve[t] = true
 		}
 		dropSyncHolds(st, func(x model.Target) bool { return x == t })
-		pre := !named && isNew(st, t) && s.preExisting(st)(t)
-		if !named && (ch.Delete || protected(pol, t, ch.Path) || pre) {
+		approved := isNamed && !opts.Unattended
+		pre := !approved && isNew(st, t) && s.preExisting(st)(t)
+		switch {
+		case !approved && (ch.Delete || protected(pol, t, ch.Path) || pre):
 			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), "protected; commit it by name", "yadm commit "+string(t)))
 			continue
+		case opts.Unattended && isNew(st, t):
+			// A new file in an owned root: which machines get it is a decision.
+			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now),
+				"new file; commit it by name to share it, or retag it first", "yadm commit "+string(t), "yadm retag "+string(t)+" <type>[,<type>...]"))
+			continue
 		}
-		pc := byScope[scope]
-		if pc == nil {
-			pc = &PlannedCommit{Scope: scope}
-			byScope[scope] = pc
-		}
+		pc := plan(scope)
 		pc.Changes = append(pc.Changes, ch)
 		pc.Targets = append(pc.Targets, t)
+		pc.direct = append(pc.direct, false)
+	}
+	for _, ch := range opts.Changes {
+		scope := opts.ChangesScope
+		if scope == "" {
+			scope = model.ScopeShared
+		}
+		pc := plan(scope)
+		pc.Changes = append(pc.Changes, ch)
+		pc.Targets = append(pc.Targets, model.Target(ch.Path))
+		pc.direct = append(pc.direct, true)
 	}
 	scopes := make([]model.Scope, 0, len(byScope))
 	for sc := range byScope {
@@ -320,10 +371,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	var planned []PlannedCommit
 	for _, sc := range scopes {
 		pc := byScope[sc]
-		pc.Message = commitMessage("commit", pol.Host, s.self(), sc, pc.Targets, false)
-		if m := strings.TrimSpace(opts.Message); m != "" {
-			pc.Message.Subject = m
-		}
+		pc.Message = commitMessage(info, s.self(), sc, itemsOf(st, pc.Targets, pc.Changes))
 		planned = append(planned, *pc)
 	}
 	if opts.DryRun {
@@ -340,7 +388,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err := s.Apply.State.Save(st); err != nil {
 		return rep, err
 	}
-	out, err := s.commit(ctx, &rep, snap, planned, drift)
+	out, err := s.commit(ctx, &rep, snap, planned, drift, resolve)
 	if err != nil {
 		return rep, err
 	}
@@ -356,7 +404,27 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if a, err := s.Store.ResolveRef(ctx, store.RefMain); err == nil && len(out.ids) > 0 && !out.dirty {
 		rep.Applied = a
 	}
+	if opts.Push && !out.dirty {
+		return s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
+	}
 	return s.finish(ctx, rep, cp.Paths, out.committed)
+}
+
+// dropHolds removes t's holds with one of reasons.
+func dropHolds(st *apply.State, t model.Target, reasons ...model.HoldReason) {
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		drop := false
+		if h.Target == t {
+			for _, r := range reasons {
+				drop = drop || h.Reason == r
+			}
+		}
+		if !drop {
+			out = append(out, h)
+		}
+	}
+	st.Holds = out
 }
 
 // named reports whether t is one of paths or below one of them.
@@ -417,3 +485,6 @@ func (s *Syncer) collect(ctx context.Context, head model.CommitID) error {
 	}
 	return s.Apply.State.Save(st)
 }
+
+// isDirect reports whether Changes[i] is not a target.
+func (pc PlannedCommit) isDirect(i int) bool { return i < len(pc.direct) && pc.direct[i] }

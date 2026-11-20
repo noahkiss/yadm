@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/user"
@@ -32,6 +33,10 @@ var hooks = struct {
 	exec      func() extexec.Runner
 	units     func() tasks.UnitReloader
 	binary    func() string
+	nudge     func() []string // argv run after a push that moved main
+	lockWait  time.Duration   // how long a command waits for the lock
+	hookWait  time.Duration   // how long a harness hook waits for the lock
+	stdin     func() io.Reader
 }{
 	scheduler: func() (schedule.Scheduler, error) { return schedule.ForOS(runtime.GOOS) },
 	now:       time.Now,
@@ -50,6 +55,15 @@ var hooks = struct {
 		}
 		return p
 	},
+	nudge: func() []string {
+		if p, err := extexec.FindSubcommand("nudge"); err == nil {
+			return []string{p}
+		}
+		return nil
+	},
+	lockWait: sync.LockTimeout,
+	hookWait: 3 * time.Second,
+	stdin:    func() io.Reader { return os.Stdin },
 }
 
 // errNotInitialized means this machine has no machine.toml or source clone.
@@ -200,6 +214,25 @@ func policy(s *apply.Snapshot) sync.Policy {
 	return p
 }
 
+// lock is the sync lock with the command's bounded wait.
+func (m *machineEnv) lock(wait time.Duration) sync.Lock {
+	if wait <= 0 {
+		wait = hooks.lockWait
+	}
+	return sync.FileLockTimeout(m.paths.State, wait)
+}
+
+// locked runs fn under the sync lock, so apply, capture, collect and
+// enclave writes never interleave with a sync or a commit.
+func (m *machineEnv) locked(ctx context.Context, fn func() error) error {
+	release, err := m.lock(0).Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return fn()
+}
+
 // syncer wires a sync.Syncer. The snapshot may be nil when the source does
 // not load; the syncer then reports its own error.
 func (m *machineEnv) syncer(version string) *sync.Syncer {
@@ -209,11 +242,12 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Status:   store.StatusRefs(m.repo, m.local.Machine),
 		Exec:     m.exec,
 		Identity: m.local,
-		Lock:     sync.FileLock(m.paths.State),
+		Lock:     m.lock(0),
 		Leases:   sync.FileLeases(m.paths.State),
 		Policy:   policy(m.snap),
 		Version:  version,
 		Now:      hooks.now,
+		Nudge:    hooks.nudge(),
 	}
 	var checks map[string]manifest.CheckDef
 	if m.snap != nil {
@@ -225,6 +259,18 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 	}
 	d.Gate = tasks.NewGateIn(checks, m.exec, m.allow, m.paths.State)
 	return &sync.Syncer{Deps: d}
+}
+
+// commitThrough commits through sync.Commit (lock, gate, private index) and,
+// with opts.Push, fetches, replays and pushes in the same call. A failure
+// after the commit landed comes back as pushErr: the commit stands and the
+// next sync pushes it.
+func (m *machineEnv) commitThrough(ctx context.Context, version string, opts sync.CommitOptions) (rep sync.Report, pushErr, err error) {
+	rep, err = m.syncer(version).Commit(ctx, opts)
+	if err != nil && opts.Push && len(rep.Committed) > 0 && !errors.Is(err, sync.ErrLocked) {
+		return rep, err, nil
+	}
+	return rep, nil, err
 }
 
 // selfStatus is this machine's last published status record, or nil.
@@ -239,30 +285,19 @@ func (m *machineEnv) selfStatus(ctx context.Context) *model.Status {
 	return nil
 }
 
-// commitDirect makes one manual, protected commit on main from pre-built
-// changes (key-log entries, retag), moves main by compare-and-swap and moves
-// the source worktree. It is for changes that never auto-commit and that
-// sync.CommitOptions cannot carry.
-func (m *machineEnv) commitDirect(ctx context.Context, changes []store.Change, subject string, scope model.Scope) (model.CommitID, error) {
-	h, err := m.head(ctx)
-	if err != nil {
-		return "", err
+// landed returns the commit of rep that holds source path p, or an error
+// that says the gate or a hold kept it out.
+func (m *machineEnv) landed(ctx context.Context, rep sync.Report, p model.SourcePath) (model.CommitID, error) {
+	for _, id := range rep.Committed {
+		cs, err := m.repo.Log(ctx, string(id)+"^!", []model.SourcePath{p})
+		if err == nil && len(cs) > 0 {
+			return id, nil
+		}
 	}
-	msg := store.Message{Subject: subject, Trailers: []store.Trailer{
-		{Key: store.TrailerMachine, Value: string(m.local.Machine)},
-		{Key: store.TrailerScope, Value: string(scope)},
-	}}
-	id, err := m.repo.CommitPaths(ctx, h, changes, msg)
-	if err != nil {
-		return "", err
+	if len(rep.Holds) > 0 {
+		return "", fmt.Errorf("%w: %s did not commit: %d held", ErrAttention, p, len(rep.Holds))
 	}
-	if err := m.repo.UpdateRef(ctx, store.RefMain, id, h); err != nil {
-		return "", err
-	}
-	if err := m.repo.SyncWorktree(ctx, id); err != nil {
-		return id, fmt.Errorf("committed %s but the source worktree did not move: %w", id, err)
-	}
-	return id, nil
+	return "", fmt.Errorf("%s did not commit", p)
 }
 
 // keyLogs reads every enclave's key-log entries at rev, in sequence order.

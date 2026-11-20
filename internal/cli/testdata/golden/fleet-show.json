@@ -11,7 +11,37 @@
         "vault"
       ]
     },
-    "stale": true
+    "stale": false,
+    "status": {
+      "applied": "<oid>",
+      "conflicts": 0,
+      "held": 0,
+      "last_sync": "<last_sync>",
+      "machine": "<machine-id>",
+      "observed": {
+        "packages": {
+          "collected_at": "<collected_at>",
+          "collector": "packages",
+          "items": [
+            "tool-one"
+          ]
+        }
+      },
+      "pending": 0,
+      "schema": 1,
+      "tasks": [
+        {
+          "commit": "<oid>",
+          "duration_ns": "<duration_ns>",
+          "error": "pkg-tool: exec: \"pkg-tool\": executable file not found in $PATH",
+          "exit_code": -1,
+          "started": "<started>",
+          "task": "bundle",
+          "trigger": "paths"
+        }
+      ],
+      "version": "test"
+    }
   },
   "error": null,
   "next": [],

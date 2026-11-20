@@ -22,7 +22,7 @@
 //
 // Exported API:
 //
-//	type Kind string                    // KindSubcommand, KindCollector, KindTask, KindCheck, KindNotify, KindBusy
+//	type Kind string                    // KindSubcommand, KindCollector, KindTask, KindCheck, KindNotify, KindBusy, KindNudge
 //	func Env(req Request) []string
 //	type Request struct{...}            // stdin payload
 //	type Response struct{...}           // stdout payload

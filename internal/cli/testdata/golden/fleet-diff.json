@@ -2,8 +2,12 @@
   "command": "fleet diff",
   "data": {
     "collector": "packages",
-    "missing": {},
-    "union": [],
+    "missing": {
+      "m-aaaaaa000001": []
+    },
+    "union": [
+      "tool-one"
+    ],
     "unknown": []
   },
   "error": null,

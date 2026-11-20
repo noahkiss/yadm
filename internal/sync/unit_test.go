@@ -55,7 +55,7 @@ func TestPlanCommitsPolicy(t *testing.T) {
 		t.Fatalf("planned %+v", planned)
 	}
 	m := planned[0].Message
-	if m.Subject != "auto(host-a): 2 files [shared]" || trailer(m, store.TrailerAuto) != "1" || trailer(m, store.TrailerScope) != "shared" || trailer(m, store.TrailerMachine) != "m-x" {
+	if m.Subject != "update 2 files" || trailer(m, store.TrailerAuto) != TriggerScan || trailer(m, store.TrailerScope) != "shared" || trailer(m, store.TrailerMachine) != "m-x" {
 		t.Errorf("message %+v", m)
 	}
 	got := map[model.Target]model.HoldReason{}
@@ -200,7 +200,7 @@ func TestManualCommitAndReview(t *testing.T) {
 		t.Fatalf("manual commit: %+v", r)
 	}
 	msg := git(t, A.repo.Dir(), "log", "-1", "--format=%B", "main")
-	if !strings.HasPrefix(msg, "tidy notes") || strings.Contains(msg, "Yadm-Auto") || !strings.Contains(msg, "Yadm-Scope: personal") {
+	if !strings.HasPrefix(msg, "tidy notes") || !strings.Contains(msg, "Yadm-Auto: manual") || !strings.Contains(msg, "Yadm-Scope: personal") {
 		t.Errorf("manual message:\n%s", msg)
 	}
 	if strings.Contains(git(t, A.repo.Dir(), "show", "--stat", "main"), "aliases") {

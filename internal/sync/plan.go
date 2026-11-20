@@ -100,7 +100,8 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 			Scope:   sc,
 			Changes: byScope[sc],
 			Targets: targets[sc],
-			Message: commitMessage("auto", p.Host, self, sc, targets[sc], true),
+			Message: commitMessage(MessageInfo{Trigger: TriggerScan}, self, sc, itemsOf(st, targets[sc], byScope[sc])),
+			Info:    MessageInfo{Trigger: TriggerScan},
 		})
 	}
 	return out, holds, nil
@@ -217,31 +218,151 @@ func dropSyncHolds(st *apply.State, drop func(model.Target) bool) {
 	st.Holds = out
 }
 
-// commitMessage builds an auto or manual commit message.
-func commitMessage(kind, host string, self model.MachineID, scope model.Scope, targets []model.Target, auto bool) store.Message {
-	if host == "" {
-		host = string(self)
-	}
-	n := len(targets)
-	unit := "files"
-	if n == 1 {
-		unit = "file"
-	}
-	lines := make([]string, len(targets))
-	for i, t := range targets {
-		lines[i] = string(t)
+// Commit triggers, the value of the Yadm-Auto trailer.
+const (
+	TriggerHook   = "hook"   // an agent harness hook captured an edit
+	TriggerStop   = "stop"   // an agent harness flushed a session at its end
+	TriggerScan   = "scan"   // the timer's scan found the change
+	TriggerManual = "manual" // `yadm commit`
+	TriggerMerge  = "merge"  // a commit whose only change was merged up the ladder
+)
+
+// Trailer keys sync writes besides store.TrailerMachine, TrailerAuto and TrailerScope.
+const (
+	TrailerSession = "Yadm-Session" // the harness session id, when known
+	TrailerTool    = "Yadm-Tool"    // the tool that made the edit (Edit, Write, Bash, an app), when known
+)
+
+// MessageInfo is what a commit message is built from besides its targets.
+type MessageInfo struct {
+	Trigger string // TriggerHook, TriggerStop, TriggerScan, TriggerManual or TriggerMerge
+	Subject string // a caller's subject (`-m`, `--why`); empty builds one from the paths
+	Session string
+	Tool    string
+}
+
+// MessageItem is one target of a commit and what happened to it.
+type MessageItem struct {
+	Target model.Target
+	Verb   string // "add", "update" or "remove"
+}
+
+// commitMessage builds the message of a tool commit. The subject reads like a
+// human one: `<verb> <path>`, `<verb> N files in <dir>` or `<verb> N files`;
+// a caller's subject wins. The body lists every target. Messages name paths
+// only, never content, so no enclave plaintext reaches a message or trailer.
+func commitMessage(info MessageInfo, self model.MachineID, scope model.Scope, items []MessageItem, extra ...store.Trailer) store.Message {
+	lines := make([]string, len(items))
+	verbs := map[string]bool{}
+	for i, it := range items {
+		lines[i] = string(it.Target)
+		verbs[it.Verb] = true
 	}
 	sort.Strings(lines)
+	subject := strings.TrimSpace(info.Subject)
+	if i := strings.IndexByte(subject, '\n'); i >= 0 {
+		subject = strings.TrimSpace(subject[:i])
+	}
+	if subject == "" {
+		subject = mechanicalSubject(verbs, lines)
+	}
+	trigger := info.Trigger
+	if trigger == "" {
+		trigger = TriggerManual
+	}
 	m := store.Message{
-		Subject: fmt.Sprintf("%s(%s): %d %s [%s]", kind, host, n, unit, scope),
+		Subject: subject,
 		Body:    strings.Join(lines, "\n"),
 		Trailers: []store.Trailer{
 			{Key: store.TrailerMachine, Value: string(self)},
+			{Key: store.TrailerAuto, Value: trigger},
+			{Key: store.TrailerScope, Value: string(scope)},
 		},
 	}
-	if auto {
-		m.Trailers = append(m.Trailers, store.Trailer{Key: store.TrailerAuto, Value: "1"})
+	if v := oneLine(info.Session); v != "" {
+		m.Trailers = append(m.Trailers, store.Trailer{Key: TrailerSession, Value: v})
 	}
-	m.Trailers = append(m.Trailers, store.Trailer{Key: store.TrailerScope, Value: string(scope)})
+	if v := oneLine(info.Tool); v != "" {
+		m.Trailers = append(m.Trailers, store.Trailer{Key: TrailerTool, Value: v})
+	}
+	m.Trailers = append(m.Trailers, extra...)
 	return m
+}
+
+// mechanicalSubject is `<verb> <path>` for one target, `<verb> N files in
+// <dir>` when they share a directory, else `<verb> N files`.
+func mechanicalSubject(verbs map[string]bool, paths []string) string {
+	verb := "update"
+	if len(verbs) == 1 {
+		for v := range verbs {
+			if v != "" {
+				verb = v
+			}
+		}
+	}
+	switch len(paths) {
+	case 0:
+		return verb + " nothing"
+	case 1:
+		return verb + " " + paths[0]
+	}
+	dir := commonDir(paths)
+	if dir == "" {
+		return fmt.Sprintf("%s %d files", verb, len(paths))
+	}
+	return fmt.Sprintf("%s %d files in %s", verb, len(paths), dir)
+}
+
+// commonDir is the deepest directory every path is under, or "".
+func commonDir(paths []string) string {
+	dir := paths[0]
+	i := strings.LastIndexByte(dir, '/')
+	if i < 0 {
+		return ""
+	}
+	dir = dir[:i]
+	for _, p := range paths[1:] {
+		for dir != "" && !strings.HasPrefix(p, dir+"/") {
+			if i := strings.LastIndexByte(dir, '/'); i >= 0 {
+				dir = dir[:i]
+			} else {
+				dir = ""
+			}
+		}
+	}
+	return dir
+}
+
+// oneLine keeps a trailer value on one line and bounded.
+func oneLine(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\r", " "), "\n", " "))
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return s
+}
+
+// verbOf names what a change does to a target: a deletion removes it, a
+// target this machine has never written is added, anything else updates.
+func verbOf(st *apply.State, t model.Target, ch store.Change) string {
+	switch {
+	case ch.Delete:
+		return "remove"
+	case st != nil && isNew(st, t):
+		return "add"
+	}
+	return "update"
+}
+
+// itemsOf pairs targets with their verbs.
+func itemsOf(st *apply.State, targets []model.Target, changes []store.Change) []MessageItem {
+	out := make([]MessageItem, len(targets))
+	for i, t := range targets {
+		var ch store.Change
+		if i < len(changes) {
+			ch = changes[i]
+		}
+		out[i] = MessageItem{Target: t, Verb: verbOf(st, t, ch)}
+	}
+	return out
 }

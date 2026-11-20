@@ -29,6 +29,7 @@ const (
 	KindCheck      Kind = "check"
 	KindNotify     Kind = "notify"
 	KindBusy       Kind = "busy"
+	KindNudge      Kind = "nudge" // after a push: tell peers to run `yadm sync --quick` now
 )
 
 // Request is written to the executable's stdin as one JSON object.

@@ -1,7 +1,7 @@
 {
   "command": "status",
   "data": {
-    "ahead": 1,
+    "ahead": 0,
     "applied": "<oid>",
     "behind": 0,
     "drift": [
@@ -14,7 +14,7 @@
       }
     ],
     "holds": [],
-    "last_sync": null,
+    "last_sync": "<last_sync>",
     "machine": "<machine-id>"
   },
   "error": null,

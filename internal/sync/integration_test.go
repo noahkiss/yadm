@@ -85,7 +85,7 @@ func TestConcurrentEditsConverge(t *testing.T) {
 	}
 	// Auto commits carry the trailers.
 	msg := git(t, w.remote, "log", "-1", "--format=%B", "main~1")
-	for _, want := range []string{"Machine: ", "Yadm-Auto: 1", "Yadm-Scope: shared"} {
+	for _, want := range []string{"Machine: ", "Yadm-Auto: scan", "Yadm-Scope: shared"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("commit message lacks %q:\n%s", want, msg)
 		}
