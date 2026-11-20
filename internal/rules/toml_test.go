@@ -234,11 +234,11 @@ func TestTOMLEditor(t *testing.T) {
 	}
 	// Insert into an inline table and a section.
 	src := []byte("inl = { p = \"q\", r = 's', n = 5 }\n[t]\nk = \"v\"\nnew = [1]\nm = 2\n")
-	got, err := put(f, doc, []string{"inl", "n"}, src)
+	got, err := put(f, doc, []string{"inl", "n"}, src, false)
 	if err != nil || !bytes.Contains(got, []byte("inl = { p = \"q\", r = 's', n = 5 }")) {
 		t.Fatalf("inline insert: %q %v", got, err)
 	}
-	got, err = put(f, doc, []string{"t", "new"}, src)
+	got, err = put(f, doc, []string{"t", "new"}, src, false)
 	if err != nil || !bytes.Contains(got, []byte("k = \"v\"\nnew = [1]\nm = 2\n")) {
 		t.Fatalf("section insert: %q %v", got, err)
 	}
@@ -253,5 +253,32 @@ func TestTOMLCRLF(t *testing.T) {
 	}
 	if got := mustTarget(t, src, live, spec, member()); !bytes.Equal(got, live) {
 		t.Fatalf("target %q", got)
+	}
+}
+
+func TestTOMLDropMidFileTables(t *testing.T) {
+	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"history", "servers"}}
+	live := []byte(`top = 1
+
+[history]
+entries = ["one"]
+
+[servers.alpha]
+url = "a"
+
+[servers.beta]
+url = "b"
+
+# the auth table
+[auth]
+user = "example"
+`)
+	s := member()
+	src := mustSource(t, live, nil, spec, s)
+	if want := "top = 1\n\n# the auth table\n[auth]\nuser = \"example\"\n"; string(src) != want {
+		t.Fatalf("source:\n%q", src)
+	}
+	if got := mustTarget(t, src, live, spec, s); !bytes.Equal(got, live) {
+		t.Fatalf("target:\n%s", got)
 	}
 }

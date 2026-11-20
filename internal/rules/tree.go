@@ -81,6 +81,9 @@ func (n *node) walk(f func(*node)) {
 type slot struct {
 	prev, next *node
 	gap        []byte // comment lines between prev and the item in the source
+	tail       []byte // the item's same-line comment in the source
+	sepBefore  []byte // inline separator before the item in the source (", ")
+	sepAfter   []byte // inline separator after the item in the source
 }
 
 func (s slot) indexes() (int, int) {
@@ -318,14 +321,22 @@ func (l lang) listDelete(b []byte, items []*node, i int, ownComments bool) ([]by
 // close: after items[prev] when prev >= 0, else before items[next] when
 // next >= 0, else at the end. text builds the item from the indentation it
 // will sit at.
-func (l lang) listInsert(b []byte, open, close int, items []*node, prev, next int, gap []byte, unit string, text func(indent string) string) ([]byte, error) {
+func (l lang) listInsert(b []byte, open, close int, items []*node, prev, next int, sl slot, unit string, text func(indent string) string) ([]byte, error) {
 	if open < 0 || close < 0 {
 		return nil, errUnsupported
+	}
+	gap, tail := sl.gap, sl.tail
+	sepBefore, sepAfter := ", ", ", "
+	if len(sl.sepBefore) > 0 {
+		sepBefore = string(sl.sepBefore)
+	}
+	if len(sl.sepAfter) > 0 {
+		sepAfter = string(sl.sepAfter)
 	}
 	if len(items) == 0 {
 		if bytes.IndexByte(b[open:close], '\n') >= 0 {
 			ind := indentAt(b, close) + unit
-			return splice(b, open+1, open+1, []byte(eolAt(b, open)+ind+text(ind))), nil
+			return splice(b, open+1, open+1, []byte(eolAt(b, open)+ind+text(ind)+string(tail))), nil
 		}
 		return splice(b, open+1, open+1, []byte(text(""))), nil
 	}
@@ -336,9 +347,9 @@ func (l lang) listInsert(b []byte, open, close int, items []*node, prev, next in
 		}
 		if onlySpaceBefore(b, it.start) {
 			ind := indentAt(b, it.start)
-			return splice(b, lineStart(b, it.start), lineStart(b, it.start), []byte(ind+text(ind)+","+eolAt(b, it.start))), nil
+			return splice(b, lineStart(b, it.start), lineStart(b, it.start), []byte(ind+text(ind)+","+string(tail)+eolAt(b, it.start))), nil
 		}
-		return splice(b, it.start, it.start, []byte(text("")+", ")), nil
+		return splice(b, it.start, it.start, []byte(text("")+sepAfter)), nil
 	}
 	if prev < 0 {
 		prev = len(items) - 1
@@ -361,15 +372,12 @@ func (l lang) listInsert(b []byte, open, close int, items []*node, prev, next in
 			at += len(gap)
 		}
 		if q >= 0 {
-			return splice(b, at, at, []byte(ind+text(ind)+","+eol)), nil
+			return splice(b, at, at, []byte(ind+text(ind)+","+string(tail)+eol)), nil
 		}
-		out := splice(b, at, at, []byte(ind+text(ind)+eol))
+		out := splice(b, at, at, []byte(ind+text(ind)+string(tail)+eol))
 		return splice(out, anchor.end, anchor.end, []byte(",")), nil
 	}
-	if q >= 0 {
-		return splice(b, q+1, q+1, []byte(" "+text("")+",")), nil
-	}
-	return splice(b, anchor.end, anchor.end, []byte(", "+text(""))), nil
+	return splice(b, anchor.end, anchor.end, []byte(sepBefore+text(""))), nil
 }
 
 // reindent shifts the continuation lines of raw from one indentation to another.

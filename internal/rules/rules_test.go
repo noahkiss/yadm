@@ -347,6 +347,24 @@ func TestSpecErrors(t *testing.T) {
 	}
 }
 
+func TestArrayElementRulesRefused(t *testing.T) {
+	live := []byte(`{"a": [1, 2, 3], "b": [{"k": "v"}]}`)
+	for _, spec := range []Spec{
+		{Format: manifest.FormatJSON, Drop: []string{"a.1"}},
+		{Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"a.*": personal}},
+	} {
+		if _, _, err := ToSource(live, nil, spec, member(personal)); !errors.Is(err, ErrArrayElement) {
+			t.Errorf("%+v: want ErrArrayElement, got %v", spec, err)
+		}
+	}
+	// A key inside an array element is fine.
+	spec := Spec{Format: manifest.FormatJSON, Drop: []string{"b.0.k"}}
+	src := mustSource(t, live, nil, spec, member())
+	if got := mustTarget(t, src, live, spec, member()); !bytes.Equal(got, live) {
+		t.Fatalf("target %s", got)
+	}
+}
+
 func TestEmptySpecPassesBytes(t *testing.T) {
 	in := []byte("anything\x00 at all")
 	got, err := ToTarget(in, []byte("live"), Spec{}, member())
@@ -414,12 +432,42 @@ func TestSecrecyStores(t *testing.T) {
 }
 
 func TestUnsupportedEditIsNotImplemented(t *testing.T) {
-	// Inserting into an array of tables is not supported by the TOML editor.
-	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"srv.1.secret"}}
-	live := []byte("[[srv]]\nname = \"a\"\n[[srv]]\nname = \"b\"\nsecret = \"x\"\n")
-	src := mustSource(t, live, nil, spec, member())
-	_, err := ToTarget(src, live, spec, member())
-	if err != nil && !errors.Is(err, model.ErrNotImplemented) {
-		t.Fatalf("want nil or ErrNotImplemented, got %v", err)
+	// A dotted key inside an inline table is not a list item the editor can
+	// remove; the capture reports ErrNotImplemented, never a guess.
+	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"inl.a.b"}}
+	live := []byte("inl = { a.b = 1, c = 2 }\n")
+	_, _, err := ToSource(live, nil, spec, member())
+	if !errors.Is(err, model.ErrNotImplemented) {
+		t.Fatalf("want ErrNotImplemented, got %v", err)
+	}
+}
+
+// TestUncapturableShapes pins the known shapes whose sealed value cannot be
+// re-spelled byte for byte: the capture fails with ErrRoundTrip (the file is
+// held), and the error never carries the plaintext.
+func TestUncapturableShapes(t *testing.T) {
+	c := secrecytest.NewCanary(t, "personal")
+	s := member(personal)
+	seal := map[string]model.EnclaveName{"s.t": personal}
+	cases := map[string]struct {
+		spec   Spec
+		target string
+	}{
+		"json escaped slash":  {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\/x"}}`},
+		"json unicode escape": {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\u00e9"}}`},
+		"json invalid utf-8":  {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + "\xed" + c.String() + `"}}`},
+		"toml multi-line":     {Spec{Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = \"\"\"" + c.String() + "\"\"\"\n"},
+		"toml literal ml":     {Spec{Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = '''" + c.String() + "'''\n"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, vio, err := ToSource([]byte(tc.target), nil, tc.spec, s)
+			if !errors.Is(err, ErrRoundTrip) || out != nil || len(vio) > 0 {
+				t.Fatalf("want ErrRoundTrip, got %q %v %v", out, vio, err)
+			}
+			if strings.Contains(err.Error(), c.String()) {
+				t.Fatal("error carries plaintext")
+			}
+		})
 	}
 }

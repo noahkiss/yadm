@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/noahkiss/yadm/internal/manifest"
@@ -175,6 +176,23 @@ func matchPaths(root *node, pats []pattern) [][]string {
 	return out
 }
 
+// ErrArrayElement reports a drop or seal path that names an array element.
+// Element indexes shift when an element leaves, so such a rule could not
+// round-trip; drop or seal the whole array, or a key inside an element.
+var ErrArrayElement = errors.New("rules: drop and seal paths cannot name an array element")
+
+// stablePaths is matchPaths for drop and seal rules: it refuses a match that
+// is an array element.
+func stablePaths(root *node, pats []pattern) ([][]string, error) {
+	paths := matchPaths(root, pats)
+	for _, p := range paths {
+		if n := find(root, p); n != nil && n.parent != nil && n.parent.kind == kArray {
+			return nil, fmt.Errorf("%w: %s", ErrArrayElement, joinPath(p))
+		}
+	}
+	return paths, nil
+}
+
 func pos(root *node, p []string) int {
 	n := find(root, p)
 	for n != nil && n.start < 0 && len(n.children) > 0 {
@@ -226,7 +244,11 @@ func deletePaths(f format, b []byte, paths [][]string, own bool) ([]byte, error)
 
 // put writes the node at path from srcB into dst: it replaces an existing
 // value or inserts it next to the sibling that follows it in srcB.
-func put(f format, dst []byte, path []string, srcB []byte) ([]byte, error) {
+//
+// With shift, a path whose last segment indexes an array is inserted at that
+// index, moving later elements up, instead of replacing the element there:
+// restoring a dropped or sealed element puts back what was removed.
+func put(f format, dst []byte, path []string, srcB []byte, shift bool) ([]byte, error) {
 	srcRoot, err := f.parse(srcB)
 	if err != nil {
 		return nil, err
@@ -236,6 +258,17 @@ func put(f format, dst []byte, path []string, srcB []byte) ([]byte, error) {
 		return dst, nil
 	}
 	return edit(f, dst, func(root *node) ([]byte, error) {
+		if par := find(root, path[:len(path)-1]); shift && par != nil && par.kind == kArray && src.parent.kind == kArray {
+			last := path[len(path)-1]
+			var at slot
+			if idx, err := strconv.Atoi(last); err == nil && idx > 0 {
+				at.prev = par.child(strconv.Itoa(idx - 1))
+			}
+			if at.prev == nil {
+				at.next = par.child(last)
+			}
+			return f.insert(dst, par, at, path[len(path)-1:], srcB, src)
+		}
 		if n := find(root, path); n != nil {
 			if n.vStart >= 0 && src.vStart >= 0 {
 				if bytes.Equal(dst[n.vStart:n.vEnd], srcB[src.vStart:src.vEnd]) {
@@ -250,7 +283,7 @@ func put(f format, dst []byte, path []string, srcB []byte) ([]byte, error) {
 			if err != nil {
 				return nil, err
 			}
-			return put(f, out, path, srcB)
+			return put(f, out, path, srcB, shift)
 		}
 		parent := root
 		depth := 0
@@ -262,8 +295,15 @@ func put(f format, dst []byte, path []string, srcB []byte) ([]byte, error) {
 			parent, depth = c, depth+1
 		}
 		var at slot
+		at.tail = commentTail(f, srcB, src)
 		if depth == len(path)-1 {
 			sib := src.parent.children
+			if i := src.index(); i > 0 {
+				at.sepBefore = inlineSep(srcB, sib[i-1].end, src.start)
+			}
+			if i := src.index(); i+1 < len(sib) {
+				at.sepAfter = inlineSep(srcB, src.end, sib[i+1].start)
+			}
 			for i := src.index() - 1; i >= 0 && at.prev == nil; i-- {
 				at.prev = parent.child(sib[i].key)
 				if at.prev != nil && i == src.index()-1 {
@@ -308,6 +348,44 @@ func commentGap(f format, b []byte, prev, n *node) []byte {
 	return b[from:to]
 }
 
+// inlineSep returns b[from:to] when it is a separator on one line holding a
+// comma, or nil.
+func inlineSep(b []byte, from, to int) []byte {
+	if from < 0 || to < from || to > len(b) {
+		return nil
+	}
+	s := b[from:to]
+	if bytes.Count(s, []byte(",")) != 1 || len(bytes.Trim(s, ", \t")) != 0 {
+		return nil
+	}
+	return s
+}
+
+// commentTail returns the spaces and comment after n (and its comma) on n's
+// last line, or nil.
+func commentTail(f format, b []byte, n *node) []byte {
+	if n.end < 0 {
+		return nil
+	}
+	l := langTOML
+	if _, ok := f.(jsonFormat); ok {
+		l = langJSON
+	}
+	from := n.end
+	if q := l.commaAfter(b, from); q >= 0 && lineEnd(b, q) == lineEnd(b, from) {
+		from = q + 1
+	}
+	e := lineEnd(b, from)
+	if e > from && b[e-1] == '\r' {
+		e--
+	}
+	t := b[from:e]
+	if !l.restBlank(b, from) || len(bytes.TrimSpace(t)) == 0 {
+		return nil
+	}
+	return t
+}
+
 // ToTarget produces the bytes to write to the target. live is the current
 // target content, or nil when the target does not exist.
 func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error) {
@@ -342,8 +420,12 @@ func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error) {
 	}
 	if len(c.drop) > 0 {
 		lroot, _ := c.f.parse(live)
-		for _, p := range matchPaths(lroot, c.drop) {
-			if base, err = put(c.f, base, p, live); err != nil {
+		drops, err := stablePaths(lroot, c.drop)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range drops {
+			if base, err = put(c.f, base, p, live, true); err != nil {
 				return nil, err
 			}
 		}
@@ -359,7 +441,10 @@ func (c *compiled) openSeals(b []byte, s Sealer) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("source does not parse: %w", err)
 		}
-		paths := matchPaths(root, []pattern{r.pat})
+		paths, err := stablePaths(root, []pattern{r.pat})
+		if err != nil {
+			return nil, err
+		}
 		for i := len(paths) - 1; i >= 0; i-- {
 			p := paths[i]
 			b, err = edit(c.f, b, func(root *node) ([]byte, error) {
@@ -395,7 +480,7 @@ func (c *compiled) mergeOwned(live, src []byte) ([]byte, error) {
 	have := map[string]bool{}
 	for _, p := range matchPaths(sroot, c.owned) {
 		have[pathKey(p)] = true
-		if out, err = put(c.f, out, p, src); err != nil {
+		if out, err = put(c.f, out, p, src, false); err != nil {
 			return nil, err
 		}
 	}
@@ -493,7 +578,11 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 		}
 		if len(c.drop) > 0 {
 			root, _ := c.f.parse(out)
-			if out, err = deletePaths(c.f, out, matchPaths(root, c.drop), false); err != nil {
+			drops, err := stablePaths(root, c.drop)
+			if err != nil {
+				return nil, nil, err
+			}
+			if out, err = deletePaths(c.f, out, drops, false); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -516,7 +605,7 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 	}
 	back, err := ToTarget(out, target, spec, s)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrRoundTrip, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrRoundTrip, err)
 	}
 	if !bytes.Equal(back, target) {
 		return nil, nil, ErrRoundTrip
@@ -540,7 +629,10 @@ func (c *compiled) sealValues(b, prev []byte, prevRoot *node, s Sealer) ([]byte,
 			return nil, nil, nil, err
 		}
 		member := s.CanOpen(r.enclave)
-		tpaths := matchPaths(root, []pattern{r.pat})
+		tpaths, err := stablePaths(root, []pattern{r.pat})
+		if err != nil {
+			return nil, nil, nil, err
+		}
 		inTarget := map[string]bool{}
 		for _, p := range tpaths {
 			inTarget[pathKey(p)] = true
@@ -564,7 +656,7 @@ func (c *compiled) sealValues(b, prev []byte, prevRoot *node, s Sealer) ([]byte,
 				vio = append(vio, Violation{Path: joinPath(p), Kind: SealedKeyRemoved, Detail: "the target lost a sealed key or its parent"})
 				continue
 			}
-			if b, err = put(c.f, b, p, prev); err != nil {
+			if b, err = put(c.f, b, p, prev, true); err != nil {
 				return nil, nil, nil, err
 			}
 		}

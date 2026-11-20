@@ -2,6 +2,8 @@ package rules
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -14,7 +16,7 @@ const fuzzCanary = "FUZZ-CANARY-7f3a9c1e5b2d4f60"
 
 var fuzzSpecs = []Spec{
 	{Format: manifest.FormatJSONC, Keep: []string{"a.*", "b"}, Drop: []string{"a.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
-	{Format: manifest.FormatJSON, Drop: []string{"d", "a.1"}, Seal: map[string]model.EnclaveName{"s.*": personal}},
+	{Format: manifest.FormatJSON, Drop: []string{"d"}, Seal: map[string]model.EnclaveName{"s.*": personal}},
 	{Format: manifest.FormatTOML, Drop: []string{"d", "t.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
 	{Format: manifest.FormatTOML, Keep: []string{"t", "a"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
 	{Regions: true},
@@ -61,6 +63,12 @@ func FuzzToSource(f *testing.F) {
 			if strings.Contains(v.Path+v.Detail, fuzzCanary) {
 				t.Fatalf("violation carries plaintext: %+v", v)
 			}
+		}
+		if err != nil && strings.Contains(err.Error(), fuzzCanary) {
+			t.Fatalf("error carries plaintext: %v", err)
+		}
+		if os.Getenv("RULES_FUZZ_STRICT") != "" && errors.Is(err, ErrRoundTrip) {
+			t.Fatalf("round trip: %v\n%q", err, target)
 		}
 		if err != nil || len(vio) > 0 {
 			if src != nil {

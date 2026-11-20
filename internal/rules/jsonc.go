@@ -215,7 +215,11 @@ func (f jsonFormat) insert(b []byte, parent *node, at slot, rest []string, srcB 
 	srcIndent := indentAt(srcB, src.start)
 	prev, next := at.indexes()
 	unit := indentUnit(b)
-	return langJSON.listInsert(b, parent.open, parent.close, parent.children, prev, next, at.gap, unit, func(ind string) string {
+	return langJSON.listInsert(b, parent.open, parent.close, parent.children, prev, next, at, unit, func(ind string) string {
+		if len(rest) == 1 && src.parent != nil && src.parent.kind == parent.kind && src.start >= 0 {
+			// The member as the source spelled it, spacing included.
+			return string(reindent(srcB[src.start:src.end], srcIndent, ind))
+		}
 		v := string(reindent(raw, srcIndent, ind))
 		if parent.kind == kArray {
 			return v

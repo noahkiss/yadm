@@ -341,6 +341,11 @@ func (tomlFormat) quote(s string) []byte {
 	return []byte(sb.String())
 }
 
+// tableLike reports whether n is written as [table] sections.
+func tableLike(n *node) bool {
+	return n.role == tHeader || n.role == tImplicit || n.role == tArrayTables
+}
+
 func hasControl(s string) bool {
 	for _, r := range s {
 		if (r < 0x20 && r != '\t') || r == 0x7f {
@@ -526,14 +531,14 @@ func (f tomlFormat) insert(b []byte, parent *node, at slot, rest []string, srcB 
 			if len(rest) != 1 {
 				return nil, errUnsupported
 			}
-			return langTOML.listInsert(b, parent.open, parent.close, parent.children, prev, next, at.gap, indentUnit(b), func(string) string { return string(raw) })
+			return langTOML.listInsert(b, parent.open, parent.close, parent.children, prev, next, slot{sepBefore: at.sepBefore, sepAfter: at.sepAfter}, indentUnit(b), func(string) string { return string(raw) })
 		}
 		for _, c := range parent.children {
 			if c.role != tInline {
 				return nil, errUnsupported
 			}
 		}
-		return langTOML.listInsert(b, parent.open, parent.close, parent.children, prev, next, at.gap, indentUnit(b), func(string) string {
+		return langTOML.listInsert(b, parent.open, parent.close, parent.children, prev, next, slot{sepBefore: at.sepBefore, sepAfter: at.sepAfter}, indentUnit(b), func(string) string {
 			return tomlKey(rest) + " = " + string(raw)
 		})
 	}
@@ -553,18 +558,47 @@ func (f tomlFormat) insert(b []byte, parent *node, at slot, rest []string, srcB 
 		for _, s := range sectionSpans(srcB, src, true) {
 			text = append(text, srcB[s.from:s.to]...)
 		}
+		closed := append(append([]byte(nil), text...), eolAt(b, len(b))...)
+		if len(text) == 0 || text[len(text)-1] == '\n' {
+			closed = text
+		}
+		// Before the next table sibling, else after the previous one, else at
+		// the end.
+		if at.next != nil && tableLike(at.next) {
+			if sp := sectionSpans(b, at.next, true); len(sp) > 0 {
+				return splice(b, sp[0].from, sp[0].from, closed), nil
+			}
+		}
+		if at.prev != nil && tableLike(at.prev) {
+			if sp := sectionSpans(b, at.prev, false); len(sp) > 0 && sp[len(sp)-1].to < len(b) {
+				e := sp[len(sp)-1].to
+				return splice(b, e, e, closed), nil
+			}
+		}
 		out := append([]byte(nil), b...)
 		if len(out) > 0 && out[len(out)-1] != '\n' {
 			out = append(out, eolAt(b, len(b))...)
 		}
-		if len(text) > 0 && text[len(text)-1] != '\n' {
-			text = append(text, eolAt(b, len(b))...)
-		}
 		return append(out, text...), nil
 	}
 	raw := srcB[src.vStart:src.vEnd]
+	kv := tomlKey(keyPath) + " = " + string(raw)
+	if src.role == tKV && len(keyPath) == 1 && (src.parent.role == tRoot || src.parent.role == tHeader) {
+		kv = string(srcB[src.start:src.end]) // the line as the source spelled it
+	}
+	srcAtEOF := src.end >= 0 && lineEnd(srcB, src.end) == len(srcB)
+	// The inserted line keeps the terminator it had in the source.
+	eolFor := func(at int, eol string) string {
+		if srcAtEOF {
+			if at == len(b) {
+				return ""
+			}
+			return eol
+		}
+		return eolAt(srcB, src.end)
+	}
 	line := func(ind, eol string) []byte {
-		return []byte(ind + tomlKey(keyPath) + " = " + string(reindent(raw, indentAt(srcB, src.start), ind)) + eol)
+		return []byte(ind + string(reindent([]byte(kv), indentAt(srcB, src.start), ind)) + string(at.tail) + eol)
 	}
 	if at.prev != nil && at.prev.role == tKV && sec == parent && onlySpaceBefore(b, at.prev.start) {
 		e := lineSpan(b, at.prev, false).to
@@ -572,13 +606,13 @@ func (f tomlFormat) insert(b []byte, parent *node, at slot, rest []string, srcB 
 			e += len(at.gap)
 		}
 		if e < len(b) || (len(b) > 0 && b[len(b)-1] == '\n') {
-			return splice(b, e, e, line(indentAt(b, at.prev.start), eolAt(b, at.prev.start))), nil
+			return splice(b, e, e, line(indentAt(b, at.prev.start), eolFor(e, eolAt(b, at.prev.start)))), nil
 		}
 	}
 	if at.prev == nil && at.next != nil && sec == parent {
 		if kv := firstKV(at.next); kv != nil && onlySpaceBefore(b, kv.start) {
 			from := lineStart(b, kv.start)
-			return splice(b, from, from, line(indentAt(b, kv.start), eolAt(b, kv.start))), nil
+			return splice(b, from, from, line(indentAt(b, kv.start), eolFor(from, eolAt(b, kv.start)))), nil
 		}
 	}
 	_, last := sectionKVEnd(sec)
@@ -588,20 +622,33 @@ func (f tomlFormat) insert(b []byte, parent *node, at slot, rest []string, srcB 
 		if at == len(b) && (len(b) == 0 || b[len(b)-1] != '\n') {
 			return append(append(append([]byte(nil), b...), eol...), line(indentAt(b, last.start), "")...), nil
 		}
-		return splice(b, at, at, line(indentAt(b, last.start), eol)), nil
+		return splice(b, at, at, line(indentAt(b, last.start), eolFor(at, eol))), nil
 	}
 	if sec.role == tRoot {
+		// Root keys go before the first table, or at the end.
 		eol := eolAt(b, 0)
-		if len(b) == 0 {
-			return line("", eol), nil
+		ind := indentAt(srcB, src.start)
+		for _, c := range sec.children {
+			if tableLike(c) {
+				if sp := sectionSpans(b, c, true); len(sp) > 0 {
+					return splice(b, sp[0].from, sp[0].from, line(ind, eol)), nil
+				}
+			}
 		}
-		return splice(b, 0, 0, line("", eol)), nil
+		out := append([]byte(nil), b...)
+		if len(out) > 0 && out[len(out)-1] != '\n' {
+			out = append(out, eol...)
+		}
+		if src.end >= 0 && lineEnd(srcB, src.end) == len(srcB) {
+			eol = "" // the source line ended the file without a newline
+		}
+		return append(out, line(ind, eol)...), nil
 	}
 	// An empty section: right after its header line.
 	hl := nextLine(b, sec.start)
 	eol := eolAt(b, sec.start)
 	if hl == len(b) && b[len(b)-1] != '\n' {
-		return append(append(append([]byte(nil), b...), eol...), line("", "")...), nil
+		return append(append(append([]byte(nil), b...), eol...), line(indentAt(srcB, src.start), "")...), nil
 	}
-	return splice(b, hl, hl, line("", eol)), nil
+	return splice(b, hl, hl, line(indentAt(srcB, src.start), eolFor(hl, eol))), nil
 }

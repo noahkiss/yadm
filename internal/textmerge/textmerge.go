@@ -121,7 +121,7 @@ func diffLines(a, b []string) []op {
 // maxEdit bounds the Myers search. Past it the inputs differ so much that a
 // delete-all, insert-all script is as useful as a minimal one, and the search
 // would cost quadratic memory.
-const maxEdit = 4000
+const maxEdit = 1000
 
 func trivial(n, m int) []op {
 	out := make([]op, 0, n+m)
