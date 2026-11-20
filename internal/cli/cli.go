@@ -153,6 +153,7 @@ type app struct {
 	version string
 	code    int
 	emitted bool
+	hookRan bool // runHook ran and set code itself
 }
 
 func (a *app) wrap(name string, fn runFunc) func(*cobra.Command, []string) error {
@@ -300,7 +301,48 @@ func (a *app) cmdWhere(cmd *cobra.Command, args []string) (result, error) {
 
 // Main runs the CLI and returns the exit code.
 func Main(args []string, stdout, stderr io.Writer, version string) int {
-	a := &app{stdout: stdout, stderr: stderr, version: version}
+	if isHookCall(args) {
+		return mainHook(args, stdout, stderr, version)
+	}
+	return mainCLI(args, stdout, stderr, version)
+}
+
+// isHookCall reports whether args run `yadm hook`.
+func isHookCall(args []string) bool {
+	for _, s := range args {
+		if s == "" || s[0] == '-' {
+			continue
+		}
+		return s == "hook"
+	}
+	return false
+}
+
+// mainHook runs `yadm hook` under its own exit contract: only a verdict
+// that blocks exits HookBlock. A flag error, a panic or any other failure
+// exits HookError, which harnesses never treat as a block.
+func mainHook(args []string, stdout, stderr io.Writer, version string) (code int) {
+	var errb bytes.Buffer
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "yadm hook: internal error: %v\n", r)
+			code = HookError
+		}
+	}()
+	a := &app{stdout: stdout, stderr: &errb, version: version}
+	code = mainWith(a, args)
+	if !a.hookRan && code != HookAllow {
+		code = HookError
+	}
+	_, _ = stderr.Write(errb.Bytes())
+	return code
+}
+
+func mainCLI(args []string, stdout, stderr io.Writer, version string) int {
+	return mainWith(&app{stdout: stdout, stderr: stderr, version: version}, args)
+}
+
+func mainWith(a *app, args []string) int {
 	root := a.root()
 
 	if name, rest, ok := externalName(root, args); ok {

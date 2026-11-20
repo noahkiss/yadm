@@ -39,6 +39,10 @@ const (
 
 	// HookSchema is the version of the hook verdict.
 	HookSchema = 1
+
+	// hookTimeout bounds post-edit; stop gets twice as long. A remote that
+	// does not answer in time leaves the commit local for the next sync.
+	hookTimeout = 45 * time.Second
 )
 
 // Verdict decisions.
@@ -100,6 +104,7 @@ type Packet struct {
 	Neighbours []Neighbour      `json:"neighbours,omitempty"`
 	Suggested  []model.TypeName `json:"suggested_types,omitempty"`
 	Proposed   string           `json:"proposed"`
+	Inspect    string           `json:"inspect"`          // a read-only command that shows the details
 	Source     model.SourcePath `json:"source,omitempty"` // rendered_edit: the template
 	Patch      string           `json:"patch,omitempty"`  // rendered_edit on a shared template only
 	Options    []Option         `json:"options"`
@@ -144,6 +149,7 @@ func (a *app) registerHooks(root *cobra.Command) {
 	h.RunE = func(cmd *cobra.Command, args []string) error {
 		a.emitted = true
 		a.code = a.runHook(cmd, args)
+		a.hookRan = true
 		return nil
 	}
 	root.AddCommand(h)
@@ -446,6 +452,8 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	if !managedOrRooted(snap, t) {
 		return Verdict{}, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
+	defer cancel()
 	rep, _, err := m.hookCommit(ctx, a.version, sync.CommitOptions{
 		Paths: []model.Target{t}, Unattended: true, Trigger: sync.TriggerHook,
 		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: true,
@@ -486,6 +494,8 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	_, _ = m.load(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
+	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
 		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: true,
 	}, hooks.lockWait)
@@ -578,10 +588,14 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 // ---- helpers ----
 
 // hookCommit commits through sync.Commit with a bounded lock wait.
+// A failure after the commit step (fetch, replay, apply, push: an
+// unreachable remote, for one) comes back as pushErr: the commit stands
+// and the next sync pushes it.
 func (m *machineEnv) hookCommit(ctx context.Context, version string, opts sync.CommitOptions, wait time.Duration) (sync.Report, error, error) {
 	rep, err := m.syncerWait(version, wait).Commit(ctx, opts)
-	if err != nil && opts.Push && len(rep.Committed) > 0 && !errors.Is(err, sync.ErrLocked) {
-		return rep, err, nil
+	var ee *sync.ExchangeError
+	if errors.As(err, &ee) {
+		return rep, ee.Err, nil
 	}
 	return rep, nil, err
 }
@@ -671,7 +685,7 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 	if managed && h.Reason != model.HoldRootUntrusted {
 		p.Diff = m.diffSummary(ctx, h.Target)
 	}
-	show := "yadm hold show " + h.ID
+	p.Inspect = "yadm hold show " + h.ID
 	switch {
 	case h.Reason == model.HoldProtected && !managed:
 		p.Kind = "new_file"
@@ -698,7 +712,6 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 			p.Proposed += " (the patch below is against the " + h.PatchOf + ")"
 		}
 		p.Options = []Option{
-			{Label: "inspect", Consequence: "shows the template, the last render and the edit", Command: show},
 			{Label: "drop the edit", Consequence: "re-renders the template over the target; the hand edit is lost (backed up)", Command: "yadm hold resolve " + h.ID + " --take source"},
 			deferOption(h.ID),
 		}
@@ -717,7 +730,6 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 	case h.Reason == model.HoldConflict:
 		p.Proposed = "merge both sides by hand and resolve with the merged file, or keep one side"
 		p.Options = []Option{
-			{Label: "inspect", Consequence: "shows the base, this machine's side and the incoming side", Command: show},
 			{Label: "keep the incoming change", Consequence: "rewrites the target from the source; this machine's edit is lost (backed up)", Command: "yadm hold resolve " + h.ID + " --take source"},
 			{Label: "keep this edit", Consequence: "commits this machine's file over the incoming change and pushes it" + reachText(p.Reaches), Command: "yadm hold resolve " + h.ID + " --take target"},
 			{Label: "use a merged file", Consequence: "writes the merged file to the target, commits and pushes it", Command: "yadm hold resolve " + h.ID + " --take <merged-file>"},
@@ -865,6 +877,7 @@ func renderPackets(head string, ps []Packet) string {
 			fmt.Fprintf(&b, "    neighbours go to types: %s\n", joinTypes(p.Suggested))
 		}
 		fmt.Fprintf(&b, "    proposed: %s\n", p.Proposed)
+		fmt.Fprintf(&b, "    inspect: %s\n", p.Inspect)
 		if p.Patch != "" {
 			fmt.Fprintf(&b, "    patch:\n%s\n", indent(p.Patch, "      "))
 		}
@@ -908,7 +921,7 @@ func (m *machineEnv) unreviewedAuto(ctx context.Context, snap *apply.Snapshot) i
 			continue
 		}
 		for _, c := range cs {
-			if trailerOf(c.Message, store.TrailerAuto) != "" && trailerOf(c.Message, store.TrailerScope) == string(sc) {
+			if auto := trailerOf(c.Message, store.TrailerAuto); auto != "" && auto != sync.TriggerManual && trailerOf(c.Message, store.TrailerScope) == string(sc) {
 				seen[c.ID] = true
 			}
 		}

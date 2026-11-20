@@ -83,6 +83,10 @@ func Unreviewed(ctx context.Context, st store.Store, keys *crypt.Set, scope mode
 	if err != nil {
 		return nil, err
 	}
+	// Review reads old commits: open every epoch, as log and diff do.
+	if keys != nil {
+		keys = keys.History()
+	}
 	cr := apply.SetCrypto(keys)
 	var out []ReviewItem
 	for i := len(commits) - 1; i >= 0; i-- {

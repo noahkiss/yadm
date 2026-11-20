@@ -120,6 +120,8 @@ func TestSecrecyThroughCLI(t *testing.T) {
 		t.Fatalf("remove: %+v", removed)
 	}
 	env = yadmOK(t, "enclave", "verify")
+	// Review reads commits sealed under the retired epoch.
+	yadmOK(t, "review", "list", "personal")
 	if _, _, err := yadmRawPush(t); err != nil {
 		t.Fatal(err)
 	}

@@ -406,19 +406,17 @@ func TestHookSecrecy(t *testing.T) {
 	file := filepath.Join(a.Home, ".config/notes/private.md")
 	writeFile(t, file, readFile(t, file)+c.String()+"\n")
 	code, stdout, stderr := hookRun(t, payload(payloadWrite, "session-sec", a.Home, file), HookPostEdit)
-	if code != HookAllow && code != HookBlock {
-		t.Fatalf("post-edit: exit %d\n%s", code, stderr)
+	if code != HookAllow {
+		t.Fatalf("post-edit: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	for _, x := range canaries {
 		if strings.Contains(stdout, x.String()) || strings.Contains(stderr, x.String()) {
 			t.Fatal("hook output carries enclave plaintext")
 		}
 	}
-	if code == HookAllow {
-		msg := git(t, a.Source, "log", "-1", "--format=%B", "main")
-		if !strings.Contains(msg, "Yadm-Scope: personal") || !strings.Contains(msg, "Yadm-Auto: hook") {
-			t.Fatalf("not a sealed hook commit:\n%s", msg)
-		}
+	msg := git(t, a.Source, "log", "-1", "--format=%B", "main")
+	if !strings.Contains(msg, "Yadm-Scope: personal") || !strings.Contains(msg, "Yadm-Auto: hook") || strings.Contains(msg, c.String()) {
+		t.Fatalf("not a sealed hook commit:\n%s", msg)
 	}
 	hookRun(t, payload(payloadStop, "session-sec", a.Home, ""), HookStop)
 	secrecytest.AssertTreeClean(t, filepath.Join(a.State, "hooks"), canaries...)
@@ -429,4 +427,112 @@ func TestHookSecrecy(t *testing.T) {
 	yadmOK(t, "sync")
 	secrecytest.AssertTreeClean(t, b.Home, canaries...)
 	secrecytest.AssertRepoClean(t, b.Source, canaries...)
+}
+
+// TestHookFailsOpen: no failure of the hook itself blocks an agent. A bad
+// flag, an unknown event and bad stdin exit 1; an unreachable remote leaves
+// the commit local and still reports decisions.
+func TestHookFailsOpen(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+	for _, args := range [][]string{{HookStop, "--bogus"}, {"frobnicate"}, {}, {HookStop, "--format", "yaml"}} {
+		if code, _, _ := hookRun(t, "{}", args...); code != HookError {
+			t.Fatalf("hook %v: exit %d, want %d", args, code, HookError)
+		}
+	}
+	if code, _, _ := hookRun(t, "not json", HookStop); code != HookError {
+		t.Fatalf("bad stdin: exit %d", code)
+	}
+
+	// Take the remote away.
+	if err := os.Rename(remote, remote+".gone"); err != nil {
+		t.Fatal(err)
+	}
+	before := git(t, a.Source, "rev-parse", "main")
+	file := filepath.Join(a.Home, ".config/tool/config")
+	writeFile(t, file, "color = offline\n")
+	if code, stdout, stderr := hookRun(t, payload(payloadEdit, "session-o", a.Home, file), HookPostEdit); code != HookAllow || stdout != "" {
+		t.Fatalf("offline clean edit: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if git(t, a.Source, "rev-parse", "main") == before {
+		t.Fatal("offline edit was not committed locally")
+	}
+	nf := filepath.Join(a.Home, ".config/tool/offline.conf")
+	writeFile(t, nf, "x\n")
+	if code, _, stderr := hookRun(t, payload(payloadWrite, "session-o", a.Home, nf), HookPostEdit); code != HookBlock || !strings.Contains(stderr, "new_file") {
+		t.Fatalf("offline new file: exit %d\n%s", code, stderr)
+	}
+	if code, _, stderr := hookRun(t, payload(payloadStop, "session-o", a.Home, ""), HookStop); code != HookBlock {
+		t.Fatalf("offline stop: exit %d\n%s", code, stderr)
+	}
+}
+
+// TestHookConflictTakeSourceAndMerged runs the two other conflict options.
+func TestHookConflictTakeSourceAndMerged(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	b := hookMachine(t, root, remote, "b", "host-b")
+	a := hookMachine(t, root, remote, "a", "host-a")
+	edit := func(m machineDirs, dir, session, content string) (int, Verdict) {
+		t.Helper()
+		useMachine(t, root, dir)
+		f := filepath.Join(m.Home, ".config/tool/config")
+		writeFile(t, f, content)
+		code, stdout, _ := hookRun(t, payload(payloadEdit, session, m.Home, f), HookPostEdit)
+		var v Verdict
+		if stdout != "" {
+			v = verdictOf(t, stdout)
+		}
+		return code, v
+	}
+	option := func(v Verdict, suffix string) string {
+		t.Helper()
+		for _, p := range v.Packets {
+			for _, o := range p.Options {
+				if p.Kind == string(model.HoldConflict) && strings.HasSuffix(o.Command, suffix) {
+					return o.Command
+				}
+			}
+		}
+		t.Fatalf("no %q option in %+v", suffix, v.Packets)
+		return ""
+	}
+
+	// Round 1: b keeps the incoming change.
+	if code, _ := edit(a, "a", "s-a", "color = green\n"); code != HookAllow {
+		t.Fatalf("a: exit %d", code)
+	}
+	code, v := edit(b, "b", "s-b", "color = red\n")
+	if code != HookBlock {
+		t.Fatalf("b: exit %d", code)
+	}
+	yadmOK(t, strings.Fields(option(v, "--take source"))[1:]...)
+	if got := readFile(t, filepath.Join(b.Home, ".config/tool/config")); got != "color = green\n" {
+		t.Fatalf("take source: %q", got)
+	}
+	env := yadmOK(t, "hold", "list")
+	if hs := decode[map[string][]model.Hold](t, env.Data)["holds"]; len(hs) != 0 {
+		t.Fatalf("holds after take source: %+v", hs)
+	}
+
+	// Round 2: b resolves with a merged file.
+	if code, _ := edit(a, "a", "s-a", "color = green\nsize = 2\n"); code != HookAllow {
+		t.Fatalf("a: exit %d", code)
+	}
+	code, v = edit(b, "b", "s-b", "color = green\nsize = 3\n")
+	if code != HookBlock {
+		t.Fatalf("b round 2: exit %d", code)
+	}
+	merged := filepath.Join(root, "merged.conf")
+	writeFile(t, merged, "color = green\nsize = 5\n")
+	cmd := strings.Replace(option(v, "--take <merged-file>"), "<merged-file>", merged, 1)
+	yadmOK(t, strings.Fields(cmd)[1:]...)
+	useMachine(t, root, "a")
+	yadmOK(t, "sync")
+	if got := readFile(t, filepath.Join(a.Home, ".config/tool/config")); got != "color = green\nsize = 5\n" {
+		t.Fatalf("a after the merged resolve: %q", got)
+	}
 }

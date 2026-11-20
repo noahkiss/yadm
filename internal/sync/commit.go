@@ -424,7 +424,11 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		rep.Applied = a
 	}
 	if opts.Push && !out.dirty {
-		return s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
+		r, err := s.exchange(ctx, rep, head, cp.Paths, out.committed, Options{Push: true, MaxRetries: opts.MaxRetries})
+		if err != nil {
+			return r, &ExchangeError{Err: err}
+		}
+		return r, nil
 	}
 	return s.finish(ctx, rep, cp.Paths, out.committed)
 }
@@ -504,6 +508,14 @@ func (s *Syncer) holdBaseline(drift []apply.Drift, cp apply.Capture) error {
 	}
 	return s.Apply.State.Save(st)
 }
+
+// ExchangeError wraps a failure after Commit's own commit step: fetch,
+// replay, apply or push. The commits in the report stand; the next sync
+// pushes them.
+type ExchangeError struct{ Err error }
+
+func (e *ExchangeError) Error() string { return "after the commit: " + e.Err.Error() }
+func (e *ExchangeError) Unwrap() error { return e.Err }
 
 // dropHolds removes t's holds with one of reasons.
 func dropHolds(st *apply.State, t model.Target, reasons ...model.HoldReason) {

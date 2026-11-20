@@ -532,7 +532,7 @@ The core knows no package manager and does no machine provisioning. Bootstrap is
 
 ### 12.3 Trust
 
-Tasks, checks and collectors run commands, and any machine that can push can change their definitions. A machine runs a definition only after it is allowed locally: `yadm task allow [name...]`, or `--allow-tasks` on `init` and `adopt`. `allowed.json` stores a SHA-256 of each allowed definition. A changed definition is not run; it becomes a `task_untrusted` hold until allowed again. Definitions live in protected files and never auto-commit.
+Tasks, checks and collectors run commands, and any machine that can push can change their definitions. A machine runs a definition only after it is allowed locally: `yadm task allow [name...]`, or `--allow-tasks` on `init` and `adopt`. `allowed.json` stores a SHA-256 of each allowed definition. A changed definition is not run; it becomes a `task_untrusted` hold until allowed again. Definitions live in protected files and never auto-commit. The same allow list holds two more kinds: `yadm protection allow <target>` accepts a manifest change that weakens a target's sealing or protection here, and `yadm root allow <path>` accepts a new, changed or removed owned root (until then it holds `root_untrusted`). Both apply right after recording the allow.
 
 ### 12.4 Exec contract
 
@@ -612,7 +612,7 @@ Hold objects have a stable shape for external resolvers. Fields are only added w
 
 A `rendered_edit` hold also carries `source`, `patch` and `patch_of` (section 8.4). A hold's `since` is its first sighting, so its `id` stays stable while the cause persists.
 
-Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `seal_guard`, `source_dirty`, `task_untrusted`, `check_failed`, `rendered_edit`.
+Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `seal_guard`, `source_dirty`, `task_untrusted`, `check_failed`, `rendered_edit`, `root_untrusted`.
 
 ### 14.2 Command list
 

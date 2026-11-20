@@ -54,6 +54,20 @@ func TestQuickSyncSkipsUntilSomethingMoves(t *testing.T) {
 		t.Fatalf("b settled: %+v", r)
 	}
 
+	// A held edit is drift every scan; unchanged, it does not count again.
+	B.exec.fail = func(_ string, t model.Target) bool { return t == pkgList }
+	B.write(pkgList, "tool-one\ntool-two\ntool-q\ntool-held\n")
+	if r := quick(t, B); r.Skipped || len(holdsOf(r, model.HoldCheckFailed)) != 1 {
+		t.Fatalf("held edit: %+v", r)
+	}
+	if r := quick(t, B); !r.Skipped {
+		t.Fatalf("an unchanged held edit ran a full sync: %+v", r)
+	}
+	B.write(pkgList, "tool-one\ntool-two\ntool-q\ntool-held-2\n")
+	if r := quick(t, B); r.Skipped {
+		t.Fatalf("a new edit to a held file was skipped: %+v", r)
+	}
+
 	// The periodic full sync and the wake gap.
 	w.clock.offset += FullEvery
 	if r := quick(t, B); r.Skipped || r.Reason != "wake" {

@@ -615,7 +615,7 @@ func renderFor(ctx context.Context, st store.Store, snap *apply.Snapshot, r mani
 			return nil, err
 		}
 	}
-	if spec := rules.SpecOf(r.Entry); !spec.Empty() {
+	if spec := rules.SpecFor(r); !spec.Empty() {
 		var s rules.Sealer = refusingSealer{snap}
 		if raw, err = rules.ToTarget(raw, live, spec, s); err != nil {
 			return nil, err

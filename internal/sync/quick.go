@@ -34,6 +34,7 @@ type quickState struct {
 	LastFull  time.Time                 `json:"last_full"`
 	LastCheck time.Time                 `json:"last_check"`
 	Heads     map[string]model.CommitID `json:"heads"` // remote main and refs/yadm/* after the last full sync
+	Drift     map[model.Target]string   `json:"drift"` // drift the last full sync left (held, pending), by hash
 }
 
 func (s *Syncer) quickPath() string { return filepath.Join(s.Apply.StateDir, QuickFile) }
@@ -67,7 +68,7 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(drift) > 0 {
+	if !sameDrift(driftSig(drift), q.Drift) {
 		return "local drift", nil
 	}
 	rh, ok := s.Store.(RemoteHeads)
@@ -109,10 +110,41 @@ func sameHeads(a, b map[string]model.CommitID, _ model.MachineID) bool {
 	return true
 }
 
-// recordFull remembers a finished full sync and the remote heads it left,
-// read from the remote-tracking refs it fetched and pushed.
+// driftSig is the drift a quick check compares: each target with its kind
+// and hash. Files that predate their owned root never count; they stay
+// until committed by name.
+func driftSig(drift []apply.Drift) map[model.Target]string {
+	out := map[model.Target]string{}
+	for _, d := range drift {
+		if d.Baseline {
+			continue
+		}
+		out[d.Target] = string(d.Kind) + ":" + d.Hash
+	}
+	return out
+}
+
+func sameDrift(a, b map[model.Target]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+// recordFull remembers a finished full sync, the remote heads it left (read
+// from the remote-tracking refs it fetched and pushed) and the drift it
+// left behind (held or pending targets), so an unchanged leftover does not
+// count as new drift.
 func (s *Syncer) recordFull(ctx context.Context) {
 	q := s.loadQuick()
+	if drift, err := s.Apply.Scan(ctx, apply.ScanOptions{}); err == nil {
+		q.Drift = driftSig(drift)
+	}
 	q.LastFull, q.LastCheck = s.now(), s.now()
 	q.Heads = map[string]model.CommitID{}
 	if id, err := s.Store.ResolveRef(ctx, store.RemoteMain); err == nil && id != "" {
