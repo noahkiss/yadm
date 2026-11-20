@@ -26,7 +26,16 @@
 // locally (`yadm task allow`, or `--allow-tasks` on init and adopt). The
 // allow list stores a hash of each definition; a changed definition is held
 // (model.HoldTaskUntrusted) and reported, never run. Definitions never
-// auto-commit.
+// auto-commit. A task hold sets Hold.Task and no Target; its id is
+// model.HoldID, and the caller keeps the first sighting (model.KeepSince)
+// so the id stays stable across runs.
+//
+// Unit reloads need no allow entry, by decision. The unit file is managed
+// content like a shell profile: once apply writes it, launchd or systemd
+// runs it at the next login whether or not yadm reloads it. Gating the
+// reload would delay the effect, not prevent it. The allow list guards what
+// the manifest itself asks this machine to run: tasks, checks and
+// collectors.
 //
 // Exported API:
 //
