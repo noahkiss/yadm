@@ -83,7 +83,7 @@ type Options struct {
 // ErrNotLive is returned when Install or Uninstall would change the real
 // schedule without Options.Live, or from a test binary without
 // YADM_SCHEDULE_LIVE=1.
-var ErrNotLive = errors.New("schedule: refusing to change the real schedule (not live; tests need " + LiveEnv + "=1)")
+var ErrNotLive = errors.New("schedule: refusing to change the real schedule: use ForOSLive or Options.Live (a test binary also needs " + LiveEnv + "=1)")
 
 // ForOS returns the read-only scheduler for "darwin" (launchd) or "linux"
 // (systemd): Status works, Install and Uninstall return ErrNotLive. Use

@@ -117,6 +117,11 @@ func TestHeldPathTaskDoesNotBlockFirstApply(t *testing.T) {
 	if err := allow.Allow(extexec.KindTask, "packages", h); err != nil {
 		t.Fatal(err)
 	}
+	// An apply where no task fires still drops the settled hold.
+	w.apply(c)
+	if got := taskHolds(w.state().Holds); len(got) != 0 || exec.runs["packages"] != 0 {
+		t.Fatalf("hold kept after allow: %+v runs=%d", got, exec.runs["packages"])
+	}
 	c2 := w.commit(map[model.SourcePath]string{"files/.x": "y\n"}, manifest.Entry{Target: ".x"})
 	w.plans[c2].Tasks = w.plans[c].Tasks
 	w.apply(c2)

@@ -616,6 +616,15 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		if err := e.State.Save(st); err != nil {
 			return res, err
 		}
+	} else if len(paths) == 0 {
+		// No task fired: still drop holds a `task allow` or a manifest
+		// change has settled since the last apply.
+		before := len(st.Holds)
+		if e.pruneTaskHolds(st, snap); len(st.Holds) != before {
+			if err := e.State.Save(st); err != nil {
+				return res, err
+			}
+		}
 	}
 	return res, nil
 }

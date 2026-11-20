@@ -303,7 +303,7 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 - In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open.
 - In `backup/` in a member's state directory: the bytes apply replaced or deleted, mode 0600, kept 30 days. A non-member never writes an enclave's plaintext, so its backups hold none.
 
-The state database stores hashes, never rendered bytes. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
+The state database stores hashes, never rendered bytes. The one exception is the proposed patch of a `rendered_edit` hold on a shared template (section 8.4); an enclave template's hold carries none, so no enclave plaintext enters the state. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
 Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref, any `cachetextconv = true` setting, and any filter or merge driver in the source clone's own config.
 
@@ -317,7 +317,7 @@ A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(H
 
 ### 8.1 State
 
-`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content and never leaves the machine.
+`state.json` records, per managed target: source path and blob, scope, the SHA-256 of the bytes last written, size, mtime and mode, the seal set at last apply, the SHA-256 of the last render for templates, and when the current drift was first seen. It also records the applied commit, whether the first apply ran, holds, observed facts, last task results and the render Context of the last apply. It holds no file content, except the proposed patch of a `rendered_edit` hold on a shared template, and never leaves the machine.
 
 ### 8.2 Scan
 
@@ -339,7 +339,7 @@ Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
 - **Verbatim file:** the target bytes become the source bytes.
 - **Sealed file:** the target is sealed under the current epoch. Deterministic sealing makes an unchanged file a no-op.
-- **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it. The hold names the template (`source`) and carries a proposed unified diff (`patch`): against the template when the patch applied but failed the round trip (`patch_of = "template"`), or the hand edit against the last render when it touched rendered expressions or conditional blocks (`patch_of = "render"`). An agent edits the template and commits in one step. An enclave template's hold carries no patch, because holds live in `state.json`, which never holds plaintext.
+- **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it. The hold names the template (`source`) and carries a proposed unified diff (`patch`). With `patch_of = "template"` it patches the template: a three-way merge of template and target over the last render, each conflict resolved to the target's lines, accepted only when it renders back to the target on this machine. An edit on an expression or a conditional block thus becomes literal text, so the agent reviews it before committing. When no such candidate exists, `patch_of = "render"` and the diff is the hand edit against the last render. An agent edits the template and commits in one step. An enclave template's hold carries no patch, because holds live in `state.json`, which never holds plaintext.
 - **Intra-file rules:** package rules (section 6), with the seal guard.
 - **Every capture** passes the round-trip check: render(new source) = target. A failure is held as `uncapturable`, never committed.
 

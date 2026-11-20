@@ -72,6 +72,7 @@ type machineRun struct {
 	home, state string
 	res         Result
 	snap        *Snapshot
+	eng         *Engine
 }
 
 // runMachine loads, plans and applies the fixture for one machine with a
@@ -103,7 +104,7 @@ func runMachine(t *testing.T, f *fixture.Fixture, id model.MachineID, pinned boo
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	m.snap = snap
+	m.snap, m.eng = snap, eng
 	plan, err := eng.Plan(ctx, snap.Commit)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -198,4 +199,62 @@ func TestIntegrationApplyMemberAndNonMember(t *testing.T) {
 	secrecytest.AssertTreeClean(t, u.state, all...)
 
 	secrecytest.AssertRepoClean(t, f.Root, all...)
+}
+
+// captureEdit edits a target on a machine, then scans and captures.
+func captureEdit(t *testing.T, m machineRun, tg model.Target, from, to string) Capture {
+	t.Helper()
+	ctx := context.Background()
+	s := m.read(t, tg)
+	if !strings.Contains(s, from) {
+		t.Fatalf("%s lacks %q:\n%s", tg, from, s)
+	}
+	p := filepath.Join(m.home, filepath.FromSlash(string(tg)))
+	if err := os.WriteFile(p, []byte(strings.Replace(s, from, to, 1)), m.mode(t, tg)); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := m.eng.Scan(ctx, ScanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp, err := m.eng.Capture(ctx, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cp
+}
+
+// Capture through the real template engine and textmerge: a literal edit
+// patches into the template; an edit on an expression is held with a
+// proposed template patch.
+func TestIntegrationCaptureTemplate(t *testing.T) {
+	f := fixtureRepo(t)
+
+	a := runMachine(t, f, fixture.HostA, true)
+	cp := captureEdit(t, a, ".gitconfig", "defaultBranch = main", "defaultBranch = trunk")
+	if len(cp.Holds) != 0 || len(cp.Changes) != 1 || cp.Changes[0].Path != "files/.gitconfig.tmpl" {
+		t.Fatalf("literal edit: changes=%+v holds=%+v", cp.Paths, cp.Holds)
+	}
+	tmpl := string(cp.Changes[0].Blob)
+	for _, want := range []string{"defaultBranch = trunk", "{{ machine.facts.editor }}", "{% if type:work %}", "{{ home }}/.config/git/ignore"} {
+		if !strings.Contains(tmpl, want) {
+			t.Errorf("patched template lacks %q:\n%s", want, tmpl)
+		}
+	}
+
+	b := runMachine(t, f, fixture.HostA, true)
+	cp = captureEdit(t, b, ".gitconfig", "editor = editor-one", "editor = editor-nine")
+	if len(cp.Changes) != 0 || len(cp.Holds) != 1 {
+		t.Fatalf("expression edit: changes=%+v holds=%+v", cp.Paths, cp.Holds)
+	}
+	h := cp.Holds[0]
+	if h.Reason != model.HoldRenderedEdit || h.Source != "files/.gitconfig.tmpl" || h.PatchOf != model.PatchOfTemplate {
+		t.Fatalf("hold: %+v", h)
+	}
+	if !strings.Contains(h.Patch, "-\teditor = {{ machine.facts.editor }}\n") || !strings.Contains(h.Patch, "+\teditor = editor-nine\n") {
+		t.Fatalf("proposed patch:\n%s", h.Patch)
+	}
+	if !strings.Contains(h.Patch, "--- a/files/.gitconfig.tmpl") {
+		t.Fatalf("patch labels:\n%s", h.Patch)
+	}
 }
