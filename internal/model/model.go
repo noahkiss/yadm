@@ -198,4 +198,16 @@ type Status struct {
 	Observed   map[string]ObservedFact `json:"observed,omitempty"` // only collectors with publish = "plain"
 	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`   // sealed observed facts, per enclave
 	Tasks      []TaskResult            `json:"tasks,omitempty"`    // last result per task
+	Alerts     []Alert                 `json:"alerts,omitempty"`   // recent sync alerts, newest last
+}
+
+// Alert is a sync event reported through the notify hook and recorded in the
+// status record, such as a commit from a non-member that touches an enclave.
+// It never carries file content.
+type Alert struct {
+	Kind    string    `json:"kind"` // "non_member_enclave_commit", "held", "task_failed", ...
+	Commit  CommitID  `json:"commit,omitempty"`
+	Machine MachineID `json:"machine,omitempty"`
+	Detail  string    `json:"detail"`
+	At      time.Time `json:"at"`
 }
