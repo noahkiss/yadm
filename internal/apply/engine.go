@@ -225,18 +225,20 @@ func sourceDefaultMode(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	return m
 }
 
-// widenedMode reports an explicit manifest mode that grants an enclave file
-// a permission bit its source mode does not. Any pusher can edit the
+// widenedMode reports an explicit manifest mode that grants a file with
+// enclave plaintext (a whole sealed file, sealed values or regions) a
+// permission bit its source mode does not. Any pusher can edit the
 // manifest, so it may not widen who can read a member's plaintext.
 func widenedMode(snap *Snapshot, r manifest.Resolved) (string, bool) {
-	if r.Entry.Mode == 0 || r.Entry.Enclave == "" {
+	en := r.Entry
+	if en.Mode == 0 || (en.Enclave == "" && len(en.Seal) == 0 && !en.Regions) {
 		return "", false
 	}
-	want, def := r.Entry.Mode.Perm(), sourceDefaultMode(snap, r)
+	want, def := en.Mode.Perm(), sourceDefaultMode(snap, r)
 	if want&^def == 0 {
 		return "", false
 	}
-	return fmt.Sprintf("the manifest sets mode %#o, wider than %#o, on a file of enclave %s; a manifest may not widen an enclave file's mode", want, def, r.Entry.Enclave), true
+	return fmt.Sprintf("the manifest sets mode %#o, wider than %#o, on a file with enclave plaintext; a manifest may not widen such a file's mode", want, def), true
 }
 
 // privateDirs are top-level directories whose files and subdirectories are
@@ -695,7 +697,7 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 		return nil
 	case ActSkip:
 		if s.forget {
-			delete(st.Targets, t)
+			forget(st, t, now)
 			clearFileHolds(st, t)
 			return nil
 		}
@@ -728,7 +730,7 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 		if err := os.Remove(s.abs); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-		delete(st.Targets, t)
+		forget(st, t, now)
 		clearFileHolds(st, t)
 		return nil
 	}

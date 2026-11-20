@@ -414,7 +414,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 					return Result{}, err
 				}
 			}
-			delete(st.Targets, t)
+			forget(st, t, now)
 			clearFileHolds(st, t)
 			return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActDelete, Scope: h.Scope, Reason: "hold resolved: take source"}}}, e.State.Save(st)
 		}

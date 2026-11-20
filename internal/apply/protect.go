@@ -203,14 +203,33 @@ func (e *Engine) AllowRoot(ctx context.Context, rev model.CommitID, path model.T
 			return a.Allow(KindRoot, string(path), rootHash(r))
 		}
 	}
+	// Not in the plan: allow the removal of an accepted enclave root.
+	st, err := e.loadState()
+	if err != nil {
+		return err
+	}
+	for _, r := range st.Roots {
+		if r.Path == path {
+			return a.Allow(KindRoot, string(path), rootRemovedHash(r))
+		}
+	}
 	return fmt.Errorf("allow: no owned root %s at %s", path, rev)
+}
+
+// rootRemovedHash is the allow hash for dropping an accepted enclave root.
+func rootRemovedHash(r manifest.Root) string {
+	h := sha256.Sum256([]byte("removed\x00" + string(r.Path) + "\x00" + string(r.Enclave)))
+	return hex.EncodeToString(h[:])
 }
 
 // acceptRoots updates st.Roots, the owned roots this machine scans and
 // captures from, against the plan's roots. A root that is unchanged stays.
 // A new root, or one whose enclave changed, takes effect only once allowed
 // (KindRoot); until then the old version stays and a root_untrusted hold
-// names it. A root that left the plan goes. Each newly accepted root is
+// names it. A plain root that left the plan goes. An enclave root that left
+// the plan (or whose `when` no longer applies) stays until its removal is
+// allowed: otherwise a plain root around it would capture its new files in
+// plaintext. Each newly accepted root is
 // walked once: the unmanaged files already in it go into st.Baseline and
 // are never captured automatically. It returns the root holds.
 func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now time.Time) []model.Hold {
@@ -251,6 +270,20 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 		}
 		roots = append(roots, r)
 	}
+	inPlan := map[model.Target]bool{}
+	for _, r := range snap.Plan.Roots {
+		inPlan[r.Path] = true
+	}
+	for _, o := range st.Roots {
+		if inPlan[o.Path] || o.Enclave == "" || e.allowed(KindRoot, string(o.Path), rootRemovedHash(o)) {
+			continue
+		}
+		roots = append(roots, o)
+		h := model.KeepSince(st.Holds, model.Hold{Target: o.Path, Scope: model.Scope(o.Enclave), Reason: model.HoldRootUntrusted,
+			Detail: "enclave owned root left the manifest; it stays until its removal is allowed on this machine"}, now)
+		h.Next = []string{"yadm root allow " + string(o.Path)}
+		holds = append(holds, h)
+	}
 	st.Roots = roots
 	// Root holds are recomputed on every full apply.
 	out := st.Holds[:0]
@@ -280,6 +313,18 @@ func (e *Engine) baseline(ctx context.Context, st *State, root manifest.Root) bo
 		}
 	}
 	return true
+}
+
+// forget drops a target from management. A target that had any recorded
+// protection goes into the baseline: if it leaves the plan and the app
+// writes it again inside a plain owned root, it must not be captured in
+// plaintext.
+func forget(st *State, t model.Target, now time.Time) {
+	ts, ok := st.Targets[t]
+	delete(st.Targets, t)
+	if p := ts.prot(); ok && (p.Enclave != "" || len(p.Seal) > 0 || p.Regions) {
+		st.Baseline[t] = now
+	}
 }
 
 // inBaseline reports whether a file predates the root that holds it, or

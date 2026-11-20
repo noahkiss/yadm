@@ -176,6 +176,94 @@ func TestAttackRootEnclaveStripped(t *testing.T) {
 	}
 }
 
+// A pusher removes a nested enclave root inside a plain one. Without a
+// local allow the enclave root stays, so its new files never fall to the
+// plain root.
+func TestAttackNestedEnclaveRootRemoved(t *testing.T) {
+	canary := secrecytest.NewCanary(t, "personal")
+	w := newWorld(t, "personal")
+	c1 := w.commit(nil)
+	w.plans[c1].Roots = []manifest.Root{{Path: ".config"}, {Path: ".config/notes", Enclave: "personal"}}
+	w.allowRoots(c1)
+	w.apply(c1)
+	c2 := w.commit(nil)
+	w.plans[c2].Roots = []manifest.Root{{Path: ".config"}}
+	r := w.apply(c2)
+	if holdFor(r.Holds, ".config/notes", model.HoldRootUntrusted) == nil {
+		t.Fatalf("no hold for the removed enclave root: %+v", r.Holds)
+	}
+	w.write(".config/notes/n.md", canary.String())
+	cp := scanCapture(t, w)
+	if ch := leakedIn(cp, canary); ch != nil {
+		t.Fatalf("staged in plaintext at %s", ch.Path)
+	}
+	if len(cp.Changes) != 1 || cp.Changes[0].Path != "sealed/personal/.config/notes/n.md" {
+		t.Fatalf("not sealed: %+v", cp.Paths)
+	}
+	// Allowing the removal lets it go.
+	if err := w.eng.AllowRoot(context.Background(), c2, ".config/notes"); err != nil {
+		t.Fatal(err)
+	}
+	w.apply(c2)
+	if len(w.state().Roots) != 1 {
+		t.Fatalf("removal not applied: %+v", w.state().Roots)
+	}
+}
+
+// A protected target leaves the plan and is deleted; when the app writes it
+// again inside a plain root, it is not captured.
+func TestAttackProtectedTargetLeavesPlan(t *testing.T) {
+	canary := secrecytest.NewCanary(t, "personal")
+	w := newWorld(t, "personal")
+	files := map[model.SourcePath]string{"sealed/personal/.config/app/token": "t1\n"}
+	c1 := w.commit(files, manifest.Entry{Target: ".config/app/token", Enclave: "personal"})
+	w.plans[c1].Roots = []manifest.Root{{Path: ".config"}}
+	w.allowRoots(c1)
+	w.apply(c1)
+	c2 := w.commit(files) // the entry is gone
+	w.plans[c2].Roots = []manifest.Root{{Path: ".config"}}
+	if a := actionOf(w.apply(c2), ".config/app/token"); a.Kind != ActDelete {
+		t.Fatalf("not deleted: %+v", a)
+	}
+	w.write(".config/app/token", canary.String())
+	if ch := leakedIn(scanCapture(t, w), canary); ch != nil {
+		t.Fatalf("recreated protected file staged in plaintext at %s", ch.Path)
+	}
+}
+
+// MergeSealed opens both sides under the current epoch only, so a merge
+// never reseals an old-epoch forgery under the current epoch.
+func TestAttackMergeDoesNotLaunderOldEpoch(t *testing.T) {
+	ring1, head, id, pins := realRing(t)
+	_, ring2, err := ring1.Rotate(head, id, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const p model.SourcePath = "sealed/personal/.netrc"
+	w := newWorld(t, "personal")
+	useRealCrypto(t, w, &crypt.Set{Rings: map[model.EnclaveName]*crypt.Keyring{"personal": ring2}})
+	base, _ := ring2.SealFile(p, []byte("a\nb\nc\n"))
+	good, _ := ring2.SealFile(p, []byte("a\nb\nc\nd\n"))
+	forged, _ := ring1.SealFile(p, []byte("evil\na\nb\nc\n"))
+	for _, b := range [][]byte{base, good, forged} {
+		w.st.blobs[blobID(b)] = b
+	}
+	snap, err := w.eng.LoadSnapshot(context.Background(), w.commitRaw(map[model.SourcePath][]byte{p: base}, manifest.Entry{Target: ".netrc", Enclave: "personal"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []store.Conflict{
+		{Path: p, Base: blobID(base), Ours: blobID(base), Theirs: blobID(forged)},
+		{Path: p, Base: blobID(base), Ours: blobID(forged), Theirs: blobID(base)},
+		{Path: p, Base: blobID(base), Ours: blobID(forged), Theirs: blobID(good)},
+	} {
+		ch, h, err := w.eng.MergeSealed(context.Background(), snap, c)
+		if err != nil || ch != nil || h == nil || h.Reason != model.HoldConflict {
+			t.Fatalf("forged side merged: change %v hold %+v err %v", ch != nil, h, err)
+		}
+	}
+}
+
 // A pusher drops the `seal` rule of a structured file while the victim's
 // copy has a pending edit. Apply and capture hold the file until the user
 // allows the weaker protection.

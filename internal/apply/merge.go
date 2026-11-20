@@ -63,10 +63,11 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 	if c.Ours == "" || c.Theirs == "" {
 		return conflict("one side deleted the file and the other changed it")
 	}
-	// The base is history and is never delivered. Ours is this machine's
-	// own side. Theirs is fetched: the merge reseals it under the current
-	// epoch, so it opens only under the current epoch, or a removed member's
-	// old-epoch forgery would come out freshly sealed.
+	// The base is history and is never delivered. Both sides open only
+	// under the current epoch: the merge reseals its result under the
+	// current epoch, so a removed member's old-epoch forgery on either side
+	// (a replay may name the fetched side ours or theirs) would come out
+	// freshly sealed. A side that does not open is a conflict hold.
 	open := func(s *Snapshot, id string) ([]byte, error) {
 		if id == "" {
 			return nil, nil
@@ -81,7 +82,10 @@ func (e *Engine) MergeSealed(ctx context.Context, snap *Snapshot, c store.Confli
 	if err != nil {
 		return nil, nil, fmt.Errorf("merge %s: base: %w", c.Path, err)
 	}
-	ours, err := open(snap, c.Ours)
+	ours, err := open(snap.strict(), c.Ours)
+	if detail, ok := sealedOpenFailure(err); ok {
+		return conflict("our side: " + detail)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("merge %s: ours: %w", c.Path, err)
 	}

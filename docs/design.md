@@ -329,8 +329,9 @@ Every change to sealing or delivery needs a test with `internal/secrecytest` tha
 Any machine can push `manifest.toml`, so a manifest change that would make a member stage plaintext takes effect only after a local allow, as a task definition does (section 12.3):
 
 - **Weaker protection.** The state records, per target, the protection of the last apply: the whole-file enclave, each sealed key with its enclave, and regions. When the manifest drops or moves any of them, apply and capture hold the target with `seal_guard` until the user allows the new protection on this machine. Apply never records a weaker protection on its own.
-- **Owned roots.** A new `[[root]]`, or one whose enclave changed, does nothing until allowed. Until then the old version of the root stays, and the root is held as `root_untrusted`. Scan and capture read only allowed roots. When a root takes effect, the files already in it form a baseline that is never captured automatically. A file that leaves management but stays on disk joins the baseline too.
-- **Modes.** An explicit `mode` may not grant an enclave file a permission bit its source mode lacks. Apply holds such a target with `seal_guard`. Without `mode`, enclave files follow section 4.
+- **Owned roots.** A new `[[root]]`, or one whose enclave changed, does nothing until allowed. Until then the old version of the root stays, and the root is held as `root_untrusted`. An enclave root that leaves the manifest stays until its removal is allowed, so a plain root around it never captures its files. Scan and capture read only allowed roots. When a root takes effect, the files already in it form a baseline that is never captured automatically. A file that leaves management but stays on disk joins the baseline, and so does a protected target that leaves the plan.
+- **Modes.** An explicit `mode` may not grant a file with enclave plaintext (a whole sealed file, sealed values or regions) a permission bit its source mode lacks. Apply holds such a target with `seal_guard`. Without `mode`, these files follow section 4.
+- **Merges.** An in-memory merge of a sealed file opens both sides under the current epoch only, so it never reseals old-epoch content under the current one.
 
 ### 7.5 Hidden paths (reserved)
 
