@@ -559,6 +559,107 @@ func OpenSealed(st model.Status, e model.EnclaveName, o FactOpener) (map[string]
 	return out, nil
 }
 
+// OpenAll opens the sealed observed facts of st that o can open, keyed by
+// enclave. It skips every enclave o cannot open without an error, so a
+// non-member gets nil. It keeps only facts whose collector f declares
+// `sealed:<that enclave>`. A record whose facts fail to open yields a problem
+// and no facts for that enclave.
+//
+// The fact token is bound to its enclave and epoch, not to the machine whose
+// status ref carries it, so a writer can copy one machine's token into
+// another machine's ref.
+func OpenAll(f *File, st model.Status, o FactOpener) (map[model.EnclaveName]map[string]model.ObservedFact, []error) {
+	if f == nil || o == nil || len(st.Sealed) == 0 {
+		return nil, nil
+	}
+	enclaves := make([]model.EnclaveName, 0, len(st.Sealed))
+	for e := range st.Sealed {
+		if o.CanOpen(e) {
+			enclaves = append(enclaves, e)
+		}
+	}
+	sort.Slice(enclaves, func(i, j int) bool { return enclaves[i] < enclaves[j] })
+	var out map[model.EnclaveName]map[string]model.ObservedFact
+	var problems []error
+	for _, e := range enclaves {
+		facts, err := OpenSealed(st, e, o)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("machine %s: %w", st.Machine, err))
+			continue
+		}
+		kept := map[string]model.ObservedFact{}
+		for name, fact := range facts {
+			def, ok := f.Collectors[name]
+			if !ok || def.Publish.Mode != PublishSealed || def.Publish.Enclave != e {
+				continue
+			}
+			fact.Collector = name
+			kept[name] = fact
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		if out == nil {
+			out = map[model.EnclaveName]map[string]model.ObservedFact{}
+		}
+		out[e] = kept
+	}
+	return out, problems
+}
+
+// Visible returns the observed facts of st a reader sees: the plain facts,
+// with every collector declared `sealed:<e>` for an enclave the reader can
+// open taken only from opened (the result of OpenAll). A plain value for
+// such a collector is dropped, because any writer can put one in a status
+// ref. For a reader that can open no enclave, the result equals st.Observed.
+func Visible(f *File, st model.Status, o FactOpener, opened map[model.EnclaveName]map[string]model.ObservedFact) map[string]model.ObservedFact {
+	var out map[string]model.ObservedFact
+	put := func(name string, fact model.ObservedFact) {
+		if out == nil {
+			out = map[string]model.ObservedFact{}
+		}
+		out[name] = fact
+	}
+	for name, fact := range st.Observed {
+		if f != nil && o != nil {
+			if def, ok := f.Collectors[name]; ok && def.Publish.Mode == PublishSealed && o.CanOpen(def.Publish.Enclave) {
+				continue
+			}
+		}
+		put(name, fact)
+	}
+	for _, facts := range opened {
+		for name, fact := range facts {
+			put(name, fact)
+		}
+	}
+	return out
+}
+
+// WithVisible returns copies of statuses whose Observed holds what a reader
+// with o sees (Visible), for queries that evaluate or compare observed facts.
+// The copies are for reading only: never publish them.
+func WithVisible(f *File, statuses map[model.MachineID]model.Status, o FactOpener) (map[model.MachineID]model.Status, []error) {
+	if statuses == nil {
+		return nil, nil
+	}
+	out := make(map[model.MachineID]model.Status, len(statuses))
+	var problems []error
+	ids := make([]model.MachineID, 0, len(statuses))
+	for id := range statuses {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		st := statuses[id]
+		opened, errs := OpenAll(f, st, o)
+		problems = append(problems, errs...)
+		st.Observed = Visible(f, st, o, opened)
+		out[id] = st
+	}
+	return out, problems
+}
+
 // StatusRef returns the ref that holds a machine's status record.
 // Each machine fast-forwards only its own status ref.
 func StatusRef(id model.MachineID) string { return "refs/yadm/status/" + string(id) }
@@ -588,6 +689,12 @@ type Summary struct {
 	Machine model.Machine `json:"machine"`
 	Status  *model.Status `json:"status,omitempty"`
 	Stale   bool          `json:"stale"` // no status, or last sync older than StaleAfter
+	// SealedObserved holds the sealed observed facts this machine opened from
+	// Status, per enclave (OpenAll). It is empty on a non-member.
+	SealedObserved map[model.EnclaveName]map[string]model.ObservedFact `json:"sealed_observed,omitempty"`
+	// SealedErrors lists the enclaves of this machine's membership whose
+	// sealed facts in Status failed to open. It never holds plaintext.
+	SealedErrors []string `json:"sealed_errors,omitempty"`
 }
 
 // List joins the fleet file with the status records, sorted by machine id.
@@ -634,7 +741,8 @@ type ObservedDiff struct {
 }
 
 // DiffObserved compares a published collector across machines. It reads only
-// the plain observed facts. A machine whose value is absent or carries an
+// Status.Observed; pass WithVisible's copies to include the sealed facts a
+// member opens. A machine whose value is absent or carries an
 // error is Unknown. Every machine with a value has a Missing entry, empty when
 // it lacks nothing.
 func DiffObserved(statuses map[model.MachineID]model.Status, collector string) (ObservedDiff, error) {

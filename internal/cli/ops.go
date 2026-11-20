@@ -39,6 +39,9 @@ func (a *app) cmdFleetList(cmd *cobra.Command, args []string) (result, error) {
 	if rows == nil {
 		rows = []fleet.Summary{}
 	}
+	for i := range rows {
+		openSummary(m, &rows[i])
+	}
 	var b strings.Builder
 	for _, r := range rows {
 		last := "never"
@@ -77,7 +80,23 @@ func (a *app) cmdFleetShow(cmd *cobra.Command, args []string) (result, error) {
 		st = &s
 	}
 	stale := st == nil || hooks.now().Sub(st.LastSync) > fleet.StaleAfter
-	return result{data: fleet.Summary{Machine: mc, Status: st, Stale: stale}}, nil
+	row := fleet.Summary{Machine: mc, Status: st, Stale: stale}
+	openSummary(m, &row)
+	return result{data: row}, nil
+}
+
+// openSummary adds the sealed observed facts this machine can open to a
+// fleet row. Status stays the raw published record, so a non-member's row is
+// unchanged.
+func openSummary(m *machineEnv, row *fleet.Summary) {
+	if row.Status == nil {
+		return
+	}
+	opened, problems := fleet.OpenAll(m.snap.Fleet, *row.Status, m.snap.Keys)
+	row.SealedObserved = opened
+	for _, p := range problems {
+		row.SealedErrors = append(row.SealedErrors, p.Error())
+	}
 }
 
 func (a *app) cmdFleetDiff(cmd *cobra.Command, args []string) (result, error) {
@@ -93,7 +112,10 @@ func (a *app) cmdFleetDiff(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	d, err := fleet.DiffObserved(all, args[0])
+	// A member compares the sealed collectors it can open; a non-member sees
+	// the plain facts only, as published.
+	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Keys)
+	d, err := fleet.DiffObserved(visible, args[0])
 	if err != nil {
 		return result{}, err
 	}

@@ -22,7 +22,7 @@
 //	machine, why, managed          apply.Engine.Load -> Snapshot (Fleet, Plan.Why); explain: cli over the same
 //	manifest [--as|--fleet]        manifest.Resolve per fleet machine over the loaded snapshot; reads no file content
 //	eval <cond> [--as]             cond.Parse with the named conditions, cond.Expand; another machine's observed
-//	                               facts only from plain-published status refs
+//	                               facts from its status ref: plain, plus sealed ones a member opens (fleet.WithVisible)
 //	init, clone                    store.Clone, crypt.GenerateIdentity + Save, schedule.ForOS().Install
 //	status                         apply.Engine.Scan, apply.Engine.Holds, store.IsAncestor
 //	apply                          apply.Engine.Load, Plan, Apply
@@ -40,7 +40,8 @@
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status,
 //	                               git config (merge.*.driver, filter.*)
-//	fleet list|show|diff           store.StatusRefs.ReadAll, fleet.DiffObserved
+//	fleet list|show|diff           store.StatusRefs.ReadAll, fleet.OpenAll (members only), fleet.WithVisible,
+//	                               fleet.DiffObserved; a non-member's output holds no sealed facts
 //	enclave create|add|remove|retire|set-recovery
 //	                               crypt.Create/Add/Remove/Retire/SetRecovery, crypt.MarshalLogEntry, sync.Commit (Changes),
 //	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal
