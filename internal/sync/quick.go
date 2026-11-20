@@ -14,7 +14,7 @@ import (
 )
 
 // Quick-check tuning. A quick sync (Options.Quick) runs a full sync only when
-// it is due: the remote moved, a target drifted, the last full sync is older
+// it is due: the remote main or a reviewed ref moved, a target drifted, the last full sync is older
 // than FullEvery, or the last check is older than WakeGap (the machine slept
 // or the timer stopped).
 const (
@@ -84,27 +84,29 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 	return "", nil
 }
 
-// sameHeads compares two ls-remote views, ignoring this machine's own status
-// ref (its own pushes must not wake it).
-func sameHeads(a, b map[string]model.CommitID, self model.MachineID) bool {
-	own := "refs/yadm/status/" + string(self)
-	n := 0
-	for k, v := range a {
-		if k == own {
-			continue
+// sameHeads compares two ls-remote views on the refs that change what a
+// machine applies or reviews: main and the reviewed refs. Status refs move
+// on every peer's sync; the periodic full sync fetches them.
+func sameHeads(a, b map[string]model.CommitID, _ model.MachineID) bool {
+	pick := func(m map[string]model.CommitID) map[string]model.CommitID {
+		out := map[string]model.CommitID{}
+		for k, v := range m {
+			if k == store.RefMain || strings.HasPrefix(k, "refs/yadm/reviewed/") {
+				out[k] = v
+			}
 		}
-		if b[k] != v {
+		return out
+	}
+	x, y := pick(a), pick(b)
+	if len(x) != len(y) {
+		return false
+	}
+	for k, v := range x {
+		if y[k] != v {
 			return false
 		}
-		n++
 	}
-	m := 0
-	for k := range b {
-		if k != own {
-			m++
-		}
-	}
-	return n == m
+	return true
 }
 
 // recordFull remembers a finished full sync and the remote heads it left,
