@@ -23,11 +23,18 @@
 // directory, so staged edits in the clone's index count as local edits even
 // after main has moved.
 //
+// Blob reads (ReadBlob, ReadPath) go through one long-lived
+// `git cat-file --batch` process per Repo. It starts on first read, stops
+// after an idle period or at Close, restarts when it dies, and restarts after
+// Fetch. A missing or non-blob object falls back to a one-shot git call, so
+// results and errors match a plain `git cat-file blob`.
+//
 // Exported API:
 //
 //	type Store interface{ ... }        // see store.go; *Repo implements it
 //	func Open(sourceDir, stateDir string) (*Repo, error)
 //	func Clone(ctx, remote, sourceDir, stateDir string) (*Repo, error)
+//	func (r *Repo) Close() error       // stops the batch reader; a later read restarts it
 //	type Change struct{ Path model.SourcePath; Blob []byte; Mode uint32; Delete bool }
 //	type Message struct{ Subject, Body string; Trailers []Trailer }
 //	type MergeResult struct{ Tree string; Conflicts []Conflict }

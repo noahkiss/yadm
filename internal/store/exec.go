@@ -84,7 +84,7 @@ func GitExitCode(err error) int { return exitCode(err) }
 // `git ls-remote`, without fetching objects. It is the cheap check a quick
 // sync runs before deciding whether a full sync is needed.
 func (r *Repo) RemoteHeads(ctx context.Context) (map[string]model.CommitID, error) {
-	out, err := run(ctx, call{dir: r.dir, network: true, args: []string{"ls-remote", "--", "origin", RefMain, "refs/yadm/*"}})
+	out, err := run(ctx, call{dir: r.dir, base: r.env, network: true, args: []string{"ls-remote", "--", "origin", RefMain, "refs/yadm/*"}})
 	if err != nil {
 		return nil, err
 	}
