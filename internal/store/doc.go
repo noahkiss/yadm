@@ -15,7 +15,13 @@
 //
 // Merges use `git merge-tree --write-tree` and return every conflicted path
 // with its three stage blobs, so apply can open sealed files, merge plaintext
-// and reseal. Pushes are atomic and never forced.
+// and reseal. Pushes are atomic and never forced; held refs are never pushed.
+//
+// Open and Clone require git 2.40 or newer (MinGitVersion). A ref or HEAD
+// that does not exist resolves to "", the value UpdateRef reads as "must not
+// exist". SyncWorktree records the commit it last checked out in the state
+// directory, so staged edits in the clone's index count as local edits even
+// after main has moved.
 //
 // Exported API:
 //
@@ -26,6 +32,8 @@
 //	type Message struct{ Subject, Body string; Trailers []Trailer }
 //	type MergeResult struct{ Tree string; Conflicts []Conflict }
 //	type Conflict struct{ Path model.SourcePath; Base, Ours, Theirs string }
-//	var ErrRejected, ErrStaleRef
+//	var ErrRejected, ErrStaleRef, ErrDirty
+//	func CheckGitVersion(ctx) error
+//	func FormatMessage(Message) string; func ParseMessage(raw string) Message
 //	Ref names: RefMain, RefReviewed(scope), RefHeld(machine), fleet.StatusRef(machine)
 package store
