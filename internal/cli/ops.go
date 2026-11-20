@@ -144,6 +144,13 @@ func (a *app) cmdReviewList(cmd *cobra.Command, args []string) (result, error) {
 		}
 		items = append(items, it...)
 	}
+	if notes := m.notes(ctx); len(notes) > 0 {
+		for i := range items {
+			if n, ok := notes[items[i].Commit.ID]; ok {
+				items[i].Note = &n
+			}
+		}
+	}
 	// Decisions agents deferred wait here too, while their holds are open.
 	var deferred []Deferred
 	if hs, err := m.eng.Holds(ctx); err == nil {
@@ -782,4 +789,72 @@ func (a *app) cmdScheduleStatus(cmd *cobra.Command, args []string) (result, erro
 		next = []string{"yadm schedule install"}
 	}
 	return result{data: st, next: next}, nil
+}
+
+// notes reads the review notes this machine may see: sealed ones open only
+// for members. A failure reads as no notes.
+func (m *machineEnv) notes(ctx context.Context) map[model.CommitID]sync.Note {
+	var keys *crypt.Set
+	if snap, err := m.load(ctx); err == nil {
+		keys = snap.Keys
+	}
+	n, err := sync.ReadNotes(ctx, m.repo, keys)
+	if err != nil {
+		return nil
+	}
+	return n
+}
+
+type noteData struct {
+	Note      sync.Note `json:"note"`
+	Pushed    bool      `json:"pushed"`
+	PushError string    `json:"push_error,omitempty"`
+}
+
+func (a *app) cmdReviewNote(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	why, _ := cmd.Flags().GetString("why")
+	seal, _ := cmd.Flags().GetString("seal")
+	pathsOnly, _ := cmd.Flags().GetBool("paths-only")
+	noPush, _ := cmd.Flags().GetBool("no-push")
+	if pathsOnly == (why != "") {
+		return result{}, usagef("give exactly one of --why or --paths-only")
+	}
+	if pathsOnly && seal != "" {
+		return result{}, usagef("--paths-only writes no text to seal")
+	}
+	m, err := openLoaded(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	var d noteData
+	err = m.locked(ctx, func() error {
+		n, err := sync.WriteNote(ctx, m.repo, m.snap, sync.NoteOptions{
+			Commit: model.CommitID(args[0]), Why: why, PathsOnly: pathsOnly, Seal: model.EnclaveName(seal),
+			Machine: m.local.Machine, Now: hooks.now(),
+		})
+		if err != nil {
+			return err
+		}
+		d.Note = n
+		if noPush {
+			return nil
+		}
+		if d.Pushed, err = sync.PushNotes(ctx, m.repo); err != nil {
+			d.PushError = err.Error()
+		}
+		return nil
+	})
+	if errors.Is(err, sync.ErrNoteNeedsSeal) {
+		return result{next: []string{"yadm review note " + args[0] + " --paths-only"}}, fmt.Errorf("%w: %v", ErrRefused, err)
+	}
+	if err != nil {
+		return result{}, err
+	}
+	text := fmt.Sprintf("noted %s: %s", short(d.Note.Commit), d.Note.Text())
+	var next []string
+	if !d.Pushed && !noPush {
+		next = []string{"yadm sync"}
+	}
+	return result{data: d, text: text, next: next}, nil
 }

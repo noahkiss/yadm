@@ -638,7 +638,8 @@ func (s *Syncer) backoff(ctx context.Context, attempt int) error {
 }
 
 // pushSpecs lists what to push: main when it moved past the remote, this
-// machine's status ref, and reviewed refs this machine advanced. A reviewed
+// machine's status ref, reviewed refs this machine advanced, and the review
+// notes ref when it holds notes the remote lacks. A reviewed
 // ref the remote advanced further is fast-forwarded locally instead.
 func (s *Syncer) pushSpecs(ctx context.Context, tip, remote model.CommitID) ([]string, error) {
 	var specs []string
@@ -660,6 +661,11 @@ func (s *Syncer) pushSpecs(ctx context.Context, tip, remote model.CommitID) ([]s
 	more, err := s.reviewedSpecs(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if ns, err := notesSpec(ctx, s.Store); err != nil {
+		return nil, err
+	} else if ns != "" {
+		more = append(more, ns)
 	}
 	return append(specs, more...), nil
 }

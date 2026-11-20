@@ -20,6 +20,9 @@ type ReviewItem struct {
 	Commit store.Commit `json:"commit"`
 	Scope  model.Scope  `json:"scope"`
 	Diff   string       `json:"diff"`
+	// Note is the commit's review note, when one exists (RefReviewNotes).
+	// The CLI fills it.
+	Note *Note `json:"note,omitempty"`
 }
 
 // inScope reports whether a source path belongs to scope: an enclave owns

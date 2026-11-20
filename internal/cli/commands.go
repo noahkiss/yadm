@@ -99,6 +99,11 @@ func (a *app) register(root *cobra.Command) {
 	rl.Args = cobra.MaximumNArgs(1)
 	exact(leaf(rv, "ok <scope> <commit>", "Advance the reviewed ref", a.cmdReviewOK), 2)
 	exact(leaf(rv, "revert <commit>", "Revert a commit with a new commit", a.cmdReviewRevert), 1)
+	rn := exact(leaf(rv, "note <commit>", "Attach a why note to a commit; sealed when the commit touches an enclave", a.cmdReviewNote), 1)
+	rn.Flags().String("why", "", "the note text")
+	rn.Flags().String("seal", "", "seal the note to this enclave")
+	rn.Flags().Bool("paths-only", false, "write a note that names only the commit's paths")
+	rn.Flags().Bool("no-push", false, "write the note only; the next sync pushes it")
 
 	hd := a.group(root, "hold", "Held files, tasks and conflicts")
 	hl := leaf(hd, "list", "List holds", a.cmdHoldList(""))
@@ -682,6 +687,7 @@ type logCommit struct {
 	Body     string             `json:"body,omitempty"`
 	Trailers []store.Trailer    `json:"trailers,omitempty"`
 	Paths    []model.SourcePath `json:"paths"`
+	Note     *sync.Note         `json:"note,omitempty"` // the review note; a sealed one opens only for members
 }
 
 func (a *app) cmdLog(cmd *cobra.Command, args []string) (result, error) {
@@ -728,9 +734,19 @@ func (a *app) cmdLog(cmd *cobra.Command, args []string) (result, error) {
 				Subject: c.Message.Subject, Body: c.Message.Body, Trailers: c.Message.Trailers, Paths: c.Paths})
 		}
 	}
+	if notes := m.notes(ctx); len(notes) > 0 {
+		for i := range commits {
+			if n, ok := notes[commits[i].ID]; ok {
+				commits[i].Note = &n
+			}
+		}
+	}
 	var b strings.Builder
 	for _, c := range commits {
 		fmt.Fprintf(&b, "%s %s\n", short(c.ID), c.Subject)
+		if c.Note != nil {
+			fmt.Fprintf(&b, "    why: %s\n", c.Note.Text())
+		}
 	}
 	return result{data: map[string]any{"commits": commits}, text: b.String()}, nil
 }
