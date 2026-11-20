@@ -238,6 +238,9 @@ func policy(s *apply.Snapshot) sync.Policy {
 			p.Quiet = q
 		}
 		p.Protected = append(p.Protected, s.Manifest.Protected...)
+		// A named-conditions include decides which machines get which
+		// entries, as manifest.toml does: it never auto-commits.
+		p.Protected = append(p.Protected, s.Manifest.Includes()...)
 	}
 	if s != nil && s.Plan != nil {
 		plan := s.Plan
