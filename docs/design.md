@@ -154,7 +154,8 @@ Resolution for one machine:
 - Two applying entries for one target are a **collision**. Every command that resolves the manifest fails on it, and `yadm check` lists it.
 - Without `source`, the source is `files/<target>`, or `sealed/<enclave>/<target>` when `enclave` is set.
 - A target glob (`.config/tool/**`) expands against the source tree.
-- `mode` defaults to 0644, 0755 for an executable source, and 0600 for any file with `enclave` set.
+- `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
+- Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
 
 `yadm why <path> --json` returns the winning entry, every entry that named the path but did not apply (with the reason), whether the path is protected and which owned root contains it.
@@ -217,9 +218,11 @@ Behaviour:
 
 - Key paths name nested keys separated by dots, with `*` for any one segment: `mcp.servers.*.env.TOKEN`. A literal dot or star inside a key is escaped with a backslash: the JSON key `"files.exclude"` is the path `files\.exclude`. Arrays are indexed by number. A path that names an object or table covers everything below it.
 - Edits are byte-level. A no-op round trip returns identical bytes. A change touches only the bytes of the values it changes.
-- JSON edits use `sjson`. The TOML span editor is this project's code, on go-toml's `unstable` parser. Every edit re-parses its output and fails closed.
-- `sjson.Delete` also removes a comment directly above the key. The rules package decides comment ownership before it deletes.
+- The JSON and JSONC editor is this project's own scanner and span editor; `sjson` is not used, because its delete takes the comment above a key and it cannot expand `*`. The TOML span editor is this project's code too, on go-toml's `unstable` parser. Every edit re-parses its output and fails closed.
+- The rules package decides comment ownership: a delete keeps the comment lines above a key, except when keep-mode pruning removes an app-owned key, which takes its comments with it.
 - **Seal guard.** Capture refuses, and holds the file with `seal_guard`, when the target lost a sealed key or its parent, when a sealed plaintext appears outside its seal path, or when region markers are gone or unbalanced. A capture never commits a sealed part as plaintext.
+- The leak check looks for a sealed value of 8 bytes or more anywhere in the file, and for a shorter one only as a whole quoted string. It skips region lines shorter than 8 bytes, and checks region lines only against an earlier source, so a first capture is not held for a line that also stands outside its region.
+- After a remove or rotate, `rules.Reseal` moves every value and region token of the enclave to the current epoch without touching other bytes.
 - A non-member's capture puts the stored tokens back from the source, because it cannot see them.
 - Deterministic sealing keeps tokens byte-stable when other lines change, so git merges files with sealed parts line by line.
 - YAML and plist move as whole files.
@@ -298,6 +301,7 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 - In memory during render, capture, merge and diff. Three-way merges, diffs and template patching run in-process (`internal/textmerge`); plaintext is never handed to git.
 - On stdout for `yadm diff`, `yadm log -p`, `yadm review` and `yadm hold show`.
 - In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open.
+- In `backup/` in a member's state directory: the bytes apply replaced or deleted, mode 0600, kept 30 days. A non-member never writes an enclave's plaintext, so its backups hold none.
 
 The state database stores hashes, never rendered bytes. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
@@ -335,7 +339,7 @@ Drift kinds: `modified`, `deleted`, `new` (in an owned root), `mode`.
 
 - **Verbatim file:** the target bytes become the source bytes.
 - **Sealed file:** the target is sealed under the current epoch. Deterministic sealing makes an unchanged file a no-op.
-- **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it.
+- **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it. The hold names the template (`source`) and carries a proposed unified diff (`patch`): against the template when the patch applied but failed the round trip (`patch_of = "template"`), or the hand edit against the last render when it touched rendered expressions or conditional blocks (`patch_of = "render"`). An agent edits the template and commits in one step. An enclave template's hold carries no patch, because holds live in `state.json`, which never holds plaintext.
 - **Intra-file rules:** package rules (section 6), with the seal guard.
 - **Every capture** passes the round-trip check: render(new source) = target. A failure is held as `uncapturable`, never committed.
 
@@ -452,7 +456,8 @@ timeout    = "10m"
 - Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`).
 - A task runs once per apply, after all writes, with the matched targets in its request.
 - A failed task is recorded in state and the status ref, reported through notify, and never stops other tasks or the sync.
-- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed.
+- **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it.
+- A held task keeps the first apply open only when it is a `first_apply` task. A first-apply task that already succeeded does not run again while another one waits to be allowed. Once a held definition is allowed, the next apply drops its hold.
 
 ### 12.2 No package manager in core
 
@@ -492,6 +497,8 @@ External subcommands: `yadm foo args…` runs `yadm-foo` from `PATH` when `foo` 
 
 `yadm init` and `yadm adopt` install the sync schedule unless given `--no-schedule`: a launchd user agent on macOS, a systemd user timer on Linux. It runs `yadm sync --auto` every 5 minutes and once at login or wake. A run missed during sleep is not queued; the next run catches up once and tolerates a network that returns late (fetch failures retry on the next tick). `yadm schedule install|uninstall|status` manage it directly.
 
+The unit names yadm by an absolute path; a path inside a Homebrew Cellar is mapped to the version-free link in `<prefix>/bin`, so an upgrade does not break it. The unit sets an explicit `PATH`: the binary's directory, the Homebrew prefixes (`/opt/homebrew`, `/usr/local`, `/home/linuxbrew/.linuxbrew`) and the system directories. The caller decides whether a command may change the real service manager; a test binary also needs `YADM_SCHEDULE_LIVE=1`.
+
 ## 14. Commands
 
 ### 14.1 Output contract
@@ -529,6 +536,8 @@ Hold objects have a stable shape for external resolvers. Fields are only added w
   "since": "…", "detail": "…", "base": "<blob>", "ours": "<blob>", "theirs": "<blob>",
   "next": ["yadm hold show <id>", "yadm hold resolve <id> --take source"] }
 ```
+
+A `rendered_edit` hold also carries `source`, `patch` and `patch_of` (section 8.4). A hold's `since` is its first sighting, so its `id` stays stable while the cause persists.
 
 Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `seal_guard`, `source_dirty`, `task_untrusted`, `check_failed`, `rendered_edit`.
 
@@ -574,7 +583,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | Input | Output |
 |---|---|
 | `path##cond,cond` alternates | A manifest entry per variant with an equivalent `when`; source under `files/` or `sealed/<enclave>/`. Conditions, long and short form: `default`, `class`/`c`, `os`/`o`, `arch`/`a`, `hostname`/`h`, `user`/`u`, `distro`/`d`, `distro_family`/`f`, `template`/`t`, `extension`/`e` (ignored). Values compare case-insensitively upstream, so the importer lowercases `os` and `arch` values. Hostname, user, distro and distro family become declared facts. Anything else fails the import. |
-| Templates (`##template` or `##template.default`) | The built-in processor's variables (`yadm.arch`, `yadm.class`, `yadm.classes`, `yadm.os`, `yadm.hostname`, `yadm.user`, `yadm.distro`, `yadm.distro_family`) become section 5.2 references or facts; `if` with `==`/`!=`, `else` and `endif` become conditions; `include` is inlined when its file exists in the repository. `env.VAR`, other processors (`esh`, `j2`, `j2cli`, `envtpl`) and anything unconvertible fail the import with path and line. |
+| Templates (`##template` or `##template.default`) | The built-in processor's variables (`yadm.arch`, `yadm.class`, `yadm.classes`, `yadm.os`, `yadm.hostname`, `yadm.user`, `yadm.distro`, `yadm.distro_family`) become section 5.2 references or facts; `if` with `==`/`!=`, `else` and `endif` become conditions; `include` is inlined when its file exists in the repository. `env.HOME` becomes `{{ home }}`. Any other `env.VAR`, other processors (`esh`, `j2`, `j2cli`, `envtpl`) and anything unconvertible fail the import with path and line. |
 | Paths with `filter=crypt` in `.gitattributes` | Decrypted with the password from `--password-env`, sealed into the enclave mapped from the file's class, or `--default-enclave`. The password is never written anywhere. |
 | Machines table (TSV with header) | `name`, `hostname`, `classes` become fleet machines; hostname becomes a fact; classes become types. Other columns become declared facts. |
 
@@ -610,10 +619,10 @@ Pinned in `go.mod`; `go 1.25` minimum. Each was fetched and exercised (`internal
 | `github.com/tink-crypto/tink-go/v2` | v2.9.0 | AES-SIV (`daead/subtle`) | Maintained, audited deterministic AEAD; we do not implement SIV. Pulls `google.golang.org/protobuf` transitively. |
 | Go standard library | | HKDF (`crypto/hkdf`), Ed25519, SHA-256 | No extra dependency. |
 | `github.com/pelletier/go-toml/v2` | v2.4.3 | Parse fleet and manifest; `unstable` parser with comments for the TOML span editor | Only Go TOML parser that exposes a comment-preserving AST. Expression ranges are empty for key-values, so spans come from child nodes. |
-| `github.com/tidwall/sjson` (+ `gjson`) | v1.2.10 | Byte-preserving JSON and JSONC value edits | Keeps comments and spacing on set; delete takes the comment above the key, handled in rules. |
+| `github.com/tidwall/sjson` (+ `gjson`) | v1.2.10 | Test only: `internal/rules/deps_test.go` records why rules does not use it | Its delete takes the comment above a key and it cannot expand `*`, so rules has its own JSON and JSONC editor. |
 | `github.com/spf13/cobra` | v1.10.2 | Command tree and flags | Nested commands, persistent `--json`, flag errors mapped to exit 2. |
 
-Three-way merge, unified diff and template patching (`internal/textmerge`) are this project's code, so plaintext stays in process.
+Three-way merge, unified diff and template patching (`internal/textmerge`) and the JSON, JSONC and TOML span editors (`internal/rules`) are this project's code, so plaintext stays in process.
 
 Git is the `git` binary (merge-tree `--write-tree` needs a current git), not a library.
 
