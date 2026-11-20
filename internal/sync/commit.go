@@ -459,12 +459,12 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		approved := isNamed && !opts.Unattended
 		switch {
 		case !approved && (ch.Delete || protected(pol, t, ch.Path)):
-			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), "protected; commit it by name", "yadm commit "+string(t)))
+			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), "protected; commit it by name", "yadm commit "+model.ShellQuote(string(t))))
 			continue
 		case opts.Unattended && isNew(st, t):
 			// A new file in an owned root: which machines get it is a decision.
 			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now),
-				"new file; commit it by name to share it, or retag it first", "yadm commit "+string(t), "yadm retag "+string(t)+" <type>[,<type>...]"))
+				"new file; commit it by name to share it, or retag it first", "yadm commit "+model.ShellQuote(string(t)), "yadm retag "+model.ShellQuote(string(t))+" <type>[,<type>...]"))
 			continue
 		}
 		pc := plan(scope)
@@ -594,7 +594,7 @@ func (s *Syncer) holdBaseline(drift []apply.Drift, cp apply.Capture) error {
 		if hasHold(st, t, model.HoldProtected) {
 			continue
 		}
-		putHold(st, targetHold(st, now, t, d.Scope, model.HoldProtected, sinceOf(st, t, now), baselineDetail, "yadm commit "+string(t)))
+		putHold(st, targetHold(st, now, t, d.Scope, model.HoldProtected, sinceOf(st, t, now), baselineDetail, "yadm commit "+model.ShellQuote(string(t))))
 		changed = true
 	}
 	if !changed {

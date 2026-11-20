@@ -64,7 +64,7 @@ func (a *app) cmdMachine(cmd *cobra.Command, args []string) (result, error) {
 	text := fmt.Sprintf("%s %s types=%s os=%s arch=%s opened=%v", d.ID, d.Name, joinTypes(d.Types), d.OS, d.Arch, d.Enclaves.Opened)
 	var next []string
 	for _, r := range d.Enclaves.Refused {
-		next = append(next, "yadm enclave join "+string(r.Enclave)+" --expect <fingerprint>")
+		next = append(next, "yadm enclave join "+model.ShellQuote(string(r.Enclave))+" --expect <fingerprint>")
 	}
 	return result{data: d, text: text, next: next}, nil
 }

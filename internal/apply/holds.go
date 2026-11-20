@@ -49,6 +49,19 @@ func fileHold(st *State, now time.Time, t model.Target, scope model.Scope, reaso
 	return h
 }
 
+// badNameDetail is the detail of a hold on a target whose name holds a
+// control character. Such a file is never written, captured or resolved:
+// its name cannot be shown or passed to a command safely.
+const badNameDetail = "the file name holds a control character; it is never written or captured"
+
+// badNameHold holds a target whose name holds a control character. Its
+// only suggested command shows it; rename or remove the file to clear it.
+func badNameHold(st *State, now time.Time, t model.Target, scope model.Scope, since time.Time) model.Hold {
+	h := fileHold(st, now, t, scope, model.HoldUncapturable, since, badNameDetail)
+	h.Next = []string{"yadm hold show " + h.ID}
+	return h
+}
+
 // putHold inserts or replaces the hold with the same target, task and reason.
 func putHold(st *State, h model.Hold) {
 	for i, x := range st.Holds {

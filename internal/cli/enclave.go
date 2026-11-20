@@ -339,7 +339,7 @@ func ringFor(m *machineEnv, e model.EnclaveName) (*crypt.Keyring, crypt.LogEntry
 func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	if ok, _ := cmd.Flags().GetBool("confirm"); !ok {
-		return result{next: []string{"yadm enclave remove " + args[0] + " --confirm"}}, usagef("removal starts a new epoch and cannot be undone; pass --confirm")
+		return result{next: []string{"yadm enclave remove " + model.ShellQuote(args[0]) + " --confirm"}}, usagef("removal starts a new epoch and cannot be undone; pass --confirm")
 	}
 	m, err := requireIdentity(ctx)
 	if err != nil {
@@ -389,7 +389,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	next := []string{}
 	if !retired {
-		next = append(next, "yadm enclave retire --enclave "+string(e))
+		next = append(next, "yadm enclave retire --enclave "+model.ShellQuote(string(e)))
 	}
 	next = append(next,
 		"revoke "+string(who)+"'s access to the repository remote",
@@ -462,7 +462,7 @@ func (a *app) cmdEnclaveJoin(cmd *cobra.Command, args []string) (result, error) 
 	ctx := cmd.Context()
 	expect, _ := cmd.Flags().GetString("expect")
 	if expect == "" {
-		return result{next: []string{"yadm enclave join " + args[0] + " --expect <fingerprint>"}},
+		return result{next: []string{"yadm enclave join " + model.ShellQuote(args[0]) + " --expect <fingerprint>"}},
 			usagef("--expect is required: the fingerprint printed by `yadm enclave add` on a member, received out of band")
 	}
 	m, err := open(ctx)

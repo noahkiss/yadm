@@ -49,6 +49,12 @@ func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
 			// A task output: generated here, never captured.
 			continue
 		}
+		if model.HasControl(string(d.Target)) {
+			hd := badNameHold(st, e.Now(), d.Target, d.Scope, d.Since)
+			putHold(st, hd)
+			out.Holds = append(out.Holds, hd)
+			continue
+		}
 		switch d.Kind {
 		case DriftUnreadable:
 			continue
@@ -308,7 +314,7 @@ func takeTheirs(merged []byte, want int) ([]byte, bool) {
 func proposePatch(h model.Hold, r manifest.Resolved, enc model.EnclaveName, of string, from, to []byte) model.Hold {
 	h.Source = r.Source
 	if enc != "" {
-		h.Next = append(h.Next, "yadm diff "+string(r.Target))
+		h.Next = append(h.Next, "yadm diff "+model.ShellQuote(string(r.Target)))
 		return h
 	}
 	a, b := "a/"+string(r.Source), "b/"+string(r.Source)
@@ -414,6 +420,9 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		return Result{}, fmt.Errorf("hold %s (%s) is resolved by sync or task allow, not here", id, h.Reason)
 	}
 	t := h.Target
+	if model.HasControl(string(t)) {
+		return Result{}, fmt.Errorf("hold %s: %s; rename or remove the file", id, badNameDetail)
+	}
 	snap, err := e.snapshot(ctx, st.Applied)
 	if err != nil {
 		return Result{}, err

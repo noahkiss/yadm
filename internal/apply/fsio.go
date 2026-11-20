@@ -78,6 +78,9 @@ type live struct {
 // readTarget stats and reads one target within the stat timeout. A missing
 // file is not an error. Only regular files are read.
 func (e *Engine) readTarget(ctx context.Context, abs string) (live, error) {
+	if _, err := bounded(ctx, e.StatTimeout, func() (struct{}, error) { return struct{}{}, InsideHome(e.Home, abs) }); err != nil {
+		return live{}, err
+	}
 	info, err := bounded(ctx, e.StatTimeout, func() (fs.FileInfo, error) { return e.fs.Lstat(abs) })
 	if errors.Is(err, fs.ErrNotExist) {
 		return live{}, nil
@@ -93,6 +96,40 @@ func (e *Engine) readTarget(ctx context.Context, abs string) (live, error) {
 		return live{}, err
 	}
 	return live{exists: true, info: info, bytes: b}, nil
+}
+
+// ErrOutsideHome is returned for a path under $HOME whose parent directory
+// resolves, through a symlink, to a directory outside $HOME. Such a target
+// is never read or written.
+var ErrOutsideHome = errors.New("a parent directory is a symlink that leaves $HOME")
+
+// InsideHome checks that the real path of p's parent directory stays under
+// the real path of home. It resolves the nearest existing ancestor, so a
+// directory apply would create is checked through the part that exists.
+func InsideHome(home, p string) error {
+	realHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		realHome = filepath.Clean(home)
+	}
+	dir := filepath.Dir(p)
+	for {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			rel, err := filepath.Rel(realHome, real)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return ErrOutsideHome
+			}
+			return nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		up := filepath.Dir(dir)
+		if up == dir {
+			return nil
+		}
+		dir = up
+	}
 }
 
 // abs returns the absolute path of a target under $HOME. It refuses paths
@@ -127,6 +164,9 @@ func (e *Engine) dirMode(dst string) fs.FileMode {
 // The temp file is created 0600 and gets its final mode before the rename.
 // guard, if set, runs just before the rename and aborts it with its error.
 func (e *Engine) writeAtomic(dst string, b []byte, mode fs.FileMode, guard func() error) error {
+	if err := InsideHome(e.Home, dst); err != nil {
+		return err
+	}
 	dir, base := filepath.Split(dst)
 	if err := os.MkdirAll(dir, e.dirMode(dst)); err != nil {
 		return err

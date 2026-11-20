@@ -944,7 +944,11 @@ func (a *app) cmdCollect(cmd *cobra.Command, args []string) (result, error) {
 	}
 	var next []string
 	if len(skipped) > 0 {
-		next = []string{"yadm task allow " + strings.Join(skipped, " ")}
+		q := make([]string, len(skipped))
+		for i, s := range skipped {
+			q[i] = model.ShellQuote(s)
+		}
+		next = []string{"yadm task allow " + strings.Join(q, " ")}
 	}
 	return result{data: map[string]any{"observed": obs, "skipped": skipped}, next: next}, nil
 }

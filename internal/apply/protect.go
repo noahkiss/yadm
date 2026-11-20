@@ -220,7 +220,7 @@ func (e *Engine) weakened(ts TargetState, have bool, r manifest.Resolved) (strin
 // weakHold is the seal_guard hold for a weakened protection.
 func weakHold(st *State, now time.Time, t model.Target, scope model.Scope, since time.Time, detail string) model.Hold {
 	h := fileHold(st, now, t, scope, model.HoldSealGuard, since, detail)
-	h.Next = append([]string{"yadm protection allow " + string(t)}, h.Next...)
+	h.Next = append([]string{"yadm protection allow " + model.ShellQuote(string(t))}, h.Next...)
 	return h
 }
 
@@ -331,7 +331,7 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 				scope = model.Scope(r.Enclave)
 			}
 			h := model.KeepSince(st.Holds, model.Hold{Target: r.Path, Scope: scope, Reason: model.HoldRootUntrusted, Detail: detail}, now)
-			h.Next = []string{"yadm root allow " + string(r.Path)}
+			h.Next = []string{"yadm root allow " + model.ShellQuote(string(r.Path))}
 			holds = append(holds, h)
 			continue
 		}
@@ -354,7 +354,7 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 		roots = append(roots, o)
 		h := model.KeepSince(st.Holds, model.Hold{Target: o.Path, Scope: model.Scope(o.Enclave), Reason: model.HoldRootUntrusted,
 			Detail: "enclave owned root left the manifest; it stays until its removal is allowed on this machine"}, now)
-		h.Next = []string{"yadm root allow " + string(o.Path)}
+		h.Next = []string{"yadm root allow " + model.ShellQuote(string(o.Path))}
 		holds = append(holds, h)
 	}
 	st.Roots = roots

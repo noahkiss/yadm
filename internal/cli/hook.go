@@ -709,7 +709,7 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 			p.Proposed = "it was here before the root was allowed: track it, or ignore it if it is machine-local"
 		}
 		p.Options = []Option{
-			{Label: "share it", Consequence: "commits and pushes " + string(h.Target) + reachText(p.Reaches), Command: "yadm commit " + string(h.Target)},
+			{Label: "share it", Consequence: "commits and pushes " + string(h.Target) + reachText(p.Reaches), Command: "yadm commit " + model.ShellQuote(string(h.Target))},
 		}
 		if len(p.Suggested) > 0 {
 			types := make([]string, len(p.Suggested))
@@ -718,7 +718,7 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 			}
 			p.Options = append(p.Options, Option{Label: "track it for its neighbours' types",
 				Consequence: "adds a manifest entry with when type:" + strings.Join(types, " | type:") + " and commits the file; only those machines get it",
-				Command:     "yadm retag " + string(h.Target) + " " + strings.Join(types, ",") + enclaveFlag(p.Reaches)})
+				Command:     "yadm retag " + model.ShellQuote(string(h.Target)) + " " + model.ShellQuote(strings.Join(types, ",")) + enclaveFlag(p.Reaches)})
 		}
 		p.Options = append(p.Options,
 			Option{Label: "ignore it", Consequence: "leaves the file untracked on this machine; it stops showing (yadm commit <path> tracks it later)", Command: "yadm hold ignore " + h.ID},
@@ -726,7 +726,7 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 	case h.Reason == model.HoldProtected:
 		p.Proposed = "commit it by name if the change is intended"
 		p.Options = []Option{
-			{Label: "commit it", Consequence: "commits and pushes the protected change" + reachText(p.Reaches), Command: "yadm commit " + string(h.Target)},
+			{Label: "commit it", Consequence: "commits and pushes the protected change" + reachText(p.Reaches), Command: "yadm commit " + model.ShellQuote(string(h.Target))},
 			deferOption(h.ID),
 		}
 	case h.Reason == model.HoldRenderedEdit:
@@ -742,7 +742,7 @@ func (m *machineEnv) packet(ctx context.Context, h model.Hold) Packet {
 	case h.Reason == model.HoldCheckFailed:
 		p.Proposed = "fix what the commit gate reported and save the file again; the next edit or stop retries"
 		p.Options = []Option{
-			{Label: "retry", Consequence: "runs the gate again on the current file and commits it if the gate passes", Command: "yadm commit " + string(h.Target)},
+			{Label: "retry", Consequence: "runs the gate again on the current file and commits it if the gate passes", Command: "yadm commit " + model.ShellQuote(string(h.Target))},
 			deferOption(h.ID),
 		}
 	case h.Reason == model.HoldSealGuard:
@@ -777,7 +777,7 @@ func enclaveFlag(r *Reach) string {
 	if r == nil || r.Enclave == "" {
 		return ""
 	}
-	return " --enclave " + string(r.Enclave)
+	return " --enclave " + model.ShellQuote(string(r.Enclave))
 }
 
 // reach evaluates a `when` against every fleet machine.

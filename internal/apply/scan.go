@@ -160,6 +160,11 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 		d.Kind, d.Detail = DriftUnreadable, "scan budget exhausted"
 		return d, true, nil
 	}
+	if err := InsideHome(e.Home, abs); err != nil {
+		// Never read through a link that leaves $HOME; capture holds it.
+		d.Kind, d.Detail = DriftModified, err.Error()
+		return d, true, nil
+	}
 	b, err := bounded(ctx, min(e.StatTimeout, left), func() ([]byte, error) { return e.fs.ReadFile(abs) })
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

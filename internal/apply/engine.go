@@ -510,6 +510,13 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		return s, nil
 	}
 
+	if model.HasControl(string(t)) {
+		// A glob or a root can expand to a tree path with a newline or
+		// other control character; such a name is never written.
+		h := badNameHold(st, now, t, s.Scope, ts.ChangedAt)
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldUncapturable), &h
+		return s, nil
+	}
 	// Decide delivery before touching the target, so a non-member never
 	// computes or reads anything for a sealed file.
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
@@ -542,6 +549,12 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	}
 
 	lv, err := e.readTarget(ctx, abs)
+	if errors.Is(err, ErrOutsideHome) {
+		h := fileHold(st, now, t, s.Scope, model.HoldUncapturable, ts.ChangedAt, "the target's real path leaves $HOME ("+err.Error()+"); it is never read or written")
+		h.Next = []string{"yadm hold show " + h.ID}
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldUncapturable), &h
+		return s, nil
+	}
 	if err != nil {
 		s.Kind, s.Reason = ActHold, "target unreadable: "+err.Error()
 		return s, nil
