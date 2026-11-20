@@ -56,8 +56,8 @@ func postEditSpawns(t *testing.T, n int) (int, time.Duration) {
 	if code != HookAllow || stdout != "" || stderr != "" {
 		t.Fatalf("post-edit: exit %d stdout %q stderr %q", code, stdout, stderr)
 	}
-	if local, pushed := git(t, a.Source, "rev-parse", "main"), git(t, remote, "rev-parse", "main"); local != pushed {
-		t.Fatalf("the hook did not push")
+	if local, pushed := git(t, a.Source, "rev-parse", "main"), git(t, remote, "rev-parse", "main"); local == pushed {
+		t.Fatalf("the hook did not commit, or it pushed")
 	}
 	return spawns, wall
 }

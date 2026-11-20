@@ -198,3 +198,30 @@ func TestQuickSyncBacksOffAnUnreachableRemote(t *testing.T) {
 		t.Fatal("backoff still set after the remote answered")
 	}
 }
+
+// TestQuickSyncPushesALocalCommit: a hook commits without pushing; the next
+// quick tick sees local main ahead of the remote and pushes it.
+func TestQuickSyncPushesALocalCommit(t *testing.T) {
+	a := fixture.HostA
+	w := newWorld(t, nil, a)
+	A := w.machines[a]
+	quick(t, A)
+	A.write(pkgList, "tool-one\ntool-two\ntool-local\n")
+	r, err := A.s.Commit(context.Background(), CommitOptions{Paths: []model.Target{pkgList}, Unattended: true,
+		Trigger: TriggerHook, Session: "session-1", Tool: "Edit", Push: false})
+	if err != nil || len(r.Committed) != 1 || r.Pushed {
+		t.Fatalf("local commit: %+v %v", r, err)
+	}
+	if w.remoteMain() == string(A.main()) {
+		t.Fatal("a Push:false commit reached the remote")
+	}
+	if r := quick(t, A); r.Skipped || r.Reason != "unpushed commits" || !r.Pushed {
+		t.Fatalf("next tick: %+v", r)
+	}
+	if w.remoteMain() != string(A.main()) {
+		t.Fatal("the tick did not push the local commit")
+	}
+	if r := quick(t, A); !r.Skipped {
+		t.Fatalf("after the push: %+v", r)
+	}
+}

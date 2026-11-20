@@ -457,7 +457,7 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	defer cancel()
 	rep, _, err := m.hookCommit(ctx, a.version, sync.CommitOptions{
 		Paths: []model.Target{t}, Unattended: true, Trigger: sync.TriggerHook,
-		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: !sync.NetBackingOff(m.paths.State, hooks.now()),
+		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: false,
 	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
 		return Verdict{}, nil // a sync is running; the path is recorded for stop
@@ -507,7 +507,7 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
 	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
-		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: !sync.NetBackingOff(m.paths.State, hooks.now()),
+		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: false,
 	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
 		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil

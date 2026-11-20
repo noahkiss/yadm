@@ -6,8 +6,8 @@
 
 | Event | Run it | Effect |
 |---|---|---|
-| `post-edit` | After a tool that writes or edits a file | Records the path for the session. Commits and pushes it if it is managed or in an owned root. |
-| `stop` | When the agent or a subagent ends its turn | Commits and pushes the session's recorded paths. Blocks while a decision this session caused is open. When a sync holds the lock for more than 3 s, it returns at once and the timer commits the paths. |
+| `post-edit` | After a tool that writes or edits a file | Records the path for the session. Commits it locally if it is managed or in an owned root; the next timer tick pushes it. Hooks never touch the network. |
+| `stop` | When the agent or a subagent ends its turn | Commits the session's recorded paths locally. Blocks while a decision this session caused is open, including a conflict the timer met while pushing them. When a sync holds the lock for more than 3 s, it returns at once and the timer commits the paths. |
 | `session-start` | When a session starts or resumes | Quick sync, then a summary of at most 10 lines. |
 
 ## Input

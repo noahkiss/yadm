@@ -199,8 +199,8 @@ func hookMachine(t *testing.T, root, remote, dir, name string) machineDirs {
 }
 
 // TestHookEditCommitsAndPeerReceives: an edit through the post-edit hook is
-// committed and pushed within the call; the other machine receives it on
-// its next sync.
+// committed within the call, without touching the network; the next sync
+// pushes it, and the other machine receives it on its own next sync.
 func TestHookEditCommitsAndPeerReceives(t *testing.T) {
 	hermetic(t)
 	root := t.TempDir()
@@ -220,8 +220,12 @@ func TestHookEditCommitsAndPeerReceives(t *testing.T) {
 			t.Fatalf("commit message lacks %q:\n%s", want, msg)
 		}
 	}
+	if local, pushed := git(t, a.Source, "rev-parse", "main"), git(t, remote, "rev-parse", "main"); local == pushed {
+		t.Fatalf("the hook pushed; hooks leave the network to sync")
+	}
+	yadmOK(t, "sync")
 	if local, pushed := git(t, a.Source, "rev-parse", "main"), git(t, remote, "rev-parse", "main"); local != pushed {
-		t.Fatalf("the hook did not push: local %s remote %s", local, pushed)
+		t.Fatalf("sync did not push the hook's commit: local %s remote %s", local, pushed)
 	}
 
 	b := useMachine(t, root, "b")
@@ -320,9 +324,10 @@ func TestHookStopBlocksUntilDefer(t *testing.T) {
 	}
 }
 
-// TestHookConflictPacket: two machines edit one file; the second hook's
-// push meets the first edit, raises a conflict packet, and its "keep this
-// edit" option commits and pushes over the incoming change.
+// TestHookConflictPacket: two machines edit one file; the second machine's
+// sync meets the first edit and holds a conflict, the stop hook raises it as
+// a packet, and its "keep this edit" option commits and pushes over the
+// incoming change.
 func TestHookConflictPacket(t *testing.T) {
 	hermetic(t)
 	root := t.TempDir()
@@ -335,13 +340,18 @@ func TestHookConflictPacket(t *testing.T) {
 	if code, _, stderr := hookRun(t, payload(payloadEdit, "session-a", a.Home, fa), HookPostEdit); code != HookAllow {
 		t.Fatalf("a: exit %d %s", code, stderr)
 	}
+	yadmOK(t, "sync")
 
 	useMachine(t, root, "b")
 	fb := filepath.Join(b.Home, ".config/tool/config")
 	writeFile(t, fb, "color = red\n")
-	code, stdout, stderr := hookRun(t, payload(payloadEdit, "session-b", b.Home, fb), HookPostEdit)
+	if code, stdout, stderr := hookRun(t, payload(payloadEdit, "session-b", b.Home, fb), HookPostEdit); code != HookAllow {
+		t.Fatalf("b post-edit: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	yadm(t, "sync") // meets a's edit: exit 3, a conflict hold
+	code, stdout, stderr := hookRun(t, payload(payloadStop, "session-b", b.Home, ""), HookStop)
 	if code != HookBlock {
-		t.Fatalf("b: exit %d\n%s\n%s", code, stdout, stderr)
+		t.Fatalf("b stop: exit %d\n%s\n%s", code, stdout, stderr)
 	}
 	v := verdictOf(t, stdout)
 	var p *Packet
@@ -482,6 +492,11 @@ func TestHookConflictTakeSourceAndMerged(t *testing.T) {
 		f := filepath.Join(m.Home, ".config/tool/config")
 		writeFile(t, f, content)
 		code, stdout, _ := hookRun(t, payload(payloadEdit, session, m.Home, f), HookPostEdit)
+		if code != HookAllow {
+			return code, Verdict{}
+		}
+		yadm(t, "sync") // the hook commits; the sync pushes or meets the peer
+		code, stdout, _ = hookRun(t, payload(payloadStop, session, m.Home, ""), HookStop)
 		var v Verdict
 		if stdout != "" {
 			v = verdictOf(t, stdout)

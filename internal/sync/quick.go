@@ -58,9 +58,8 @@ func netBackoff(n int) time.Duration {
 }
 
 // NetBackingOff reports whether the remote failed recently and the quick
-// check is still waiting before it reaches it again. Hooks read it to commit
-// without pushing, so many sessions do not keep opening connections to a
-// remote that refuses them.
+// check is still waiting before it reaches it again (`yadm status` and
+// tests read it).
 func NetBackingOff(stateDir string, now time.Time) bool {
 	var q quickState
 	if b, err := os.ReadFile(filepath.Join(stateDir, QuickFile)); err == nil {
@@ -109,6 +108,12 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 	}
 	if now.Before(q.NetRetryAt) {
 		return "", nil // backing off: the remote refused recently
+	}
+	// A hook commits without pushing; the timer pushes it on its next tick.
+	if local, err := s.Store.ResolveRef(ctx, store.RefMain); err == nil && local != "" {
+		if remote, err := s.Store.ResolveRef(ctx, store.RemoteMain); err == nil && remote != local {
+			return "unpushed commits", nil
+		}
 	}
 	heads, err := rh.RemoteHeads(ctx)
 	if err != nil {

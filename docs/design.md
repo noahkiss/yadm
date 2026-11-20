@@ -430,7 +430,7 @@ The timer runs `yadm sync --auto`. A captured path auto-commits when all hold:
 - it is not protected: `manifest.toml`, `fleet.toml`, `keys/**`, `conditions.include` files, manifest `protected` globs, entries with `review = true`, new files outside owned roots, files that were in an owned root when it was accepted here (held `protected` until committed by name), deletions, retags, and more than 50 changed files in one scope;
 - the gate passes.
 
-Commits group by scope (`shared` or an enclave name), one commit per scope per run. Every commit the tool makes is followed in the same call, under the same lock, by fetch, replay, apply and push (section 10, steps 3 to 9). There is no "commit now, push on the next tick".
+Commits group by scope (`shared` or an enclave name), one commit per scope per run. Every commit the tool makes is followed in the same call, under the same lock, by fetch, replay, apply and push (section 10, steps 3 to 9), except a harness hook's commit: hooks commit locally and never touch the network, and the next timer tick pushes (the quick check runs in full when local `main` is ahead of the remote). One process per machine then reaches the remote, whatever the number of agent sessions.
 
 ### 9.4 Commit messages
 
@@ -480,8 +480,8 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 
 | Event | Harness moment | Does |
 |---|---|---|
-| `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, and pushes. Silent when clean; otherwise a decision packet. |
-| `stop` | the agent (or a subagent) ends its turn | Commits and pushes the session's recorded paths. Blocks the stop while a decision this session caused is open. |
+| `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, locally; the next timer tick pushes it. Silent when clean; otherwise a decision packet. |
+| `stop` | the agent (or a subagent) ends its turn | Commits the session's recorded paths locally; the next timer tick pushes them. Blocks the stop while a decision this session caused is open, including a conflict the timer met while pushing them. |
 | `session-start` | a session starts | A quick sync, then at most 10 lines: holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
 
 A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the lock; if a sync holds it, the path stays recorded and `stop` or the timer commits it.
@@ -494,7 +494,7 @@ A **decision packet** says what happened, the diff size (line counts, never cont
 
 `yadm sync` runs under the lock in the state directory. A command waits at most 30 s for the lock, then exits with code 4; a harness hook waits at most 3 s and leaves the work to the timer. No command waits without a bound; every git and external call has a timeout (3 min for a network call). Git runs in its own process group, and the whole group is killed at the deadline, so a stalled ssh child cannot keep the lock. Apply, capture, collect, hold resolve, retag, enclave writes and the local allows (`task allow`, `root allow`, `protection allow`) take the same lock, and every commit goes through `sync.Commit`. `apply` and the local allows read `main` again once they hold the lock, since the sync they waited for may have moved it.
 
-A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. While it backs off, harness hooks commit without fetching or pushing; the timer pushes once the remote answers. So a machine with many sessions does not keep opening connections to a remote that refuses them.
+A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. The quick check also runs in full when local `main` is ahead of the remote (a hook's commit waits for the timer to push it).
 
 1. Scan and capture.
 2. With `--auto`, auto-commit by policy (section 9.3).
@@ -511,7 +511,7 @@ A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap ch
 8. Publish this machine's status record (section 11).
 9. Push `main` and the status ref atomically. On rejection, go back to step 4, up to 5 retries with backoff. Never force. After a push that moved `main`, run the nudge (section 12.5).
 
-A manual or hook commit runs steps 3 to 9 right after its commit, in the same call.
+A manual commit runs steps 3 to 9 right after its commit, in the same call; a hook commit leaves them to the next tick.
 
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
 
