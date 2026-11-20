@@ -32,8 +32,9 @@
 //	func ParseLogEntry(b []byte) (LogEntry, error); func MarshalLogEntry(LogEntry) ([]byte, error); func SignedBytes(LogEntry) ([]byte, error)
 //	type Pin struct{ Seq uint64; Hash string }
 //	type PinStore interface{ Get(e) (*Pin, error); Set(e, Pin) error }; func FilePins(stateDir string) PinStore
-//	func Fingerprint(e LogEntry) (string, error)
+//	func Fingerprint(e LogEntry) (string, error); func PinOf(e LogEntry) (Pin, error)
 //	func VerifyLog(entries []LogEntry, pin *Pin) (head LogEntry, err error)
+//	func Join(entries []LogEntry, expect string, pins PinStore) (head LogEntry, err error) // enclave join --expect
 //	func Create(enclave, by *Identity, recovery Member) (LogEntry, *Keyring, error)
 //	func (*Keyring) Add(head LogEntry, m Member, by *Identity) (LogEntry, error)
 //	func (*Keyring) Remove(head LogEntry, m model.MachineID, by *Identity) (LogEntry, *Keyring, error) // new epoch
