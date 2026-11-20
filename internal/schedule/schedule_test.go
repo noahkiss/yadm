@@ -26,6 +26,11 @@ const goldenPlist = `<?xml version="1.0" encoding="UTF-8"?>
 		<string>sync</string>
 		<string>--auto</string>
 	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/yadm/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StartInterval</key>
@@ -48,6 +53,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+Environment="PATH=/opt/yadm/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 ExecStart=/opt/yadm/bin/yadm sync --auto
 Nice=10
 IOSchedulingClass=idle
@@ -114,6 +120,46 @@ func TestEscaping(t *testing.T) {
 	svc, _ := SystemdService(Spec{Binary: odd})
 	if !strings.Contains(string(svc), `ExecStart="/opt/my tools/<y&m>/100%%/yadm" sync --auto`) {
 		t.Errorf("service escaping:\n%s", svc)
+	}
+	if !strings.Contains(string(svc), `Environment="PATH=/opt/my tools/<y&m>/100%%:/opt/homebrew/bin:`) {
+		t.Errorf("service PATH escaping:\n%s", svc)
+	}
+	if _, err := LaunchdPlist(Spec{Binary: bin, Path: []string{"/a:b"}}); err == nil {
+		t.Error("PATH entry with ':' accepted")
+	}
+	if _, err := SystemdService(Spec{Binary: bin, Path: []string{"relative/bin"}}); err == nil {
+		t.Error("relative PATH entry accepted")
+	}
+	p, _ = LaunchdPlist(Spec{Binary: bin, Path: []string{"/x/bin", "/x/bin", "/usr/bin"}})
+	if !strings.Contains(string(p), "<string>/x/bin:/usr/bin</string>") {
+		t.Errorf("explicit PATH:\n%s", p)
+	}
+}
+
+func TestStableBinary(t *testing.T) {
+	prefix := t.TempDir()
+	cellar := filepath.Join(prefix, "Cellar", "yadm", "1.2.3", "bin", "yadm")
+	if err := os.MkdirAll(filepath.Dir(cellar), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cellar, []byte("bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := StableBinary(cellar); got != cellar {
+		t.Errorf("no link yet: %s", got)
+	}
+	link := filepath.Join(prefix, "bin", "yadm")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cellar, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := StableBinary(cellar); got != link {
+		t.Errorf("StableBinary = %s, want %s", got, link)
+	}
+	if got := StableBinary("/usr/local/bin/yadm"); got != "/usr/local/bin/yadm" {
+		t.Errorf("plain path changed: %s", got)
 	}
 }
 
@@ -289,6 +335,19 @@ func TestRealSchedulerGuard(t *testing.T) {
 		if err := s.Install(context.Background(), Spec{Binary: bin}); !errors.Is(err, ErrNotLive) {
 			t.Errorf("ForOS Install: %v", err)
 		}
+	}
+	// A live production scheduler is still refused from a test binary.
+	if s, err := ForOSLive(runtime.GOOS, true); err == nil {
+		if err := s.Install(context.Background(), Spec{Binary: bin}); !errors.Is(err, ErrNotLive) {
+			t.Errorf("ForOSLive Install from a test: %v", err)
+		}
+	}
+	live, err := New("linux", Options{Home: home, Commander: execCommander{}, Live: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := live.Uninstall(context.Background()); !errors.Is(err, ErrNotLive) {
+		t.Errorf("Live from a test: %v", err)
 	}
 }
 
