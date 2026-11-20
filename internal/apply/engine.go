@@ -3,10 +3,14 @@ package apply
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -696,6 +700,9 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		st.Applied = snap.Commit
 		c := snap.Context
 		st.RenderContext = &c
+		if snap.Manifest != nil {
+			st.Outputs = snap.Manifest.Outputs()
+		}
 		res.Holds = append(res.Holds, e.acceptRoots(ctx, snap, st, now)...)
 	}
 	if err := e.State.Save(st); err != nil {
@@ -713,7 +720,11 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	}
 
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
+	if len(paths) == 0 && watchesInputs(snap) {
+		ev.Inputs, ev.LastInputs = taskInputs(snap), st.TaskInputs
+	}
 	results, holds := e.runTasks(ctx, snap, st, ev)
+	recordTaskInputs(st, snap, ev, results)
 	res.Tasks = append(res.Tasks, results...)
 	if len(results) > 0 || len(holds) > 0 || ev.FirstApply {
 		if st.Tasks == nil {
@@ -913,7 +924,7 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, st *State, ev tas
 	if e.Tasks == nil || snap.Plan == nil {
 		return nil, nil
 	}
-	if len(ev.Changed) == 0 && len(ev.Removed) == 0 && len(ev.Units) == 0 && !ev.FirstApply {
+	if len(ev.Changed) == 0 && len(ev.Removed) == 0 && len(ev.Units) == 0 && !ev.FirstApply && ev.Inputs == nil {
 		return nil, nil
 	}
 	if len(snap.Plan.Tasks) == 0 && len(ev.Units) == 0 {
@@ -1011,4 +1022,81 @@ func (e *Engine) pruneTaskHolds(st *State, snap *Snapshot) {
 		out = append(out, h)
 	}
 	st.Holds = out
+}
+
+// watchesInputs reports whether a task of the plan has on_fact or on_render.
+func watchesInputs(snap *Snapshot) bool {
+	if snap.Plan == nil {
+		return false
+	}
+	for _, d := range snap.Plan.Tasks {
+		if len(tasks.InputKeys(d)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// fingerprint is the hex SHA-256 of v, so state holds no fact values.
+func fingerprint(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// taskInputs fingerprints every input a task may watch: each declared fact
+// ("fact:KEY"), each collector's observed items, and the render context
+// (tasks.RenderInput): this machine's types, declared and observed facts,
+// and the fleet file.
+func taskInputs(snap *Snapshot) map[string]string {
+	out := map[string]string{}
+	m := snap.Context.Machine
+	for k, v := range m.Facts {
+		out["fact:"+k] = fingerprint(v)
+	}
+	items := map[string][]string{}
+	for c, f := range snap.Context.Observed {
+		out[c] = fingerprint(f.Items)
+		items[c] = f.Items
+	}
+	types := slices.Clone(m.Types)
+	slices.Sort(types)
+	out[tasks.RenderInput] = fingerprint(struct {
+		Types    []model.TypeName    `json:"types"`
+		Facts    map[string]string   `json:"facts"`
+		Observed map[string][]string `json:"observed"`
+		Fleet    any                 `json:"fleet"`
+	}{types, m.Facts, items, snap.Fleet})
+	return out
+}
+
+// recordTaskInputs stores, for each task that ran, the fingerprints of the
+// inputs it watches. A held task records nothing, so the change still fires
+// once the task is allowed. A failed run records too, as a failed path task
+// is not retried either.
+func recordTaskInputs(st *State, snap *Snapshot, ev tasks.Event, results []model.TaskResult) {
+	if ev.Inputs == nil || snap.Plan == nil {
+		return
+	}
+	for _, r := range results {
+		def, ok := snap.Plan.Tasks[r.Task]
+		if !ok {
+			continue
+		}
+		keys := tasks.InputKeys(def)
+		if len(keys) == 0 {
+			continue
+		}
+		rec := make(map[string]string, len(keys))
+		for _, k := range keys {
+			rec[k] = ev.Inputs[k]
+		}
+		if st.TaskInputs == nil {
+			st.TaskInputs = map[string]map[string]string{}
+		}
+		st.TaskInputs[r.Task] = rec
+	}
 }

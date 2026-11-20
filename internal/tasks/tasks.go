@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -23,7 +24,13 @@ const (
 	TriggerRemove     = "remove"
 	TriggerFirstApply = "first-apply"
 	TriggerUnit       = "unit"
+	TriggerFact       = "fact"   // an on_fact input changed
+	TriggerRender     = "render" // the render context changed (on_render)
 )
+
+// RenderInput is the Event.Inputs key of the render context fingerprint.
+// The "@" keeps it apart from collector names and "fact:" keys.
+const RenderInput = "@render"
 
 // Default timeouts.
 const (
@@ -42,6 +49,38 @@ type Event struct {
 	Removed    []model.Target
 	Units      []manifest.Unit // changed unit targets
 	FirstApply bool
+	// Inputs holds this apply's fingerprint of every input a task may
+	// watch: a collector name, "fact:KEY" and RenderInput. Nil means the
+	// apply checks no inputs, so on_fact and on_render never fire.
+	Inputs map[string]string
+	// LastInputs holds, per task, the fingerprints of its inputs when it
+	// last ran. A task with no record sees every input as changed.
+	LastInputs map[string]map[string]string
+}
+
+// InputKeys returns the Event.Inputs keys a task watches: its on_fact
+// entries and, with on_render, RenderInput.
+func InputKeys(def manifest.TaskDef) []string {
+	keys := append([]string{}, def.OnFact...)
+	if def.OnRender {
+		keys = append(keys, RenderInput)
+	}
+	return keys
+}
+
+// changedInputs returns the inputs of task name that differ from its record.
+func (ev Event) changedInputs(name string, keys []string) []string {
+	if ev.Inputs == nil {
+		return nil
+	}
+	last, ok := ev.LastInputs[name]
+	var out []string
+	for _, k := range keys {
+		if prev, seen := last[k]; !ok || !seen || prev != ev.Inputs[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // Selected is one task to run for an event.
@@ -50,13 +89,15 @@ type Selected struct {
 	Trigger string
 	Def     manifest.TaskDef
 	Matched []model.Target
+	// Inputs lists the on_fact and on_render inputs that changed, sorted.
+	Inputs []string
 }
 
 // Select returns the tasks an event triggers, in name order. defs must
 // already be filtered by `when` (manifest.Plan.Tasks).
 //
 // A task runs at most once per apply. When several triggers fire, Trigger
-// names the first of first-apply, paths, remove; Matched holds every
+// names the first of first-apply, paths, remove, fact, render; Matched holds every
 // matched target, written or removed, sorted. An invalid glob is an error
 // and selects nothing.
 func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error) {
@@ -80,6 +121,8 @@ func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error) {
 		written := matchAny(def.On, ev.Changed)
 		removed := matchAny(def.OnRemove, ev.Removed)
 		first := def.FirstApply && ev.FirstApply
+		inputs := ev.changedInputs(name, InputKeys(def))
+		sort.Strings(inputs)
 		var trigger string
 		switch {
 		case first:
@@ -88,12 +131,16 @@ func Select(defs map[string]manifest.TaskDef, ev Event) ([]Selected, error) {
 			trigger = TriggerPaths
 		case len(removed) > 0:
 			trigger = TriggerRemove
+		case slices.ContainsFunc(inputs, func(k string) bool { return k != RenderInput }):
+			trigger = TriggerFact
+		case len(inputs) > 0:
+			trigger = TriggerRender
 		default:
 			continue
 		}
 		matched := append(append([]model.Target{}, written...), removed...)
 		sort.Slice(matched, func(i, j int) bool { return matched[i] < matched[j] })
-		out = append(out, Selected{Name: name, Trigger: trigger, Def: def, Matched: dedupe(matched)})
+		out = append(out, Selected{Name: name, Trigger: trigger, Def: def, Matched: dedupe(matched), Inputs: inputs})
 	}
 	if len(errs) > 0 {
 		return nil, errors.Join(errs...)

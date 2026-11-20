@@ -125,6 +125,14 @@ func (m *Manifest) validate() error {
 		for _, p := range append(append([]string{}, t.On...), t.OnRemove...) {
 			add(where, ValidPattern(p))
 		}
+		for _, p := range t.Outputs {
+			add(where+" outputs", ValidPattern(p))
+		}
+		for _, f := range t.OnFact {
+			if f == "" || f == "fact:" {
+				add(where+" on_fact", errors.New("empty input"))
+			}
+		}
 	}
 	for _, name := range sortedKeys(m.Checks) {
 		c := m.Checks[name]

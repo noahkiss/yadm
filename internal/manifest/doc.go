@@ -44,7 +44,9 @@
 //	type Root struct{ Path model.Target; When string; Enclave model.EnclaveName; Ignore []string }
 //	type MergePolicy string // text, union, add-only, ours, theirs, generated, json-keys, toml-keys, structural
 //	func (r Root) Ignored(t model.Target) bool
-//	type TaskDef struct{ On, OnRemove []string; FirstApply bool; When string; Command []string; Timeout model.Duration }
+//	type TaskDef struct{ On, OnRemove []string; FirstApply bool; When string; Command []string; Timeout model.Duration; OnFact []string; OnRender bool; Outputs []string }
+//	func (m *Manifest) Generated(t model.Target) bool // t matches a task's outputs; Resolve fails when a managed target does
+//	func (m *Manifest) Outputs() []string
 //	type CheckDef struct{ Paths []string; When string; Command []string; Timeout model.Duration }
 //	type Unit struct{ Target model.Target; Kind UnitKind; When string; Reload UnitReload } // reload: "" or auto, never
 //	func Parse(b []byte) (*Manifest, error)

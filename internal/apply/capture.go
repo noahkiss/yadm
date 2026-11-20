@@ -45,6 +45,10 @@ func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
 		var ch *store.Change
 		var h *model.Hold
 		var err error
+		if snap.Manifest != nil && snap.Manifest.Generated(d.Target) {
+			// A task output: generated here, never captured.
+			continue
+		}
 		switch d.Kind {
 		case DriftUnreadable:
 			continue

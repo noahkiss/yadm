@@ -108,6 +108,17 @@ type TaskDef struct {
 	When       string         `toml:"when" json:"when,omitempty"`
 	Command    []string       `toml:"command" json:"command"`
 	Timeout    model.Duration `toml:"timeout" json:"timeout"` // default 5m
+	// OnFact runs the task when one of these inputs changes on this
+	// machine: a collector name (its observed items) or "fact:KEY" (a
+	// declared fact).
+	OnFact []string `toml:"on_fact" json:"on_fact,omitempty"`
+	// OnRender runs the task when the render context changes: this
+	// machine's types, declared facts and observed facts, or the fleet.
+	OnRender bool `toml:"on_render" json:"on_render,omitempty"`
+	// Outputs are target globs the task writes. They are generated: never
+	// captured or committed, never gated, and shown by status as
+	// generated. A managed target may not match one.
+	Outputs []string `toml:"outputs" json:"outputs,omitempty"`
 }
 
 // CheckDef declares a commit-gate check. Before every commit, manual or

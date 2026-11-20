@@ -362,6 +362,9 @@ type statusData struct {
 	Drift    []apply.Drift   `json:"drift"`
 	Holds    []model.Hold    `json:"holds"`
 	LastSync *time.Time      `json:"last_sync"`
+	// Generated lists files a task writes (its `outputs`); they are never
+	// captured or committed.
+	Generated []model.Target `json:"generated,omitempty"`
 }
 
 func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
@@ -376,6 +379,9 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	}
 	if d.Drift == nil {
 		d.Drift = []apply.Drift{}
+	}
+	if d.Generated, err = m.eng.Generated(ctx); err != nil {
+		return result{}, err
 	}
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {
@@ -410,6 +416,9 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	fmt.Fprintf(&b, "machine %s  applied %s  ahead %d  behind %d\n", d.Machine, short(d.Applied), d.Ahead, d.Behind)
 	for _, x := range d.Drift {
 		fmt.Fprintf(&b, "  %-10s %s\n", x.Kind, x.Target)
+	}
+	for _, t := range d.Generated {
+		fmt.Fprintf(&b, "  %-10s %s\n", "generated", t)
 	}
 	for _, h := range d.Holds {
 		fmt.Fprintf(&b, "  held %-8s %s %s\n", h.Reason, h.Target+model.Target(h.Task), h.ID[:min(12, len(h.ID))])

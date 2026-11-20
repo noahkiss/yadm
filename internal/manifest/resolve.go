@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"slices"
 	"strings"
 
@@ -116,6 +117,15 @@ func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
 	}
 	for _, name := range sortedKeys(m.Tasks) {
 		c.tasks[name] = parse("tasks."+name, m.Tasks[name].When)
+		for _, in := range m.Tasks[name].OnFact {
+			if key, ok := strings.CutPrefix(in, "fact:"); ok {
+				if !v.FactKeys[key] {
+					errs = append(errs, fmt.Errorf("%s: tasks.%s: on_fact: unknown fact %q", FileName, name, key))
+				}
+			} else if !v.Collectors[in] {
+				errs = append(errs, fmt.Errorf("%s: tasks.%s: on_fact: unknown collector %q", FileName, name, in))
+			}
+		}
 	}
 	for _, name := range sortedKeys(m.Checks) {
 		c.checks[name] = parse("checks."+name, m.Checks[name].When)
@@ -245,6 +255,14 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		slices.SortFunc(col, func(a, b Collision) int { return cmp.Compare(a.Target, b.Target) })
 		return nil, &CollisionError{Collisions: col}
 	}
+	for _, t := range slices.Sorted(maps.Keys(p.Targets)) {
+		if task, glob, ok := m.output(t); ok {
+			errs = append(errs, fmt.Errorf("%s: tasks.%s: output %q matches managed target %s; a generated file cannot be managed", FileName, task, glob, t))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
 	for i, u := range m.Units {
 		if !c.units[i].Eval(ctx) {
 			continue
@@ -275,6 +293,37 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		}
 	}
 	return p, nil
+}
+
+// output returns the task and output glob that t matches, if any.
+func (m *Manifest) output(t model.Target) (string, string, bool) {
+	for _, name := range sortedKeys(m.Tasks) {
+		for _, g := range m.Tasks[name].Outputs {
+			if Match(g, string(t)) {
+				return name, g, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// Generated reports whether t matches a task's `outputs` glob, whether or
+// not the task applies on this machine. A generated file is never captured,
+// committed or gated.
+func (m *Manifest) Generated(t model.Target) bool {
+	_, _, ok := m.output(t)
+	return ok
+}
+
+// Outputs returns every task's `outputs` globs, sorted and without
+// duplicates.
+func (m *Manifest) Outputs() []string {
+	var out []string
+	for _, d := range m.Tasks {
+		out = append(out, d.Outputs...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // Protected reports whether a target never auto-commits on its own: it
