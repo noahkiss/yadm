@@ -29,6 +29,7 @@ func TestScanFindsDriftKinds(t *testing.T) {
 	files := map[model.SourcePath]string{"files/.m": "m\n", "files/.d": "d\n", "files/.p": "p\n", "files/.ok": "ok\n"}
 	c := w.commit(files, manifest.Entry{Target: ".m"}, manifest.Entry{Target: ".d"}, manifest.Entry{Target: ".p"}, manifest.Entry{Target: ".ok"})
 	w.plans[c].Roots = []manifest.Root{{Path: ".config/shell"}}
+	w.allowRoots(c)
 	w.apply(c)
 	w.write(".m", "changed\n")
 	os.Remove(w.path(".d"))
@@ -299,6 +300,7 @@ func TestCaptureNewFileInEnclaveRoot(t *testing.T) {
 	w := newWorld(t, "personal")
 	c := w.commit(map[model.SourcePath]string{"files/.a": "a\n"}, manifest.Entry{Target: ".a"})
 	w.plans[c].Roots = []manifest.Root{{Path: ".config/notes", Enclave: "personal"}, {Path: ".config/shell"}}
+	w.allowRoots(c)
 	w.apply(c)
 	w.write(".config/notes/n.md", "note\n")
 	w.write(".config/shell/s.sh", "sh\n")
@@ -326,7 +328,7 @@ func TestMergeSealed(t *testing.T) {
 	w := newWorld(t, "personal")
 	cr := w.crypto
 	seal := func(s string) string {
-		b, _ := cr.SealFile("personal", []byte(s))
+		b, _ := cr.SealFile("personal", "", []byte(s))
 		w.st.blobs[blobID(b)] = b
 		return blobID(b)
 	}
@@ -338,7 +340,7 @@ func TestMergeSealed(t *testing.T) {
 	if err != nil || h != nil || ch == nil {
 		t.Fatalf("clean merge: %v %+v %v", ch, h, err)
 	}
-	if pt, _ := cr.OpenFile("personal", ch.Blob); string(pt) != "b\n" {
+	if pt, _ := cr.OpenFile("personal", "", ch.Blob); string(pt) != "b\n" {
 		t.Errorf("merged %q", pt)
 	}
 	ch, h, err = w.eng.MergeSealed(context.Background(), snap, store.Conflict{Path: path, Base: seal("a\n"), Ours: seal("b\n"), Theirs: seal("c\n")})
@@ -389,7 +391,7 @@ func TestRetagMovesIntoEnclave(t *testing.T) {
 		t.Error("old source not deleted")
 	}
 	nb := got["sealed/personal/.b"]
-	if pt, err := w.crypto.OpenFile("personal", nb.Blob); err != nil || string(pt) != "secret b\n" {
+	if pt, err := w.crypto.OpenFile("personal", "", nb.Blob); err != nil || string(pt) != "secret b\n" {
 		t.Errorf("new source: %q %v", pt, err)
 	}
 	m := string(got["manifest.toml"].Blob)

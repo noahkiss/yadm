@@ -22,7 +22,7 @@ func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]by
 	out := source
 	if spec.Regions {
 		var err error
-		if out, err = resealRegions(out, enclave, s); err != nil {
+		if out, err = resealRegions(out, spec.Source, enclave, s); err != nil {
 			return nil, err
 		}
 	}
@@ -52,11 +52,15 @@ func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]by
 			if n == nil || n.kind != kString || !strings.HasPrefix(n.str, valuePrefix) {
 				continue
 			}
-			pt, err := s.OpenValue(r.enclave, r.pat.src, n.str)
+			name, err := partName(c.src, joinPath(p))
+			if err != nil {
+				return nil, err
+			}
+			pt, err := s.OpenValue(r.enclave, name, n.str)
 			if err != nil {
 				return nil, fmt.Errorf("reseal %s: open: %w", joinPath(p), err)
 			}
-			tok, err := s.SealValue(r.enclave, r.pat.src, pt)
+			tok, err := s.SealValue(r.enclave, name, pt)
 			if err != nil {
 				return nil, fmt.Errorf("reseal %s: seal: %w", joinPath(p), err)
 			}
@@ -74,7 +78,7 @@ func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]by
 }
 
 // resealRegions reseals the region tokens of one enclave in a source file.
-func resealRegions(src []byte, enclave model.EnclaveName, s Sealer) ([]byte, error) {
+func resealRegions(src []byte, path model.SourcePath, enclave model.EnclaveName, s Sealer) ([]byte, error) {
 	regs, vio := parseRegions(src)
 	if len(vio) > 0 {
 		return nil, fmt.Errorf("source regions: %s: %s", vio[0].Path, vio[0].Detail)
@@ -93,11 +97,15 @@ func resealRegions(src []byte, enclave model.EnclaveName, s Sealer) ([]byte, err
 		if !ok {
 			return nil, fmt.Errorf("source %s: body is not one sealed token line", r.path())
 		}
-		pt, err := s.OpenRegion(r.enclave, r.label, tok)
+		name, err := partName(path, r.label)
+		if err != nil {
+			return nil, err
+		}
+		pt, err := s.OpenRegion(r.enclave, name, tok)
 		if err != nil {
 			return nil, fmt.Errorf("reseal %s: open: %w", r.path(), err)
 		}
-		fresh, err := s.SealRegion(r.enclave, r.label, pt)
+		fresh, err := s.SealRegion(r.enclave, name, pt)
 		if err != nil {
 			return nil, fmt.Errorf("reseal %s: seal: %w", r.path(), err)
 		}

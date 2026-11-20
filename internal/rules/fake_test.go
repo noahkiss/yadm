@@ -17,6 +17,9 @@ type fakeSealer struct {
 
 var errFakeNotMember = errors.New("fake: not a member")
 
+// testSource is the source path test specs bind sealed parts to.
+const testSource model.SourcePath = "files/test"
+
 func member(es ...model.EnclaveName) *fakeSealer {
 	m := map[model.EnclaveName]bool{}
 	for _, e := range es {

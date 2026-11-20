@@ -98,6 +98,7 @@ const (
 	HoldTaskUntrusted HoldReason = "task_untrusted" // a task, check or collector definition changed and is not allowed here
 	HoldCheckFailed   HoldReason = "check_failed"   // a commit-gate check failed or timed out
 	HoldRenderedEdit  HoldReason = "rendered_edit"  // a hand edit to a rendered target could not be captured into its template
+	HoldRootUntrusted HoldReason = "root_untrusted" // an owned root is new or changed its enclave and is not allowed here
 )
 
 // Hold is one file, or one task, the tool refuses to move. Its JSON shape is

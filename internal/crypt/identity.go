@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,14 @@ func checkMachineID(m model.MachineID) error {
 	return nil
 }
 
-// LoadIdentity reads the identity files; it refuses files readable by group or others.
+// LoadIdentity reads the identity files. It refuses a state directory that
+// is not a directory owned by this user with no group or other access, and
+// a key file that is a symlink, not a regular file, owned by another user,
+// or readable by group or others.
 func LoadIdentity(stateDir string) (*Identity, error) {
+	if err := checkStateDir(stateDir); err != nil {
+		return nil, err
+	}
 	am, ab, err := readKeyFile(filepath.Join(stateDir, AgeIdentityFile))
 	if err != nil {
 		return nil, err
@@ -67,22 +74,56 @@ func LoadIdentity(stateDir string) (*Identity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", AgeIdentityFile, err)
 	}
-	seed, err := base64.StdEncoding.DecodeString(sb)
+	seed, err := base64.StdEncoding.Strict().DecodeString(sb)
 	if err != nil || len(seed) != ed25519.SeedSize {
 		return nil, fmt.Errorf("%s: malformed signing key", SigningKeyFile)
 	}
 	return &Identity{Machine: am, age: a, sign: ed25519.NewKeyFromSeed(seed)}, nil
 }
 
+// checkStateDir requires the state directory to be a directory, owned by
+// this user, with no group or other access. It follows a symlink to the
+// directory: the checks apply to the directory itself.
+func checkStateDir(dir string) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("state directory %s is not a directory", dir)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("state directory has mode %04o; want 0700 (chmod 700 it)", fi.Mode().Perm())
+	}
+	if !ownedByMe(fi) {
+		return errors.New("state directory is owned by another user")
+	}
+	return nil
+}
+
 func readKeyFile(p string) (model.MachineID, string, error) {
-	fi, err := os.Stat(p)
+	fi, err := os.Lstat(p)
 	if err != nil {
 		return "", "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", "", fmt.Errorf("%s: not a regular file (a symlink or other type is refused)", filepath.Base(p))
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		return "", "", fmt.Errorf("%s: mode %04o is readable by group or others; want 0600", filepath.Base(p), fi.Mode().Perm())
 	}
-	b, err := os.ReadFile(p)
+	if !ownedByMe(fi) {
+		return "", "", fmt.Errorf("%s: owned by another user", filepath.Base(p))
+	}
+	f, err := openNoFollow(p)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	if after, err := f.Stat(); err != nil || !os.SameFile(fi, after) {
+		return "", "", fmt.Errorf("%s: changed while it was read", filepath.Base(p))
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return "", "", err
 	}
@@ -102,6 +143,11 @@ func (id *Identity) Save(stateDir string) error {
 		return err
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return err
+	}
+	// The state directory is this tool's own; LoadIdentity refuses it with
+	// group or other access.
+	if err := os.Chmod(stateDir, 0o700); err != nil {
 		return err
 	}
 	head := machineComment + string(id.Machine) + "\n"
@@ -151,7 +197,7 @@ func (id *Identity) matches(m Member) bool {
 }
 
 func (m Member) publicKey() (ed25519.PublicKey, error) {
-	b, err := base64.StdEncoding.DecodeString(m.SignKey)
+	b, err := base64.StdEncoding.Strict().DecodeString(m.SignKey)
 	if err != nil || len(b) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: member %s has a malformed sign_key", ErrInvalidLog, m.Machine)
 	}

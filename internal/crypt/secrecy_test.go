@@ -50,22 +50,22 @@ func TestSealedFixtureRepoIsClean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pt, err := f.Rings["personal"].OpenFile(blob)
+	pt, err := f.Rings["personal"].OpenFile("sealed/personal/.config/notes/private.md", blob)
 	if err != nil || !bytes.Contains(pt, f.Canaries["personal"].Bytes()) {
 		t.Fatalf("member cannot read the sealed file back: %v", err)
 	}
 	blob, _ = os.ReadFile(filepath.Join(f.Root, "sealed", "client", ".config", "client-tool", "token"))
-	if pt, err := f.Rings["client"].OpenFile(blob); err != nil || !bytes.Contains(pt, f.Canaries["client"].Bytes()) {
+	if pt, err := f.Rings["client"].OpenFile("sealed/client/.config/client-tool/token", blob); err != nil || !bytes.Contains(pt, f.Canaries["client"].Bytes()) {
 		t.Fatalf("client file: %v", err)
 	}
 	settings, _ := os.ReadFile(filepath.Join(f.Root, "files", ".config", "editor", "settings.json"))
 	tok := regexp.MustCompile(`yadm:1:[^"]+`).Find(settings)
-	if pt, err := set.OpenValue("personal", "sync.token", string(tok)); err != nil || !bytes.Contains(pt, f.Canaries["personal"].Bytes()) {
+	if pt, err := set.OpenValue("personal", crypt.PartName("files/.config/editor/settings.json", "sync.token"), string(tok)); err != nil || !bytes.Contains(pt, f.Canaries["personal"].Bytes()) {
 		t.Fatalf("sealed value: %v", err)
 	}
 	sshcfg, _ := os.ReadFile(filepath.Join(f.Root, "files", ".ssh", "config"))
 	rtok := regexp.MustCompile(`yadm:sealed 1 \d+ \S+`).Find(sshcfg)
-	if pt, err := set.OpenRegion("personal", "hosts", string(rtok)); err != nil || !bytes.Contains(pt, f.Canaries["personal"].Bytes()) {
+	if pt, err := set.OpenRegion("personal", crypt.PartName("files/.ssh/config", "hosts"), string(rtok)); err != nil || !bytes.Contains(pt, f.Canaries["personal"].Bytes()) {
 		t.Fatalf("sealed region: %v", err)
 	}
 

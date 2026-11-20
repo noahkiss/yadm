@@ -16,7 +16,7 @@ import (
 
 const personal model.EnclaveName = "personal"
 
-var settingsSpec = Spec{
+var settingsSpec = Spec{Source: testSource,
 	Format: manifest.FormatJSONC,
 	Keep:   []string{"editor.*", "terminal.font", `files\.exclude`},
 	Drop:   []string{"window.state", "recent"},
@@ -232,7 +232,7 @@ func TestSealGuard(t *testing.T) {
 		if err != nil || len(vio) > 0 || !bytes.Equal(out, src) {
 			t.Fatalf("comment-only edit: %v %v", vio, err)
 		}
-		seal := Spec{Format: manifest.FormatJSONC, Seal: settingsSpec.Seal}
+		seal := Spec{Source: testSource, Format: manifest.FormatJSONC, Seal: settingsSpec.Seal}
 		ssrc := mustSource(t, live, nil, seal, s)
 		assertViolation(t, only, ssrc, seal, s, SealedValueLeaked, c)
 	})
@@ -252,7 +252,7 @@ func TestSealGuard(t *testing.T) {
 }
 
 func TestDropKeepsLiveValues(t *testing.T) {
-	spec := Spec{Format: manifest.FormatJSON, Drop: []string{"window.state", "recent"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatJSON, Drop: []string{"window.state", "recent"}}
 	live := []byte(`{
   "a": 1,
   "window": {
@@ -290,7 +290,7 @@ func TestDropKeepsLiveValues(t *testing.T) {
 }
 
 func TestWildcardAndEscapedPaths(t *testing.T) {
-	spec := Spec{
+	spec := Spec{Source: testSource,
 		Format: manifest.FormatJSON,
 		Seal:   map[string]model.EnclaveName{"mcp.servers.*.env.TOKEN": personal},
 	}
@@ -335,14 +335,14 @@ func TestWildcardAndEscapedPaths(t *testing.T) {
 }
 
 func TestSpecErrors(t *testing.T) {
-	_, err := ToTarget([]byte("{}"), nil, Spec{Format: manifest.FormatJSON, Drop: []string{"a"}, Seal: map[string]model.EnclaveName{"a.b": personal}}, member())
+	_, err := ToTarget([]byte("{}"), nil, Spec{Source: testSource, Format: manifest.FormatJSON, Drop: []string{"a"}, Seal: map[string]model.EnclaveName{"a.b": personal}}, member())
 	if err == nil {
 		t.Fatal("a dropped seal path must be refused")
 	}
-	if _, err := ToTarget([]byte("x"), nil, Spec{Format: "yaml", Drop: []string{"a"}}, member()); err == nil {
+	if _, err := ToTarget([]byte("x"), nil, Spec{Source: testSource, Format: "yaml", Drop: []string{"a"}}, member()); err == nil {
 		t.Fatal("unknown format must fail")
 	}
-	if _, err := ToTarget([]byte(`{"a": "plain"}`), nil, Spec{Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"a": personal}}, member(personal)); err == nil {
+	if _, err := ToTarget([]byte(`{"a": "plain"}`), nil, Spec{Source: testSource, Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"a": personal}}, member(personal)); err == nil {
 		t.Fatal("a sealed key without a token in the source must fail")
 	}
 }
@@ -350,15 +350,15 @@ func TestSpecErrors(t *testing.T) {
 func TestArrayElementRulesRefused(t *testing.T) {
 	live := []byte(`{"a": [1, 2, 3], "b": [{"k": "v"}]}`)
 	for _, spec := range []Spec{
-		{Format: manifest.FormatJSON, Drop: []string{"a.1"}},
-		{Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"a.*": personal}},
+		{Source: testSource, Format: manifest.FormatJSON, Drop: []string{"a.1"}},
+		{Source: testSource, Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"a.*": personal}},
 	} {
 		if _, _, err := ToSource(live, nil, spec, member(personal)); !errors.Is(err, ErrArrayElement) {
 			t.Errorf("%+v: want ErrArrayElement, got %v", spec, err)
 		}
 	}
 	// A key inside an array element is fine.
-	spec := Spec{Format: manifest.FormatJSON, Drop: []string{"b.0.k"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatJSON, Drop: []string{"b.0.k"}}
 	src := mustSource(t, live, nil, spec, member())
 	if got := mustTarget(t, src, live, spec, member()); !bytes.Equal(got, live) {
 		t.Fatalf("target %s", got)
@@ -410,14 +410,14 @@ func TestSecrecyStores(t *testing.T) {
 	write("files/settings.json", jsrc)
 	tsrc := mustSource(t, []byte(tomlLive(c.String())), nil, tomlSpec, s)
 	write("files/config.toml", tsrc)
-	rsrc := mustSource(t, []byte(sshLive(c.String(), "\n")), nil, Spec{Regions: true}, s)
+	rsrc := mustSource(t, []byte(sshLive(c.String(), "\n")), nil, Spec{Source: testSource, Regions: true}, s)
 	write("files/ssh_config", rsrc)
 	// A non-member's home gets only the non-member renders.
 	home := t.TempDir()
 	for name, pair := range map[string][2]any{
 		"settings.json": {jsrc, settingsSpec},
 		"config.toml":   {tsrc, tomlSpec},
-		"ssh_config":    {rsrc, Spec{Regions: true}},
+		"ssh_config":    {rsrc, Spec{Source: testSource, Regions: true}},
 	} {
 		out := mustTarget(t, pair[0].([]byte), nil, pair[1].(Spec), member())
 		if err := os.WriteFile(filepath.Join(home, name), out, 0o644); err != nil {
@@ -434,7 +434,7 @@ func TestSecrecyStores(t *testing.T) {
 func TestUnsupportedEditIsNotImplemented(t *testing.T) {
 	// A dotted key inside an inline table is not a list item the editor can
 	// remove; the capture reports ErrNotImplemented, never a guess.
-	spec := Spec{Format: manifest.FormatTOML, Drop: []string{"inl.a.b"}}
+	spec := Spec{Source: testSource, Format: manifest.FormatTOML, Drop: []string{"inl.a.b"}}
 	live := []byte("inl = { a.b = 1, c = 2 }\n")
 	_, _, err := ToSource(live, nil, spec, member())
 	if !errors.Is(err, model.ErrNotImplemented) {
@@ -453,11 +453,11 @@ func TestUncapturableShapes(t *testing.T) {
 		spec   Spec
 		target string
 	}{
-		"json escaped slash":  {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\/x"}}`},
-		"json unicode escape": {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\u00e9"}}`},
-		"json invalid utf-8":  {Spec{Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + "\xed" + c.String() + `"}}`},
-		"toml multi-line":     {Spec{Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = \"\"\"" + c.String() + "\"\"\"\n"},
-		"toml literal ml":     {Spec{Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = '''" + c.String() + "'''\n"},
+		"json escaped slash":  {Spec{Source: testSource, Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\/x"}}`},
+		"json unicode escape": {Spec{Source: testSource, Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + c.String() + `\u00e9"}}`},
+		"json invalid utf-8":  {Spec{Source: testSource, Format: manifest.FormatJSON, Seal: seal}, `{"s": {"t": "` + "\xed" + c.String() + `"}}`},
+		"toml multi-line":     {Spec{Source: testSource, Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = \"\"\"" + c.String() + "\"\"\"\n"},
+		"toml literal ml":     {Spec{Source: testSource, Format: manifest.FormatTOML, Seal: seal}, "[s]\nt = '''" + c.String() + "'''\n"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -11,9 +11,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -191,35 +194,125 @@ func isTempName(name string) bool { return strings.Contains(name, tmpMarker) }
 // backupDir is where replaced target bytes go.
 func (e *Engine) backupDir() string { return filepath.Join(e.StateDir, "backup") }
 
-// backup copies the bytes apply is about to replace or delete into
-// backup/<time>/<target>, mode 0600.
-func (e *Engine) backup(now time.Time, t model.Target, b []byte) error {
+// backupTimeFormat names one backup set.
+const backupTimeFormat = "20060102T150405.000000000Z"
+
+// enclaveBackupDir holds the backup sets of files that carry enclave
+// plaintext: backup/enclave/<enclaves>/<time>/<target>, where <enclaves> is
+// the enclave names joined by "+" (an enclave name never holds "+").
+const enclaveBackupDir = "enclave"
+
+// regionMarker finds the enclave of each region marker in target bytes.
+var regionMarker = regexp.MustCompile(`yadm:seal ([A-Za-z0-9][A-Za-z0-9._-]*)`)
+
+// backupEnclaves lists the enclaves whose plaintext the bytes b of a target
+// with protection p may hold: its whole-file enclave, its seal enclaves and
+// the enclaves its region markers name.
+func backupEnclaves(p protection, b []byte) []model.EnclaveName {
+	set := map[model.EnclaveName]bool{}
+	if p.Enclave != "" {
+		set[p.Enclave] = true
+	}
+	for _, e := range p.Seal {
+		if e != "" {
+			set[e] = true
+		}
+	}
+	if p.Regions {
+		for _, m := range regionMarker.FindAllSubmatch(b, -1) {
+			set[model.EnclaveName(m[1])] = true
+		}
+	}
+	out := make([]model.EnclaveName, 0, len(set))
+	for e := range set {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// union merges two protections, keeping everything either one seals.
+func union(a, b protection) protection {
+	out := protection{Enclave: a.Enclave, Regions: a.Regions || b.Regions, Seal: map[string]model.EnclaveName{}}
+	if out.Enclave == "" {
+		out.Enclave = b.Enclave
+	}
+	for k, v := range a.Seal {
+		out.Seal[k] = v
+	}
+	for k, v := range b.Seal {
+		if out.Seal[k] == "" {
+			out.Seal[k] = v
+		}
+	}
+	return out
+}
+
+// backup copies the bytes apply is about to replace or delete, mode 0600:
+// to backup/<time>/<target>, or, when the bytes may hold enclave plaintext
+// (see backupEnclaves), to backup/enclave/<enclaves>/<time>/<target>, so
+// pruneBackups can drop them when this machine leaves an enclave.
+func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) error {
 	if e.StateDir == "" {
 		return errors.New("apply: StateDir is not set; refusing to replace a file without a backup")
 	}
-	p := filepath.Join(e.backupDir(), now.UTC().Format("20060102T150405.000000000Z"), filepath.FromSlash(string(t)))
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+	dir := e.backupDir()
+	if encs := backupEnclaves(p, b); len(encs) > 0 {
+		names := make([]string, len(encs))
+		for i, x := range encs {
+			names[i] = string(x)
+		}
+		dir = filepath.Join(dir, enclaveBackupDir, strings.Join(names, "+"))
+	}
+	f := filepath.Join(dir, now.UTC().Format(backupTimeFormat), filepath.FromSlash(string(t)))
+	if err := os.MkdirAll(filepath.Dir(f), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0o600)
+	return os.WriteFile(f, b, 0o600)
 }
 
-// pruneBackups removes backup sets older than BackupRetention.
-func (e *Engine) pruneBackups(now time.Time) {
+// pruneBackups removes backup sets older than BackupRetention, and every
+// backup that holds plaintext of an enclave whose verified key log no
+// longer lists this machine. A refused log prunes nothing, so a pusher
+// cannot wipe backups with one bad entry.
+func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.EnclaveLoad) {
 	if e.StateDir == "" {
 		return
 	}
-	ents, err := os.ReadDir(e.backupDir())
+	pruneSets(e.backupDir(), now)
+	encDir := filepath.Join(e.backupDir(), enclaveBackupDir)
+	groups, err := os.ReadDir(encDir)
+	if err != nil {
+		return
+	}
+	for _, g := range groups {
+		gone := false
+		for _, name := range strings.Split(g.Name(), "+") {
+			if l, ok := loads[model.EnclaveName(name)]; ok && l.Err == nil && !l.Member {
+				gone = true
+			}
+		}
+		if gone {
+			_ = os.RemoveAll(filepath.Join(encDir, g.Name()))
+			continue
+		}
+		pruneSets(filepath.Join(encDir, g.Name()), now)
+	}
+}
+
+// pruneSets removes the backup sets in dir older than BackupRetention.
+func pruneSets(dir string, now time.Time) {
+	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
 	for _, d := range ents {
-		ts, err := time.Parse("20060102T150405.000000000Z", d.Name())
+		ts, err := time.Parse(backupTimeFormat, d.Name())
 		if err != nil {
 			continue
 		}
 		if now.Sub(ts) > BackupRetention {
-			_ = os.RemoveAll(filepath.Join(e.backupDir(), d.Name()))
+			_ = os.RemoveAll(filepath.Join(dir, d.Name()))
 		}
 	}
 }
@@ -294,6 +387,9 @@ func (st *State) normalize() {
 	}
 	if st.Seen == nil {
 		st.Seen = map[model.Target]time.Time{}
+	}
+	if st.Baseline == nil {
+		st.Baseline = map[model.Target]time.Time{}
 	}
 }
 

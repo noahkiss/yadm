@@ -27,7 +27,7 @@ Host last
 	return strings.ReplaceAll(s, "\n", eol)
 }
 
-var regionSpec = Spec{Regions: true}
+var regionSpec = Spec{Source: testSource, Regions: true}
 
 func TestRegions(t *testing.T) {
 	for name, eol := range map[string]string{"lf": "\n", "crlf": "\r\n"} {
@@ -109,7 +109,7 @@ func TestRegionGuard(t *testing.T) {
 // source, opens on a member and stays empty on a non-member.
 func TestRegionsWithKeep(t *testing.T) {
 	c := secrecytest.NewCanary(t, "personal")
-	spec := Spec{Format: settingsSpec.Format, Keep: []string{"editor"}, Regions: true}
+	spec := Spec{Source: testSource, Format: settingsSpec.Format, Keep: []string{"editor"}, Regions: true}
 	live := []byte("{\n  \"editor\": {\n    \"fontSize\": 13,\n    // yadm:seal personal extra\n    \"token\": \"" + c.String() + "\",\n    // yadm:end\n    \"tabSize\": 2\n  },\n  \"app\": 1\n}\n")
 	s := member(personal)
 	src := mustSource(t, live, nil, spec, s)
@@ -137,7 +137,7 @@ func TestRegionsWithJSONC(t *testing.T) {
 	spec.Regions = true
 	live := []byte(strings.Replace(liveSettings("plain-token-0001"), "  \"telemetry\": false,\n", "  // yadm:seal personal extra\n  \"editor.secret\": \""+c.String()+"\",\n  // yadm:end\n  \"telemetry\": false,\n", 1))
 	s := member(personal)
-	src := mustSource(t, live, nil, Spec{Format: spec.Format, Regions: true, Drop: spec.Drop}, s)
+	src := mustSource(t, live, nil, Spec{Source: testSource, Format: spec.Format, Regions: true, Drop: spec.Drop}, s)
 	assertNoCanary(t, c, "source", src)
 	if !bytes.Contains(src, []byte("  // yadm:sealed 1 1 ")) {
 		t.Fatalf("source:\n%s", src)

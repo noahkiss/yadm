@@ -15,11 +15,11 @@ import (
 const fuzzCanary = "FUZZ-CANARY-7f3a9c1e5b2d4f60"
 
 var fuzzSpecs = []Spec{
-	{Format: manifest.FormatJSONC, Keep: []string{"a.*", "b"}, Drop: []string{"a.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
-	{Format: manifest.FormatJSON, Drop: []string{"d"}, Seal: map[string]model.EnclaveName{"s.*": personal}},
-	{Format: manifest.FormatTOML, Drop: []string{"d", "t.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
-	{Format: manifest.FormatTOML, Keep: []string{"t", "a"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
-	{Regions: true},
+	{Source: testSource, Format: manifest.FormatJSONC, Keep: []string{"a.*", "b"}, Drop: []string{"a.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
+	{Source: testSource, Format: manifest.FormatJSON, Drop: []string{"d"}, Seal: map[string]model.EnclaveName{"s.*": personal}},
+	{Source: testSource, Format: manifest.FormatTOML, Drop: []string{"d", "t.x"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
+	{Source: testSource, Format: manifest.FormatTOML, Keep: []string{"t", "a"}, Seal: map[string]model.EnclaveName{"s.t": personal}},
+	{Source: testSource, Regions: true},
 }
 
 func addSeeds(f *testing.F) {

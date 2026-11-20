@@ -211,6 +211,11 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	if r.Entry.Mode != 0 {
 		return r.Entry.Mode.Perm()
 	}
+	return sourceDefaultMode(snap, r)
+}
+
+// sourceDefaultMode is the mode a target gets from its source alone.
+func sourceDefaultMode(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 	plain := r
 	plain.Entry.Enclave = "" // enclave files follow the source too
 	m := plain.FileMode(snap.Tree[r.Source].Mode&0o111 != 0).Perm()
@@ -218,6 +223,20 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 		m &^= 0o077
 	}
 	return m
+}
+
+// widenedMode reports an explicit manifest mode that grants an enclave file
+// a permission bit its source mode does not. Any pusher can edit the
+// manifest, so it may not widen who can read a member's plaintext.
+func widenedMode(snap *Snapshot, r manifest.Resolved) (string, bool) {
+	if r.Entry.Mode == 0 || r.Entry.Enclave == "" {
+		return "", false
+	}
+	want, def := r.Entry.Mode.Perm(), sourceDefaultMode(snap, r)
+	if want&^def == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("the manifest sets mode %#o, wider than %#o, on a file of enclave %s; a manifest may not widen an enclave file's mode", want, def, r.Entry.Enclave), true
 }
 
 // privateDirs are top-level directories whose files and subdirectories are
@@ -240,8 +259,13 @@ func sourceMode(snap *Snapshot, p model.SourcePath) uint32 {
 }
 
 // produce computes the target bytes for one resolved entry. lv is the live
-// target, which keep rules merge into.
-func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolved, lv []byte) (desired, error) {
+// target, which keep rules merge into. known is the source blob this
+// machine last applied or captured for the target ("" for none): a source
+// blob that differs from it is new here, and its sealed parts open only
+// under the enclave's current epoch (crypt.Set.Strict). A removed member
+// still holds the old keys, so new content under an old epoch is held until
+// a member reseals it.
+func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolved, lv []byte, known string) (desired, error) {
 	d := desired{res: r, scope: r.Entry.Scope(), mode: modeOf(snap, r)}
 	if enc := r.Entry.Enclave; enc != "" {
 		if l, ok := snap.Enclaves[enc]; ok && l.Err != nil {
@@ -258,6 +282,9 @@ func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolve
 		return d, fmt.Errorf("%s: %w", r.Source, err)
 	}
 	d.blob = blob
+	if blob == "" || blob != known {
+		snap = snap.strict()
+	}
 	out, rh, err := e.produceFrom(snap, r, raw, lv)
 	if err != nil {
 		return d, err
@@ -275,7 +302,7 @@ func (e *Engine) produceFrom(snap *Snapshot, r manifest.Resolved, raw, lv []byte
 		if !snap.canOpen(enc) {
 			return nil, "", fmt.Errorf("%s: %w", r.Target, crypt.ErrNotMember)
 		}
-		p, err := snap.cr().OpenFile(enc, raw)
+		p, err := snap.cr().OpenFile(enc, r.Source, raw)
 		if err != nil {
 			return nil, "", fmt.Errorf("%s: open: %w", r.Source, err)
 		}
@@ -294,7 +321,7 @@ func (e *Engine) produceFrom(snap *Snapshot, r manifest.Resolved, raw, lv []byte
 		}
 		plain, rh = out, hashOf(out)
 	}
-	spec := rules.SpecOf(r.Entry)
+	spec := rules.SpecFor(r)
 	if !spec.Empty() {
 		out, err := e.Rules.ToTarget(plain, lv, spec, snap.sealer())
 		if err != nil {
@@ -405,9 +432,22 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	// Decide delivery before touching the target, so a non-member never
 	// computes or reads anything for a sealed file.
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
-		d, _ := e.produce(ctx, snap, r, nil)
+		d, _ := e.produce(ctx, snap, r, nil, "")
 		s.Kind, s.Reason, s.d = ActSealed, d.reason, d
 		return s, nil
+	}
+	guard := func(detail string) (step, error) {
+		h := fileHold(st, now, t, s.Scope, model.HoldSealGuard, ts.ChangedAt, detail)
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
+		return s, nil
+	}
+	if detail, weak := e.weakened(ts, have, r); weak {
+		h := weakHold(st, now, t, s.Scope, ts.ChangedAt, detail)
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
+		return s, nil
+	}
+	if detail, wide := widenedMode(snap, r); wide {
+		return guard(detail)
 	}
 
 	lv, err := e.readTarget(ctx, abs)
@@ -423,7 +463,10 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	if lv.exists {
 		lb = lv.bytes
 	}
-	d, err := e.produce(ctx, snap, r, lb)
+	d, err := e.produce(ctx, snap, r, lb, ts.SourceBlob)
+	if detail, ok := sealedOpenFailure(err); ok {
+		return guard(detail)
+	}
 	if err != nil {
 		return step{}, err
 	}
@@ -497,7 +540,17 @@ func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOption
 // allowAll records every task definition of the plan and every collector
 // definition of the fleet in the allow list.
 func (e *Engine) allowAll(snap *Snapshot) error {
-	if e.Tasks == nil || e.Tasks.Allow == nil || snap.Plan == nil {
+	if snap.Plan == nil {
+		return nil
+	}
+	if a := e.allowList(); a != nil {
+		for _, r := range snap.Plan.Roots {
+			if err := a.Allow(KindRoot, string(r.Path), rootHash(r)); err != nil {
+				return fmt.Errorf("allow root %s: %w", r.Path, err)
+			}
+		}
+	}
+	if e.Tasks == nil || e.Tasks.Allow == nil {
 		return nil
 	}
 	for name, def := range snap.Plan.Tasks {
@@ -580,7 +633,7 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		st.Applied = snap.Commit
 		c := snap.Context
 		st.RenderContext = &c
-		st.Roots = snap.Plan.Roots
+		res.Holds = append(res.Holds, e.acceptRoots(ctx, snap, st, now)...)
 	}
 	if err := e.State.Save(st); err != nil {
 		return res, err
@@ -588,7 +641,7 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	if execErr != nil {
 		return res, execErr
 	}
-	e.pruneBackups(now)
+	e.pruneBackups(now, snap.Enclaves)
 
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
 	results, holds := e.runTasks(ctx, snap, st, ev)
@@ -657,7 +710,7 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 			return e.record(st, s, now)
 		}
 		if s.live.exists && !bytes.Equal(s.live.bytes, s.d.bytes) {
-			if err := e.backup(now, t, s.live.bytes); err != nil {
+			if err := e.backup(now, t, union(protOf(s.d.res.Entry), st.Targets[t].prot()), s.live.bytes); err != nil {
 				return err
 			}
 		}
@@ -669,7 +722,7 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 		if err := unchanged(s); err != nil {
 			return err
 		}
-		if err := e.backup(now, t, s.live.bytes); err != nil {
+		if err := e.backup(now, t, st.Targets[t].prot(), s.live.bytes); err != nil {
 			return err
 		}
 		if err := os.Remove(s.abs); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -717,17 +770,68 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 		Mode:       uint32(info.Mode().Perm()),
 		RenderHash: s.d.renderHash,
 	}
-	for k := range s.d.res.Entry.Seal {
+	prot := protOf(s.d.res.Entry)
+	if old, had := st.Targets[s.Target]; had {
+		// Belt and braces: never record a weaker protection that was not
+		// allowed. Every caller checks first; the record keeps the stronger.
+		if _, weak := e.weakened(old, true, s.d.res); weak {
+			prot = old.prot()
+		}
+	}
+	ts.Enclave, ts.Seal, ts.Regions = prot.Enclave, prot.Seal, prot.Regions
+	for k := range prot.Seal {
 		ts.SealSet = append(ts.SealSet, k)
 	}
 	sort.Strings(ts.SealSet)
-	if s.d.res.Entry.Regions {
+	if prot.Regions {
 		ts.SealSet = append(ts.SealSet, "regions")
 	}
 	st.Targets[s.Target] = ts
 	delete(st.Seen, s.Target)
+	delete(st.Baseline, s.Target)
 	clearFileHolds(st, s.Target)
 	return nil
+}
+
+// sealedOpenFailure reports an error from opening sealed content: a blob or
+// token that fails authentication, names an unknown epoch, or is sealed
+// under an epoch this open does not accept. Apply holds such a target
+// instead of failing the whole run, so one bad blob a pusher planted does
+// not stop every other file.
+func sealedOpenFailure(err error) (string, bool) {
+	switch {
+	case err == nil:
+		return "", false
+	case errors.Is(err, crypt.ErrRetiredEpoch):
+		return "sealed content new to this machine is sealed under an old epoch, which a removed member may hold; a member must reseal it: " + err.Error(), true
+	case errors.Is(err, crypt.ErrAuthFailed), errors.Is(err, crypt.ErrNotSealed), errors.Is(err, crypt.ErrUnknownEpoch):
+		return "sealed content does not open here (moved, damaged or forged): " + err.Error(), true
+	}
+	return "", false
+}
+
+// strict returns a copy of the snapshot whose Crypto opens only each
+// enclave's current epoch.
+func (s *Snapshot) strict() *Snapshot {
+	v, ok := s.cr().(cryptoViews)
+	if !ok {
+		return s
+	}
+	c := *s
+	c.Crypto = v.Strict()
+	return &c
+}
+
+// history returns a copy of the snapshot whose Crypto opens every epoch it
+// holds, for bytes that are never delivered to $HOME.
+func (s *Snapshot) history() *Snapshot {
+	v, ok := s.cr().(cryptoViews)
+	if !ok {
+		return s
+	}
+	c := *s
+	c.Crypto = v.History()
+	return &c
 }
 
 // runTasks selects and runs the tasks an apply triggered.
