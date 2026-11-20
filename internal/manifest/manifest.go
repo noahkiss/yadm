@@ -3,7 +3,6 @@ package manifest
 import (
 	"io/fs"
 
-	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
@@ -115,9 +114,6 @@ type Manifest struct {
 	Protected []string            `toml:"protected" json:"protected,omitempty"` // extra never-auto-commit globs
 }
 
-// Parse parses and validates a manifest.
-func Parse(b []byte) (*Manifest, error) { return nil, model.ErrNotImplemented }
-
 // Resolved is one target's winning entry.
 type Resolved struct {
 	Target model.Target     `json:"target"`
@@ -133,11 +129,10 @@ type Plan struct {
 	Roots   []Root
 	Tasks   map[string]TaskDef  // only tasks whose `when` matched
 	Checks  map[string]CheckDef // only checks whose `when` matched
-}
 
-// Resolve evaluates the manifest for one machine against the source tree.
-func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vocabulary) (*Plan, error) {
-	return nil, model.ErrNotImplemented
+	m     *Manifest
+	cands [][]candidate // per entry: what it would produce
+	apply []bool        // per entry: its `when` is true here
 }
 
 // Explanation answers `yadm why <path>`.
@@ -155,11 +150,6 @@ type Rejection struct {
 	Index  int    `json:"index"`
 	When   string `json:"when"`
 	Reason string `json:"reason"`
-}
-
-// Why explains how the plan treats a target.
-func (p *Plan) Why(t model.Target) (Explanation, error) {
-	return Explanation{}, model.ErrNotImplemented
 }
 
 // BuiltinProtected lists the paths that never auto-commit, whatever the manifest says.
