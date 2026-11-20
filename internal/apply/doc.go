@@ -27,12 +27,15 @@
 //
 // Exported API:
 //
-//	type State struct{ Schema int; Machine model.MachineID; Applied model.CommitID; FirstApplyDone bool; Targets map[model.Target]TargetState; Holds []model.Hold; Observed map[string]model.ObservedFact }
+//	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen }
 //	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; SealSet; RenderHash; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
-//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now }
-//	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render }
+//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
+//	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
+//	type Crypto interface{ rules.Sealer; SealFile; OpenFile }; func SetCrypto(*crypt.Set) Crypto
+//	type Rules interface{ ToTarget; ToSource }       // default: package rules
+//	type Text interface{ Merge3; PatchTemplate }      // default: package textmerge
 //	type Engine struct{ Deps }; func New(Deps) *Engine
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
 //	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error)
@@ -44,5 +47,10 @@
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error)
-//	func (e *Engine) ResolveHold(ctx, id string, opts ResolveOptions) (Result, error)
+//	func (e *Engine) ResolveHold(ctx, id string, opts ResolveOptions) (Result, error) // Result.Capture carries a take-target capture
+//	func HoldID(h model.Hold) string
+//
+// Every stat and read of a target has a timeout (Deps.StatTimeout) and a
+// Scan has a budget (Deps.ScanBudget); a path that does not answer is
+// reported as DriftUnreadable or held, never waited on.
 package apply
