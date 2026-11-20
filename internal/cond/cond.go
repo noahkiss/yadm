@@ -145,7 +145,9 @@ func (t factTerm) Eval(c model.Context) bool {
 	if !ok {
 		return false
 	}
-	return !t.hasVal || v == t.val
+	// Fact values are labels such as hostnames and distro names, which
+	// compare without regard to case.
+	return !t.hasVal || strings.EqualFold(v, t.val)
 }
 
 func (t factTerm) String() string {
