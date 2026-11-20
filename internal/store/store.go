@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -146,6 +147,8 @@ type Repo struct {
 	stateDir string
 	indexDir string // private index files, one per operation
 	zeroOID  string
+	env      []string // filtered git environment, built once at Open
+	cat      *catFile // shared `cat-file --batch` reader; nil reads per spawn
 }
 
 // worktreeFile records the commit the source worktree was last moved to.
@@ -174,7 +177,11 @@ func Open(sourceDir, stateDir string) (*Repo, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Repo{dir: abs, stateDir: stateAbs, indexDir: filepath.Join(stateAbs, "index")}
+	r := &Repo{dir: abs, stateDir: stateAbs, indexDir: filepath.Join(stateAbs, "index"), env: gitEnv(nil)}
+	r.cat = newCatFile(abs, r.env)
+	// A Repo dropped without Close still stops its reader; the idle timer
+	// usually does so first.
+	runtime.AddCleanup(r, func(c *catFile) { c.close() }, r.cat)
 	if err := os.MkdirAll(r.indexDir, 0o700); err != nil {
 		return nil, err
 	}
@@ -230,7 +237,7 @@ func Clone(ctx context.Context, remote, sourceDir, stateDir string) (*Repo, erro
 }
 
 func (r *Repo) git(ctx context.Context, args ...string) ([]byte, error) {
-	return run(ctx, call{dir: r.dir, args: args})
+	return run(ctx, call{dir: r.dir, base: r.env, args: args})
 }
 
 func (r *Repo) ensureFetchRefspec(ctx context.Context) error {
@@ -248,6 +255,15 @@ func (r *Repo) ensureFetchRefspec(ctx context.Context) error {
 	}
 	_, err = r.git(ctx, "config", "--add", "remote.origin.fetch", FetchRefspecYadm)
 	return err
+}
+
+// Close stops the background `git cat-file --batch` process. It is safe to
+// call more than once; a read after Close starts the process again.
+func (r *Repo) Close() error {
+	if r.cat != nil {
+		r.cat.close()
+	}
+	return nil
 }
 
 // Dir returns the source clone directory.
@@ -275,9 +291,13 @@ func (r *Repo) ResolveRef(ctx context.Context, ref string) (model.CommitID, erro
 
 // Fetch fetches origin's branches and refs/yadm/* into refs/remotes/origin/.
 func (r *Repo) Fetch(ctx context.Context) error {
-	_, err := run(ctx, call{dir: r.dir, network: true, args: []string{
+	_, err := run(ctx, call{dir: r.dir, base: r.env, network: true, args: []string{
 		"fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", "origin",
 	}})
+	if r.cat != nil {
+		// Restart the reader so the fetched pack is seen at once.
+		r.cat.reset()
+	}
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
@@ -319,12 +339,38 @@ func (r *Repo) ListTree(ctx context.Context, rev model.CommitID) ([]TreeEntry, e
 	return entries, nil
 }
 
-// ReadBlob returns the bytes of one blob.
+// ReadBlob returns the bytes of one blob. It reads through the shared batch
+// reader; a missing or non-blob object falls back to `git cat-file blob` so
+// the error is the same as before.
 func (r *Repo) ReadBlob(ctx context.Context, id string) ([]byte, error) {
 	if err := checkRev(id); err != nil {
 		return nil, err
 	}
+	if b, ok, err := r.batchBlob(ctx, id, "cat-file", "blob", id); ok || err != nil {
+		return b, err
+	}
 	return r.git(ctx, "cat-file", "blob", id)
+}
+
+// batchBlob reads name through the batch reader. ok is true when it found a
+// blob. A cancelled ctx is an error shaped like run's. Any other outcome
+// (missing, another type, a reader failure) returns ok false, and the caller
+// takes the one-spawn path that defines the exact result.
+func (r *Repo) batchBlob(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	if r.cat == nil {
+		return nil, false, nil
+	}
+	res, err := r.cat.read(ctx, name)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false, &gitError{args: args, code: -1, err: ctx.Err()}
+		}
+		return nil, false, nil
+	}
+	if res.missing || res.typ != "blob" {
+		return nil, false, nil
+	}
+	return res.data, true, nil
 }
 
 // ReadPath returns the blob at p in rev. A missing path wraps fs.ErrNotExist.
@@ -333,6 +379,9 @@ func (r *Repo) ReadPath(ctx context.Context, rev model.CommitID, p model.SourceP
 		return nil, err
 	}
 	spec := string(rev) + ":" + string(p)
+	if b, ok, err := r.batchBlob(ctx, spec, "rev-parse", spec); ok || err != nil {
+		return b, err
+	}
 	out, err := r.git(ctx, "rev-parse", "--verify", "--quiet", "--end-of-options", spec)
 	if err != nil {
 		if exitCode(err) == 1 {
@@ -364,7 +413,7 @@ func (r *Repo) buildTree(ctx context.Context, base model.CommitID, changes []Cha
 	defer cleanup()
 	env := []string{"GIT_INDEX_FILE=" + idx}
 	g := func(stdin []byte, args ...string) ([]byte, error) {
-		return run(ctx, call{dir: r.dir, args: args, env: env, stdin: stdin})
+		return run(ctx, call{dir: r.dir, base: r.env, args: args, env: env, stdin: stdin})
 	}
 	if base != "" {
 		if err := checkRev(string(base)); err != nil {
@@ -415,7 +464,7 @@ func (r *Repo) hashBlob(ctx context.Context, b []byte) (string, error) {
 	if b == nil {
 		b = []byte{}
 	}
-	out, err := run(ctx, call{dir: r.dir, stdin: b, args: []string{"hash-object", "-w", "--no-filters", "--stdin"}})
+	out, err := run(ctx, call{dir: r.dir, base: r.env, stdin: b, args: []string{"hash-object", "-w", "--no-filters", "--stdin"}})
 	if err != nil {
 		return "", err
 	}
@@ -536,7 +585,7 @@ func (r *Repo) CommitTree(ctx context.Context, tree string, parents []model.Comm
 		args = append(args, "-p", string(p))
 	}
 	args = append(args, tree)
-	out, err := run(ctx, call{dir: r.dir, args: args, stdin: []byte(FormatMessage(msg)), env: r.identityEnv(ctx)})
+	out, err := run(ctx, call{dir: r.dir, base: r.env, args: args, stdin: []byte(FormatMessage(msg)), env: r.identityEnv(ctx)})
 	if err != nil {
 		return "", err
 	}
@@ -656,7 +705,7 @@ func (r *Repo) Push(ctx context.Context, refspecs []string) error {
 		}
 	}
 	args := append([]string{"push", "--atomic", "--porcelain", "--no-verify", "--no-recurse-submodules", "origin"}, refspecs...)
-	out, err := run(ctx, call{dir: r.dir, network: true, args: args})
+	out, err := run(ctx, call{dir: r.dir, base: r.env, network: true, args: args})
 	if err == nil {
 		return nil
 	}

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -73,8 +74,13 @@ type call struct {
 	args    []string
 	stdin   []byte
 	env     []string // extra KEY=VALUE pairs
+	base    []string // filtered environment from gitEnv(nil); nil builds it
 	network bool
 }
+
+// spawns counts git processes started by run and the batch reader. Tests
+// and benchmarks read it.
+var spawns atomic.Int64
 
 // run executes git and returns stdout. A non-zero exit is a *gitError.
 func run(ctx context.Context, c call) ([]byte, error) {
@@ -93,13 +99,18 @@ func run(ctx context.Context, c call) ([]byte, error) {
 	}
 	args = append(args, c.args...)
 	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Env = gitEnv(c.env)
+	if c.base != nil {
+		cmd.Env = append(c.base[:len(c.base):len(c.base)], c.env...)
+	} else {
+		cmd.Env = gitEnv(c.env)
+	}
 	if c.stdin != nil {
 		cmd.Stdin = bytes.NewReader(c.stdin)
 	}
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	spawns.Add(1)
 	err := cmd.Run()
 	if err != nil {
 		code := -1
