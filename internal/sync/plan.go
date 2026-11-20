@@ -64,6 +64,9 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 		case protected(p, t, ch.Path):
 			hold(t, scope, "protected; commit it by name")
 			continue
+		case isNew(st, t) && p.PreExisting != nil && p.PreExisting(t):
+			hold(t, scope, "existed before its owned root was added here; commit it by name if it belongs in the repository")
+			continue
 		case perScope[scope] > mass:
 			hold(t, scope, fmt.Sprintf("%d changed files in scope %s exceed the limit of %d; commit them by name", perScope[scope], scope, mass))
 			continue
@@ -99,6 +102,12 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 		})
 	}
 	return out, holds, nil
+}
+
+// isNew reports whether t is not managed yet (a new file in an owned root).
+func isNew(st *apply.State, t model.Target) bool {
+	_, ok := st.Targets[t]
+	return !ok
 }
 
 // scopeLess orders shared first, then enclaves by name.
@@ -166,25 +175,19 @@ func hasHold(st *apply.State, t model.Target, reasons ...model.HoldReason) bool 
 	return false
 }
 
-// targetHold builds a sync-owned hold on a target. Since is kept from an
-// existing hold of the same target and reason, so the id stays stable.
+// targetHold builds a sync-owned hold on a target. model.KeepSince keeps
+// Since from an existing hold of the same target and reason, so the id stays
+// stable across runs.
 func targetHold(st *apply.State, now time.Time, t model.Target, scope model.Scope, reason model.HoldReason, since time.Time, detail string, next ...string) model.Hold {
-	if st != nil {
-		for _, h := range st.Holds {
-			if h.Target == t && h.Reason == reason {
-				since = h.Since
-				break
-			}
-		}
-	}
-	if since.IsZero() {
-		since = now
-	}
 	if scope == "" {
 		scope = model.ScopeShared
 	}
 	h := model.Hold{Target: t, Scope: scope, Reason: reason, Since: since, Detail: detail}
-	h.ID = apply.HoldID(h)
+	var prev []model.Hold
+	if st != nil {
+		prev = st.Holds
+	}
+	h = model.KeepSince(prev, h, now)
 	h.Next = append([]string{"yadm hold show " + h.ID}, next...)
 	return h
 }

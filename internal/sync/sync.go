@@ -85,11 +85,12 @@ type Policy struct {
 	MassChange int
 	Protected  []string // extra never-auto-commit globs; manifest.BuiltinProtected always applies
 
-	Host       string                                   // display name in commit subjects; default the machine id
-	QuietFor   func(model.Target) (time.Duration, bool) // per-entry quiet period
-	Protect    func(model.Target) bool                  // manifest `protected` globs and `review = true`
-	LastChange func(model.Target) time.Time             // the target's last change (its mtime)
-	MergeFor   func(model.Target) MergePolicy           // per-file merge policy; "" means MergeText
+	Host        string                                   // display name in commit subjects; default the machine id
+	QuietFor    func(model.Target) (time.Duration, bool) // per-entry quiet period
+	Protect     func(model.Target) bool                  // manifest `protected` globs and `review = true`
+	LastChange  func(model.Target) time.Time             // the target's last change (its mtime)
+	MergeFor    func(model.Target) MergePolicy           // per-file merge policy; "" means MergeText
+	PreExisting func(model.Target) bool                  // a new file that predates its owned root; never auto-commits
 }
 
 // PlannedCommit is one auto-commit to make. Targets[i] is the target of Changes[i].
@@ -117,6 +118,7 @@ type Deps struct {
 	Now      func() time.Time
 
 	Structural Structural    // key-level merge for json, jsonc and toml; nil decides nothing
+	Guard      RemoteGuard   // refuses a fetched source this machine has not allowed; nil allows all
 	Backoff    time.Duration // first push-retry delay; doubles per retry; default 200ms
 }
 
@@ -224,6 +226,9 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 			return rep, err
 		}
 		pol := s.policyFor(snap)
+		if pol.PreExisting == nil {
+			pol.PreExisting = s.preExisting(st)
+		}
 		leases, err := s.leases(ctx, snap, start)
 		if err != nil {
 			return rep, err
@@ -292,6 +297,13 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	seen := map[model.CommitID]bool{}
 	published := false
 	for attempt := 0; ; attempt++ {
+		base := s.accepted()
+		if base == "" {
+			// First sync: the clone's own fetch is the trusted start.
+			if base, err = s.Store.ResolveRef(ctx, store.RemoteMain); err != nil {
+				return rep, err
+			}
+		}
 		if err := s.Store.Fetch(ctx); err != nil {
 			// A network that returns late: the next run catches up once.
 			rep.Holds = s.currentHolds(cp.Paths, committed)
@@ -306,12 +318,13 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 			return rep, err
 		}
 		rep.Fetched = remote
-		tip, alerts, dirty, err := s.integrateAndApply(ctx, &rep, local, remote, seen)
+		res, err := s.integrateAndApply(ctx, &rep, base, local, remote, seen)
 		if err != nil {
 			return rep, err
 		}
-		rep.Alerts = append(rep.Alerts, alerts...)
-		if dirty {
+		tip := res.tip
+		rep.Alerts = append(rep.Alerts, res.alerts...)
+		if res.dirty {
 			return s.finish(ctx, rep, cp.Paths, committed)
 		}
 
@@ -329,7 +342,11 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		if !opts.Push {
 			break
 		}
-		specs, err := s.pushSpecs(ctx, tip, remote)
+		pushTip := tip
+		if res.refused {
+			pushTip = "" // never push over a refused remote; status still goes out
+		}
+		specs, err := s.pushSpecs(ctx, pushTip, remote)
 		if err != nil {
 			return rep, err
 		}
@@ -349,40 +366,78 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	return s.finish(ctx, rep, cp.Paths, committed)
 }
 
-// integrateAndApply runs steps 5 to 7: replay, compare-and-swap main, move
-// the worktree, then apply. dirty reports a source_dirty stop.
-func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, local, remote model.CommitID, seen map[model.CommitID]bool) (model.CommitID, []model.Alert, bool, error) {
+// stepResult is the outcome of steps 5 to 7.
+type stepResult struct {
+	tip     model.CommitID
+	alerts  []model.Alert
+	dirty   bool // stopped with a source_dirty hold
+	refused bool // the fetched source was refused; local main was kept
+}
+
+// integrateAndApply runs steps 5 to 7: check the fetched source, replay,
+// compare-and-swap main, move the worktree, then apply. base is the remote
+// main before this fetch.
+func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local, remote model.CommitID, seen map[model.CommitID]bool) (stepResult, error) {
+	var out stepResult
 	st, err := s.Apply.State.Load()
 	if err != nil {
-		return "", nil, false, err
+		return out, err
 	}
 	var snap *apply.Snapshot
 	if remote != "" {
 		if snap, err = s.load(ctx, remote); err != nil {
-			return "", nil, false, fmt.Errorf("load %s: %w", remote, err)
+			return out, fmt.Errorf("load %s: %w", remote, err)
 		}
+	}
+	ref, err := s.checkRemote(ctx, base, local, remote, snap)
+	if err != nil {
+		return out, err
+	}
+	fresh, err := s.setRefusal(ref)
+	if err != nil {
+		return out, err
+	}
+	if ref != nil {
+		out.refused = true
+		if fresh {
+			a := model.Alert{Kind: ref.kind, Commit: remote, Detail: ref.detail, At: s.now()}
+			s.notify(ctx, a)
+			if err := s.recordAlerts([]model.Alert{a}); err != nil {
+				return out, err
+			}
+			out.alerts = append(out.alerts, a)
+		}
+		out.tip = local
+		if local != "" && local != st.Applied {
+			out.dirty, err = s.moveAndApply(ctx, rep, local)
+		}
+		return out, err
+	}
+	if err := s.setAccepted(remote); err != nil {
+		return out, err
 	}
 	alerts, err := s.nonMemberAlerts(ctx, snap, local, remote, seen)
 	if err != nil {
-		return "", nil, false, err
+		return out, err
 	}
 	for _, a := range alerts {
 		s.notify(ctx, a)
 	}
 	if err := s.recordAlerts(alerts); err != nil {
-		return "", nil, false, err
+		return out, err
 	}
+	out.alerts = alerts
 	r := &resolver{s: s, snap: snap, st: st}
 	in, err := s.integrate(ctx, r, local, remote)
 	if err != nil {
-		return "", nil, false, err
+		return out, err
 	}
 	rep.Replayed += in.replayed
 	rep.Resolutions = append(rep.Resolutions, in.resolutions...)
 	if len(in.holds) > 0 {
 		// Reload: integrate may not touch state, but stay on the latest copy.
 		if st, err = s.Apply.State.Load(); err != nil {
-			return "", nil, false, err
+			return out, err
 		}
 		for _, h := range in.holds {
 			putHold(st, h)
@@ -393,22 +448,23 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, local, remo
 			}
 		}
 		if err := s.Apply.State.Save(st); err != nil {
-			return "", nil, false, err
+			return out, err
 		}
 		for _, h := range in.holds {
 			s.notify(ctx, model.Alert{Kind: "held", Detail: "conflict on " + string(h.Target) + " (" + string(h.Scope) + ")", At: s.now()})
 		}
 	}
 	if in.tip == "" {
-		return "", alerts, false, nil
+		return out, nil
 	}
 	if in.tip != local {
 		if err := s.Store.UpdateRef(ctx, store.RefMain, in.tip, local); err != nil {
-			return "", nil, false, err
+			return out, err
 		}
 	}
-	dirty, err := s.moveAndApply(ctx, rep, in.tip)
-	return in.tip, alerts, dirty, err
+	out.tip = in.tip
+	out.dirty, err = s.moveAndApply(ctx, rep, in.tip)
+	return out, err
 }
 
 // moveAndApply moves the source worktree to tip and applies it. A worktree
@@ -422,14 +478,8 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 		if lerr != nil {
 			return false, lerr
 		}
-		h := model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty, Since: s.now(),
-			Detail: "the source clone has local edits: " + err.Error()}
-		for _, x := range st.Holds {
-			if x.Reason == model.HoldSourceDirty {
-				h.Since = x.Since
-			}
-		}
-		h.ID = apply.HoldID(h)
+		h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
+			Detail: "the source clone has local edits: " + err.Error()}, s.now())
 		h.Next = []string{"yadm git status", "yadm git restore ."}
 		putHold(st, h)
 		return true, s.Apply.State.Save(st)
@@ -443,6 +493,9 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 	}
 	rep.Applied = tip
 	rep.Tasks = append(rep.Tasks, res.Tasks...)
+	if err := s.recordRoots(); err != nil {
+		return false, err
+	}
 	for _, t := range res.Tasks {
 		if t.ExitCode != 0 || t.Error != "" {
 			s.notify(ctx, model.Alert{Kind: "task_failed", Commit: tip, Detail: "task " + t.Task + " failed", At: s.now()})

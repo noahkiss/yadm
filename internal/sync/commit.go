@@ -250,8 +250,15 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if opts.Capture != nil {
 		cp = *opts.Capture
 	} else {
-		if drift, err = s.Apply.Scan(ctx, apply.ScanOptions{Paths: opts.Paths}); err != nil {
+		// Scan everything (owned roots included), then keep the named paths.
+		all, err := s.Apply.Scan(ctx, apply.ScanOptions{})
+		if err != nil {
 			return rep, fmt.Errorf("scan: %w", err)
+		}
+		for _, d := range all {
+			if len(opts.Paths) == 0 || named(opts.Paths, d.Target) {
+				drift = append(drift, d)
+			}
 		}
 		if cp, err = s.Apply.Capture(ctx, drift); err != nil {
 			return rep, fmt.Errorf("capture: %w", err)
@@ -281,7 +288,8 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 			continue
 		}
 		dropSyncHolds(st, func(x model.Target) bool { return x == t })
-		if !named && (ch.Delete || protected(pol, t, ch.Path)) {
+		pre := !named && isNew(st, t) && s.preExisting(st)(t)
+		if !named && (ch.Delete || protected(pol, t, ch.Path) || pre) {
 			putHold(st, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), "protected; commit it by name", "yadm commit "+string(t)))
 			continue
 		}

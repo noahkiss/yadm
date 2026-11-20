@@ -270,7 +270,7 @@ func (s *Syncer) nonMemberAlerts(ctx context.Context, snap *apply.Snapshot, loca
 				who = "a commit with no Machine trailer"
 			}
 			out = append(out, model.Alert{
-				Kind:    "non_member_enclave_commit",
+				Kind:    AlertNonMember,
 				Commit:  c.ID,
 				Machine: machine,
 				Detail:  fmt.Sprintf("%s changed enclave %s and is not a member; review it", who, e),

@@ -95,6 +95,18 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 		rec.Tasks = append(rec.Tasks, st.Tasks[n])
 	}
 	rec.Alerts = s.loadAlerts()
+	if s.Apply.Pins != nil {
+		for _, e := range s.enclavesAt(ctx, tip) {
+			p, err := s.Apply.Pins.Get(e)
+			if err != nil || p == nil {
+				continue
+			}
+			if rec.KeyHeads == nil {
+				rec.KeyHeads = map[model.EnclaveName]model.KeyHead{}
+			}
+			rec.KeyHeads[e] = model.KeyHead{Seq: p.Seq, Hash: p.Hash}
+		}
+	}
 	return s.Status.Publish(ctx, rec)
 }
 
@@ -212,4 +224,16 @@ func (s *Syncer) reviewedSpecs(ctx context.Context) ([]string, error) {
 		}
 	}
 	return specs, nil
+}
+
+// enclavesAt lists the enclaves of the fleet file at rev.
+func (s *Syncer) enclavesAt(ctx context.Context, rev model.CommitID) []model.EnclaveName {
+	if rev == "" {
+		return nil
+	}
+	snap, err := s.load(ctx, rev)
+	if err != nil || snap.Fleet == nil {
+		return nil
+	}
+	return snap.Fleet.Enclaves()
 }

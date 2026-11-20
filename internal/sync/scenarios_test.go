@@ -399,4 +399,7 @@ func TestNonMemberEnclaveCommitAlerts(t *testing.T) {
 	if got := sts[a].Alerts; len(got) != 1 || got[0].Commit != id {
 		t.Errorf("status alerts %+v", got)
 	}
+	if kh := sts[a].KeyHeads["personal"]; kh.Seq == 0 || kh.Hash == "" {
+		t.Errorf("status key heads %+v", sts[a].KeyHeads)
+	}
 }

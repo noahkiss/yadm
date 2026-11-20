@@ -199,6 +199,14 @@ type Status struct {
 	Sealed     map[EnclaveName][]byte  `json:"sealed,omitempty"`   // sealed observed facts, per enclave
 	Tasks      []TaskResult            `json:"tasks,omitempty"`    // last result per task
 	Alerts     []Alert                 `json:"alerts,omitempty"`   // recent sync alerts, newest last
+	KeyHeads   map[EnclaveName]KeyHead `json:"key_heads,omitempty"` // the key-log head this machine has pinned, per enclave
+}
+
+// KeyHead names one verified key-log entry: its sequence number and the hex
+// SHA-256 of its signed bytes (the pin).
+type KeyHead struct {
+	Seq  uint64 `json:"seq"`
+	Hash string `json:"hash"`
 }
 
 // Alert is a sync event reported through the notify hook and recorded in the
