@@ -1,0 +1,3 @@
+go test fuzz v1
+string(" d=0#FUZZ-CANARY-7f3a9c1e5b2d4f60")
+byte('C')

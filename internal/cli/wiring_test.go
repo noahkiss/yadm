@@ -68,8 +68,9 @@ func TestContractsCompose(t *testing.T) {
 	if !errors.As(err, &re) {
 		t.Errorf("render: want *render.Error for an unknown variable, got %v", err)
 	}
-	_, err = rules.ToTarget(nil, nil, rules.Spec{}, keys)
-	ni("rules.ToTarget", err)
+	if _, err = rules.ToTarget(nil, nil, rules.Spec{}, keys); err != nil {
+		t.Errorf("rules.ToTarget: %v", err)
+	}
 	if _, err = crypt.LoadIdentity(t.TempDir()); err == nil || errors.Is(err, model.ErrNotImplemented) {
 		t.Errorf("crypt.LoadIdentity on an empty state dir: want a missing-file error, got %v", err)
 	}
@@ -100,8 +101,9 @@ func TestContractsCompose(t *testing.T) {
 	if _, _, err = crypt.LoadSet(nil, crypt.FilePins(stateDir), nil); err != nil {
 		t.Errorf("crypt.LoadSet with no logs: %v", err)
 	}
-	_, _, err = textmerge.Merge3(nil, nil, nil)
-	ni("textmerge.Merge3", err)
+	if _, _, err = textmerge.Merge3(nil, nil, nil); err != nil {
+		t.Errorf("textmerge.Merge3: %v", err)
+	}
 	if h, err := tasks.DefinitionHash(manifest.TaskDef{}); err != nil || len(h) != 64 {
 		t.Errorf("tasks.DefinitionHash = %q, %v", h, err)
 	}

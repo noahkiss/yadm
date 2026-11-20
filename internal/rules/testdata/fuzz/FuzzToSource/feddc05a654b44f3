@@ -1,0 +1,3 @@
+go test fuzz v1
+string("{\"s\":{\"\":\"\xedFUZZ-CANARY-7f3a9c1e5b2d4f60\"}}")
+byte('\x01')
