@@ -39,9 +39,15 @@ type TargetState struct {
 	Size       int64            `json:"size"`
 	ModTime    time.Time        `json:"mtime"`
 	Mode       uint32           `json:"mode"`
-	SealSet    []string         `json:"seal_set,omitempty"`    // key paths and region labels sealed at last apply
-	RenderHash string           `json:"render_hash,omitempty"` // templates: hex SHA-256 of the last rendered bytes; the bytes are recomputed, never stored
-	ChangedAt  time.Time        `json:"changed_at"`            // first time the current drift was seen
+	SealSet    []string         `json:"seal_set,omitempty"` // key paths and region labels sealed at last apply
+	// The protection recorded at last apply: whole-file enclave, sealed keys
+	// with their enclaves, regions. Apply and capture hold the target when
+	// the manifest weakens it, until the change is allowed locally.
+	Enclave    model.EnclaveName            `json:"enclave,omitempty"`
+	Seal       map[string]model.EnclaveName `json:"seal,omitempty"`
+	Regions    bool                         `json:"regions,omitempty"`
+	RenderHash string                       `json:"render_hash,omitempty"` // templates: hex SHA-256 of the last rendered bytes; the bytes are recomputed, never stored
+	ChangedAt  time.Time                    `json:"changed_at"`            // first time the current drift was seen
 }
 
 // State is the local state database for one machine. It never leaves the machine.
@@ -56,8 +62,12 @@ type State struct {
 	Observed       map[string]model.ObservedFact `json:"observed,omitempty"`
 	Tasks          map[string]model.TaskResult   `json:"tasks,omitempty"`
 	RenderContext  *model.Context                `json:"render_context,omitempty"` // the Context of the last apply, to recompute last renders
-	Roots          []manifest.Root               `json:"roots,omitempty"`          // owned roots of the last apply; Scan reads them without loading a Snapshot
+	Roots          []manifest.Root               `json:"roots,omitempty"`          // accepted owned roots; Scan and capture read only these
 	Seen           map[model.Target]time.Time    `json:"seen,omitempty"`           // first sighting of each new file in an owned root
+	// Baseline lists files that were in an owned root when it was accepted,
+	// or stayed on disk when they left management. They are never reported
+	// as new or captured automatically.
+	Baseline map[model.Target]time.Time `json:"baseline,omitempty"`
 }
 
 // StateDB loads and saves State atomically.
@@ -178,8 +188,17 @@ type Snapshot struct {
 // values and regions, plus whole-file sealing. SetCrypto adapts a crypt.Set.
 type Crypto interface {
 	rules.Sealer
-	SealFile(e model.EnclaveName, plaintext []byte) ([]byte, error)
-	OpenFile(e model.EnclaveName, container []byte) ([]byte, error)
+	SealFile(e model.EnclaveName, path model.SourcePath, plaintext []byte) ([]byte, error)
+	OpenFile(e model.EnclaveName, path model.SourcePath, container []byte) ([]byte, error)
+}
+
+// cryptoViews is what a Crypto offers when it can restrict the epochs it
+// opens: Strict opens only each enclave's current epoch, History every
+// epoch it holds. SetCrypto implements it; a Crypto without it opens the
+// same way in every view.
+type cryptoViews interface {
+	Strict() Crypto
+	History() Crypto
 }
 
 // SetCrypto adapts a crypt.Set to Crypto. A nil set opens nothing.
@@ -191,6 +210,9 @@ func SetCrypto(s *crypt.Set) Crypto {
 }
 
 type setCrypto struct{ *crypt.Set }
+
+func (s setCrypto) Strict() Crypto  { return setCrypto{s.Set.Strict()} }
+func (s setCrypto) History() Crypto { return setCrypto{s.Set.History()} }
 
 // Rules is the intra-file rules engine. The default is package rules.
 type Rules interface {
@@ -241,6 +263,9 @@ type Deps struct {
 	StateDir string
 	Tasks    *tasks.Runner
 	Now      func() time.Time
+	// Allow is the local allow list for weakened protections and owned
+	// roots. Nil falls back to Tasks.Allow; with neither, nothing is allowed.
+	Allow tasks.AllowList
 
 	// Optional. Zero values pick the defaults.
 	LoadSnapshot func(ctx context.Context, rev model.CommitID) (*Snapshot, error) // replaces Load (tests, bisect sandboxes)

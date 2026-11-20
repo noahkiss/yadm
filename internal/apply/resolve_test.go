@@ -80,6 +80,7 @@ func TestScanNestedRootsReportOnce(t *testing.T) {
 	w := newWorld(t, "personal")
 	c := w.commit(nil)
 	w.plans[c].Roots = []manifest.Root{{Path: ".config"}, {Path: ".config/notes", Enclave: "personal"}}
+	w.allowRoots(c)
 	w.apply(c)
 	w.write(".config/notes/n.md", "n\n")
 	ds, _ := w.eng.Scan(context.Background(), ScanOptions{})

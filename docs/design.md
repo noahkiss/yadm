@@ -236,15 +236,19 @@ Behaviour:
 | Cipher | AES-SIV (RFC 5297), 512-bit key, from `tink-go` `daead/subtle`. Deterministic. |
 | Epoch key | 32 random bytes per enclave per epoch. |
 | Subkeys | HKDF-SHA256(epoch key, info = `yadm v1 <purpose> <enclave>`), 64 bytes. Purposes: `file`, `value`, `region`, `name`. |
-| File container | `"yadm-sealed\0"`, version byte 1, enclave name (length-prefixed), epoch (uint32 BE), SIV ciphertext. AD = the header bytes. The path is not in the AD, so a rename keeps the blob. |
-| Value token | `yadm:1:<enclave>:<epoch>:<base64url>`. AD = enclave, epoch and key path, so a token moved to another key fails. |
-| Region token | `yadm:sealed 1 <epoch> <base64>`. AD = enclave, epoch and region label. |
+| File container | `"yadm-sealed\0"`, version byte 2, enclave name (length-prefixed), epoch (uint32 BE), SIV ciphertext. AD = the header bytes, then the source path (length-prefixed), which the container does not store. A blob moved to another path fails to open, so a rename needs a member to reseal it; `yadm retag` does. Version 1, which had no path in the AD, is refused. |
+| Value token | `yadm:1:<enclave>:<epoch>:<base64url>`. AD = enclave, epoch, and the source path of the file and the concrete key path (escaped, never the manifest pattern). A token moved to another key or another file fails. |
+| Region token | `yadm:sealed 1 <epoch> <base64>`. AD = enclave, epoch, and the source path of the file and the region label. A token moved to another file fails. |
 | Wrapping | Every key-log entry carries all epoch keys so far, age-encrypted (X25519) to each member and to the recovery recipient. |
+| Key commitments | Every key-log entry carries a SHA-256 commitment to each epoch key (`key_commits`). The list only grows. A machine checks the unwrapped keys against it, so no signer can swap an earlier epoch's key. |
 | Signing | Ed25519 per machine and for the recovery identity. |
+| Encodings | Base64 is decoded strictly. A key-log file must be exactly the canonical encoding; any other spelling of the same entry is refused. |
 
 Why deterministic: an unchanged file reseals to the same blob, so there is no churn. Two machines that capture the same edit produce the same blob and converge. Sealed values stay byte-stable, so line merges work.
 
-What it leaks: equal plaintexts give equal ciphertexts, so a revert is visible. Sizes, file counts, paths (unless hidden paths are on), commit times and `Machine:` trailers are visible to every machine.
+What it leaks: equal plaintexts at one path give equal ciphertexts, so a revert is visible. Sizes, file counts, paths (unless hidden paths are on), commit times and `Machine:` trailers are visible to every machine.
+
+What the binding does not cover: a plaintext sibling of a sealed key (a server URL next to its token) stays editable by any writer. The seal list must cover what gives a secret its meaning.
 
 ### 7.2 Key log
 
@@ -255,11 +259,13 @@ enclave  = "personal"
 seq      = 2
 prev     = "<hex sha-256 of entry 1's signed bytes>"
 epoch    = 1
-op       = "add"                 # create | add | remove | rotate | recover
+min_epoch = 1                    # lowest epoch members still open for delivery
+op       = "add"                 # create | add | remove | rotate | retire | recover | set-recovery
 subject  = "m-x9y8z7"
 members  = [{ machine = "m-a1b2c3", recipient = "age1…", sign_key = "<base64>" },
             { machine = "m-x9y8z7", recipient = "age1…", sign_key = "<base64>" }]
 recovery = { machine = "recovery", recipient = "age1…", sign_key = "<base64>" }
+key_commits = ["<hex sha-256 commitment to the epoch 1 key>"]
 wrapped  = "<base64 age file holding epoch keys 1..epoch>"
 signer   = "m-a1b2c3"
 sig      = "<base64 Ed25519 over the canonical bytes with sig empty>"
@@ -268,9 +274,18 @@ sig      = "<base64 Ed25519 over the canonical bytes with sig empty>"
 Verification, on every load:
 
 1. Entry `n+1` has `prev` = hash of entry `n`.
-2. Its signer is a member of entry `n`, or the recovery identity of entry `n`. The signature verifies.
-3. `remove` and `rotate` increase the epoch by one. `create` is epoch 1. `add` keeps the epoch.
-4. The chain contains the machine's local pin (`pins/<enclave>`). A machine never accepts a chain that does not extend its pin.
+2. Its signer is a member of entry `n`, or the recovery identity of entry `n` for `recover` and `set-recovery` only. The signature verifies.
+3. `remove`, `rotate` and `recover` increase the epoch by one. `create` is epoch 1. `add`, `retire` and `set-recovery` keep the epoch.
+4. `key_commits` holds one commitment per epoch and keeps entry `n`'s list as its prefix.
+5. `min_epoch` stays the same, except that `retire` raises it, to at most the epoch.
+6. Only `set-recovery` changes the recovery identity.
+7. The chain contains the machine's local pin (`pins/<enclave>`). A machine never accepts a chain that does not extend its pin.
+
+When a machine opens its keys, it checks each unwrapped key against `key_commits`.
+
+Key-log files are append-only in history. Sync refuses a fetched commit that changes or deletes an existing `keys/<enclave>/<seq>.toml`. A signed competing entry at an existing seq is how a removed member would fork the log for a machine whose pin has not reached the removal yet. Each machine publishes its pinned head in its status ref, so a member that has not pinned a removal is visible.
+
+A machine writes an entry only on a head that is exactly its pin. Loading the log verifies the chain from the old pin and advances the pin, so every write descends from everything the machine accepted. A machine with no pin writes only `create`, `recover` or `set-recovery`.
 
 An entry that fails any check is rejected; the enclave is reported as `refused` and its files are not applied until fixed. A machine that can push but holds no member key therefore cannot substitute a key: it cannot sign.
 
@@ -279,7 +294,7 @@ Pinning is strict; there is no trust on first use:
 - A machine opens an enclave's keys only when it holds a pin for that enclave.
 - The machine that writes an entry (create, add, remove, rotate, recover) pins it in the same step.
 - Every other machine gets its first pin only from `yadm enclave join <enclave> --expect <fingerprint>`, with the fingerprint received out of band.
-- A machine listed as a member without a pin is refused. The message names the enclave and the join step.
+- A machine listed as a member without a pin is refused. The message names the enclave and the join step. It shows no fingerprint from the local log, which a writer controls.
 - Without this rule, a writer could replace an unpinned log with one that lists the machine. The machine would then seal new files under keys the writer holds.
 
 ### 7.3 Lifecycle
@@ -290,8 +305,10 @@ Pinning is strict; there is no trust on first use:
 | Join request | New machine | `yadm init` prints its recipient, signing key and machine id. |
 | Add | A current member | `yadm enclave add <machine>` appends an `add` entry wrapped to the new member, and prints the entry fingerprint. |
 | Pin | New machine | `yadm enclave join <enclave> --expect <fingerprint>` pins that entry. The fingerprint travels out of band. |
-| Remove | A current member | `yadm enclave remove <machine> --confirm` appends a `remove` entry with a new epoch, wrapped to the rest, and reseals current sealed files in one commit. The removed machine keeps every key up to the old epoch and every commit it already fetched. The output lists what else the user must do: revoke the machine's repository access and rotate real secrets stored in the enclave. |
+| Remove | A current member | `yadm enclave remove <machine> --confirm` appends a `remove` entry with a new epoch, wrapped to the rest, and reseals every sealed file, value and region of the enclave in one commit, templates and glob entries included. The removed machine keeps every key up to the old epoch and every commit it already fetched. The output lists what else the user must do: revoke the machine's repository access, rotate real secrets stored in the enclave, and retire the old epoch once the reseal has landed. |
+| Retire | A current member | `retire` entry that sets `min_epoch` to the current epoch, after the reseal commit has landed. From then on no member opens ciphertext of an older epoch for delivery. Until then, sealed content that is new to a machine (a source blob it has not applied before) opens only under the current epoch, and anything older is held with `seal_guard`. A removed member therefore cannot plant content under the keys it kept. |
 | Recover | Recovery identity | `recover` entry signed by the recovery key, used when no member remains. |
+| Set recovery | Recovery identity | `set-recovery` entry signed by the current recovery key that names a new recovery identity. It is how a leaked recovery key is replaced. |
 
 Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto-commit.
 
@@ -300,14 +317,21 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 - In a member's `$HOME` (the targets).
 - In memory during render, capture, merge and diff. Three-way merges, diffs and template patching run in-process (`internal/textmerge`); plaintext is never handed to git.
 - On stdout for `yadm diff`, `yadm log -p`, `yadm review` and `yadm hold show`.
-- In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open.
-- In `backup/` in a member's state directory: the bytes apply replaced or deleted, mode 0600, kept 30 days. A non-member never writes an enclave's plaintext, so its backups hold none.
+- In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open. A gate with no state directory runs no check and holds the files; it never uses the system temp directory.
+- In `backup/enclave/<enclaves>/` in a member's state directory: the bytes apply replaced or deleted from a file with enclave plaintext (a whole sealed file, sealed values or regions), mode 0600, kept 30 days. When a verified key log no longer lists this machine, apply deletes that enclave's backups. A refused log deletes nothing. Other backups go to `backup/<time>/` and hold no enclave plaintext. A non-member never writes an enclave's plaintext, so its backups hold none.
 
 The state database stores hashes, never rendered bytes. The one exception is the proposed patch of a `rendered_edit` hold on a shared template (section 8.4); an enclave template's hold carries none, so no enclave plaintext enters the state. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
 Plaintext never enters the source tree, the object store, a ref, a note, a commit message, the status ref (except collectors published `plain`) or any non-member path. The tool runs git with `-c diff.cachetextconv=false`, defines no textconv, and `yadm check` fails on any `refs/notes/textconv` ref, any `cachetextconv = true` setting, and any filter or merge driver in the source clone's own config.
 
 Every change to sealing or delivery needs a test with `internal/secrecytest` that plants a canary in enclave plaintext and asserts it reaches neither a non-member's `$HOME` nor any repository's object store.
+
+Any machine can push `manifest.toml`, so a manifest change that would make a member stage plaintext takes effect only after a local allow, as a task definition does (section 12.3):
+
+- **Weaker protection.** The state records, per target, the protection of the last apply: the whole-file enclave, each sealed key with its enclave, and regions. When the manifest drops or moves any of them, apply and capture hold the target with `seal_guard` until the user allows the new protection on this machine. Apply never records a weaker protection on its own.
+- **Owned roots.** A new `[[root]]`, or one whose enclave changed, does nothing until allowed. Until then the old version of the root stays, and the root is held as `root_untrusted`. An enclave root that leaves the manifest stays until its removal is allowed, so a plain root around it never captures its files. Scan and capture read only allowed roots. When a root takes effect, the files already in it form a baseline that is never captured automatically. A file that leaves management but stays on disk joins the baseline, and so does a protected target that leaves the plan.
+- **Modes.** An explicit `mode` may not grant a file with enclave plaintext (a whole sealed file, sealed values or regions) a permission bit its source mode lacks. Apply holds such a target with `seal_guard`. Without `mode`, these files follow section 4.
+- **Merges.** An in-memory merge of a sealed file opens both sides under the current epoch only, so it never reseals old-epoch content under the current one.
 
 ### 7.5 Hidden paths (reserved)
 
@@ -604,10 +628,12 @@ Adopt leaves any other dotfiles tool installed and untouched, so the user can ro
 
 - Every machine can push. A non-member is a writer, not only a reader.
 - An enclave protects against reading. A non-member can still delete or roll back sealed files, edit shared scripts members run, or forge a `Machine:` trailer. The notify hook reports non-member commits that touch an enclave; members see them in review.
-- Key-log changes are signed and chained, so a writer cannot add itself or substitute a key.
-- Task, check and collector definitions run only after a local allow.
-- A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine.
-- A removed machine keeps everything up to its removal.
+- Key-log changes are signed and chained, so a writer cannot add itself or substitute a key. Key commitments stop a signer from swapping an earlier epoch's key. Key-log files are append-only in history, so a removed member cannot replace an entry for a machine that has not pinned the removal.
+- A writer can move or swap sealed blobs, values and regions; each is bound to its path and key, so a moved one fails to open and is held.
+- Task, check and collector definitions run only after a local allow. So do a manifest change that weakens a target's protection and a new or changed owned root.
+- The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
+- A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
+- A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies
 

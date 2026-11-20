@@ -8,22 +8,48 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 )
 
 // Spec is the intra-file part of a manifest entry.
+//
+// Source is the source path of the file the rules apply to. Every sealed
+// value and region is bound to it (crypt.PartName), so a token copied into
+// another file fails to open. Sealing or opening with an empty Source fails.
 type Spec struct {
 	Format  manifest.Format
 	Keep    []string
 	Drop    []string
 	Seal    map[string]model.EnclaveName
 	Regions bool
+	Source  model.SourcePath
 }
 
-// SpecOf extracts the intra-file rules from a manifest entry.
+// SpecOf extracts the intra-file rules from a manifest entry. The caller
+// sets Source to the resolved source path.
 func SpecOf(e manifest.Entry) Spec {
-	return Spec{Format: e.Format, Keep: e.Keep, Drop: e.Drop, Seal: e.Seal, Regions: e.Regions}
+	return Spec{Format: e.Format, Keep: e.Keep, Drop: e.Drop, Seal: e.Seal, Regions: e.Regions, Source: e.Source}
+}
+
+// SpecFor is SpecOf for a resolved entry, with its resolved source path.
+func SpecFor(r manifest.Resolved) Spec {
+	s := SpecOf(r.Entry)
+	s.Source = r.Source
+	return s
+}
+
+// ErrNoSource reports a seal or open with no source path in the Spec.
+var ErrNoSource = errors.New("rules: the spec names no source path to bind sealed parts to")
+
+// partName is the AD name of a sealed value (concrete key path) or region
+// (label) in the file at src.
+func partName(src model.SourcePath, keyOrLabel string) (string, error) {
+	if src == "" {
+		return "", ErrNoSource
+	}
+	return crypt.PartName(src, keyOrLabel), nil
 }
 
 // Empty reports whether the spec has no intra-file rules.
@@ -33,11 +59,13 @@ func (s Spec) Empty() bool {
 
 // Sealer seals and opens parts of files. crypt.Set implements it.
 //
-// A value's plaintext is the decoded string, without quotes. keyPath is the
-// manifest seal key verbatim (a pattern such as "mcp.servers.*.env.TOKEN"),
-// so every value it matches shares one binding. A region body is the exact
-// bytes between the marker lines. SealRegion returns "yadm:sealed 1 <epoch>
-// <base64>" without a comment prefix.
+// A value's plaintext is the decoded string, without quotes. keyPath is
+// crypt.PartName of the source path and the concrete key path (escaped and
+// dot-joined; never the manifest pattern), so each value has its own
+// binding. A region's label argument is crypt.PartName of the source path
+// and the region label. A region body is the exact bytes between the marker
+// lines. SealRegion returns "yadm:sealed 1 <epoch> <base64>" without a
+// comment prefix.
 type Sealer interface {
 	CanOpen(e model.EnclaveName) bool
 	SealValue(e model.EnclaveName, keyPath string, plaintext []byte) (string, error)
@@ -87,6 +115,7 @@ type sealRule struct {
 }
 
 type compiled struct {
+	src   model.SourcePath
 	f     format
 	keep  []pattern
 	drop  []pattern
@@ -101,7 +130,7 @@ func compile(spec Spec) (*compiled, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &compiled{f: f}
+	c := &compiled{f: f, src: spec.Source}
 	if c.keep, err = parsePatterns(spec.Keep); err != nil {
 		return nil, err
 	}
@@ -395,7 +424,7 @@ func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error) {
 	out := source
 	if spec.Regions {
 		var err error
-		if out, err = regionsToTarget(out, s); err != nil {
+		if out, err = regionsToTarget(out, spec.Source, s); err != nil {
 			return nil, err
 		}
 	}
@@ -458,7 +487,11 @@ func (c *compiled) openSeals(b []byte, s Sealer) ([]byte, error) {
 				if !s.CanOpen(r.enclave) {
 					return c.f.del(b, n, false)
 				}
-				pt, err := s.OpenValue(r.enclave, r.pat.src, n.str)
+				name, err := partName(c.src, joinPath(p))
+				if err != nil {
+					return nil, err
+				}
+				pt, err := s.OpenValue(r.enclave, name, n.str)
 				if err != nil {
 					return nil, fmt.Errorf("open %s: %w", joinPath(p), err)
 				}
@@ -552,7 +585,7 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 	if spec.Regions {
 		var rp [][]byte
 		var err error
-		out, rp, vio, err = regionsToSource(out, prevSource, s)
+		out, rp, vio, err = regionsToSource(out, prevSource, spec.Source, s)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -648,8 +681,10 @@ func (c *compiled) sealValues(b, prev []byte, prevRoot *node, s Sealer) ([]byte,
 		for _, p := range ppaths {
 			if member {
 				if pn := find(prevRoot, p); pn != nil && pn.kind == kString {
-					if pt, err := s.OpenValue(r.enclave, r.pat.src, pn.str); err == nil {
-						plains = append(plains, leakProbe{path: joinPath(p), text: string(pt)})
+					if name, err := partName(c.src, joinPath(p)); err == nil {
+						if pt, err := s.OpenValue(r.enclave, name, pn.str); err == nil {
+							plains = append(plains, leakProbe{path: joinPath(p), text: string(pt)})
+						}
 					}
 				}
 			}
@@ -684,7 +719,11 @@ func (c *compiled) sealValues(b, prev []byte, prevRoot *node, s Sealer) ([]byte,
 				vio = append(vio, Violation{Path: joinPath(p), Kind: SealedNotString, Detail: "only string values can be sealed"})
 				continue
 			}
-			tok, err := s.SealValue(r.enclave, r.pat.src, []byte(n.str))
+			name, err := partName(c.src, joinPath(p))
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			tok, err := s.SealValue(r.enclave, name, []byte(n.str))
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("seal %s: %w", joinPath(p), err)
 			}

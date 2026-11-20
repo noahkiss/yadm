@@ -13,7 +13,7 @@ import (
 // and not when it only occurs inside other text.
 func TestLeakCheckShortValues(t *testing.T) {
 	s := member(personal)
-	spec := Spec{Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"pin": personal}}
+	spec := Spec{Source: testSource, Format: manifest.FormatJSON, Seal: map[string]model.EnclaveName{"pin": personal}}
 	live := []byte("{\n  \"pin\": \"4711\",\n  \"note\": \"call 47110\"\n}\n")
 	src := mustSource(t, live, nil, spec, s)
 	if bytes.Contains(src, []byte(`"4711"`)) {
@@ -31,7 +31,7 @@ func TestLeakCheckShortValues(t *testing.T) {
 		t.Fatalf("short leak missed: %v %v", vio, err)
 	}
 	// TOML literal strings count too.
-	tspec := Spec{Format: manifest.FormatTOML, Seal: map[string]model.EnclaveName{"pin": personal}}
+	tspec := Spec{Source: testSource, Format: manifest.FormatTOML, Seal: map[string]model.EnclaveName{"pin": personal}}
 	tlive := []byte("pin = \"4711\"\nnote = \"x\"\n")
 	tsrc := mustSource(t, tlive, nil, tspec, s)
 	tcopied := []byte("pin = \"4711\"\nnote = '4711'\n")

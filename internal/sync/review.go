@@ -135,12 +135,12 @@ func pathDiff(ctx context.Context, st store.Store, cr apply.Crypto, keys *crypt.
 			return fmt.Sprintf("sealed %s changed (not a member of %s)\n", p, enc), nil
 		}
 		if before != nil {
-			if before, err = cr.OpenFile(enc, before); err != nil {
+			if before, err = cr.OpenFile(enc, p, before); err != nil {
 				return "", fmt.Errorf("review %s: %w", p, err)
 			}
 		}
 		if after != nil {
-			if after, err = cr.OpenFile(enc, after); err != nil {
+			if after, err = cr.OpenFile(enc, p, after); err != nil {
 				return "", fmt.Errorf("review %s: %w", p, err)
 			}
 		}

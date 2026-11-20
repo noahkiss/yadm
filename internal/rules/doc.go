@@ -35,6 +35,11 @@
 // app-owned key, which takes its comments with it. An insert lands after the
 // previous sibling, below the comment lines that sat between them.
 //
+// Every sealed value is bound to the file's source path and its concrete key
+// path, and every region to the source path and its label
+// (crypt.PartName), so a token swapped between keys or copied into another
+// file fails to open.
+//
 // The leak check (SealedValueLeaked) looks for each sealed plaintext outside
 // its seal path. A value of 8 bytes or more is looked for anywhere; a shorter
 // one only as a whole quoted string. Region lines shorter than 8 bytes are
@@ -52,7 +57,9 @@
 //
 // Exported API:
 //
-//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool }
+//	type Spec struct{ Format manifest.Format; Keep, Drop []string; Seal map[string]model.EnclaveName; Regions bool; Source model.SourcePath }
+//	func SpecOf(e manifest.Entry) Spec; func SpecFor(r manifest.Resolved) Spec // SpecFor sets Source
+//	var ErrNoSource error // sealing or opening with an empty Spec.Source
 //	type Sealer interface{ CanOpen; SealValue; OpenValue; SealRegion; OpenRegion }  // crypt.Set implements it
 //	func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error)
 //	func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violation, error)

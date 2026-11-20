@@ -46,11 +46,11 @@ func newWorld(t *testing.T) *world {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e2, err := k.Add(e1, w.b.Member(), w.a, MemPins())
+	e2, err := k.Add(e1, w.b.Member(), w.a, pinnedAt(t, e1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e3, err := k.Add(e2, w.c.Member(), w.b, MemPins()) // any member may sign
+	e3, err := k.Add(e2, w.c.Member(), w.b, pinnedAt(t, e2)) // any member may sign
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,23 @@ func resign(t *testing.T, e LogEntry, key *Identity, claimed model.MachineID) Lo
 	}
 	e.Sig = ed25519.Sign(key.sign, msg)
 	return e
+}
+
+// pinnedAt returns a PinStore pinned at e, as a member has after loading a
+// log whose head is e.
+func pinnedAt(t *testing.T, e LogEntry) PinStore {
+	t.Helper()
+	p := MemPins()
+	if err := p.Set(e.Enclave, *mustPin(t, e)); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// nextCommits is head's key commitments plus one for a made-up next epoch
+// key, for entries built by hand past the write-side checks.
+func nextCommits(head LogEntry) []string {
+	return append(append([]string{}, head.KeyCommits...), KeyCommit(head.Enclave, head.Epoch+1, make([]byte, EpochKeySize)))
 }
 
 func mustPin(t *testing.T, e LogEntry) *Pin {
@@ -134,7 +151,9 @@ func TestIdentitySaveLoad(t *testing.T) {
 		}
 	})
 	t.Run("missing", func(t *testing.T) {
-		if _, err := LoadIdentity(t.TempDir()); !errors.Is(err, os.ErrNotExist) {
+		empty := t.TempDir()
+		os.Chmod(empty, 0o700)
+		if _, err := LoadIdentity(empty); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("want not-exist, got %v", err)
 		}
 	})
@@ -191,11 +210,11 @@ func TestEntryCodec(t *testing.T) {
 
 func TestLifecycleVerifies(t *testing.T) {
 	w := newWorld(t)
-	e4, k4, err := w.ring.Rotate(w.head(), w.c, MemPins())
+	e4, k4, err := w.ring.Rotate(w.head(), w.c, pinnedAt(t, w.head()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	e5, k5, err := k4.Remove(e4, hostB, w.a, MemPins())
+	e5, k5, err := k4.Remove(e4, hostB, w.a, pinnedAt(t, e4))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,8 +240,8 @@ func TestLifecycleVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, _ := w.ring.SealFile([]byte("epoch one"))
-	if pt, err := kc.OpenFile(old); err != nil || string(pt) != "epoch one" {
+	old, _ := w.ring.SealFile(tp, []byte("epoch one"))
+	if pt, err := kc.OpenFile(tp, old); err != nil || string(pt) != "epoch one" {
 		t.Fatalf("open old epoch: %q %v", pt, err)
 	}
 	// The recovery identity can open any head.
@@ -248,7 +267,7 @@ func TestForgedEntryRejected(t *testing.T) {
 	addEvil := LogEntry{
 		Enclave: head.Enclave, Seq: head.Seq + 1, Prev: prev, Epoch: head.Epoch, Op: OpAdd,
 		Subject: evil, Members: append(append([]Member{}, head.Members...), w.outsider.Member()),
-		Recovery: head.Recovery, Wrapped: head.Wrapped,
+		Recovery: head.Recovery, Wrapped: head.Wrapped, MinEpoch: head.MinEpoch, KeyCommits: head.KeyCommits,
 	}
 	cases := map[string]LogEntry{
 		// A non-member signs as itself.
@@ -263,7 +282,7 @@ func TestForgedEntryRejected(t *testing.T) {
 	// previous entry, so this fails too.
 	swapped := addEvil
 	swapped.Op, swapped.Subject = OpRotate, ""
-	swapped.Epoch = head.Epoch + 1
+	swapped.Epoch, swapped.KeyCommits = head.Epoch+1, nextCommits(head)
 	swapped.Members = append([]Member{}, head.Members...)
 	fake := w.outsider.Member()
 	fake.Machine = hostA
@@ -288,7 +307,7 @@ func TestForgedEntryRejected(t *testing.T) {
 
 	t.Run("member cannot sign recover", func(t *testing.T) {
 		e := addEvil
-		e.Op, e.Subject, e.Epoch = OpRecover, "", head.Epoch+1
+		e.Op, e.Subject, e.Epoch, e.KeyCommits = OpRecover, "", head.Epoch+1, nextCommits(head)
 		e = resign(t, e, w.a, hostA)
 		if _, err := VerifyLog(append(append([]LogEntry{}, w.log...), e), nil); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("want ErrBadSignature, got %v", err)
@@ -304,7 +323,7 @@ func TestForgedEntryRejected(t *testing.T) {
 	})
 	t.Run("member cannot change the recovery identity", func(t *testing.T) {
 		e := addEvil
-		e.Op, e.Subject, e.Epoch, e.Members = OpRotate, "", head.Epoch+1, head.Members
+		e.Op, e.Subject, e.Epoch, e.Members, e.KeyCommits = OpRotate, "", head.Epoch+1, head.Members, nextCommits(head)
 		e.Recovery = w.outsider.Member()
 		e.Recovery.Machine = RecoveryMachine
 		e = resign(t, e, w.a, hostA)
@@ -313,23 +332,23 @@ func TestForgedEntryRejected(t *testing.T) {
 		}
 	})
 	t.Run("removed member cannot sign", func(t *testing.T) {
-		e4, k4, err := w.ring.Remove(head, hostB, w.a, MemPins())
+		e4, k4, err := w.ring.Remove(head, hostB, w.a, pinnedAt(t, head))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := k4.Rotate(e4, w.b, MemPins()); !errors.Is(err, ErrBadSignature) {
+		if _, _, err := k4.Rotate(e4, w.b, pinnedAt(t, e4)); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("write side: want ErrBadSignature, got %v", err)
 		}
 		p4, _ := Fingerprint(e4)
 		e5 := LogEntry{Enclave: e4.Enclave, Seq: 5, Prev: p4, Epoch: e4.Epoch + 1, Op: OpRotate,
-			Members: e4.Members, Recovery: e4.Recovery, Wrapped: e4.Wrapped}
+			Members: e4.Members, Recovery: e4.Recovery, Wrapped: e4.Wrapped, MinEpoch: e4.MinEpoch, KeyCommits: nextCommits(e4)}
 		e5 = resign(t, e5, w.b, hostB)
 		if _, err := VerifyLog(append(append([]LogEntry{}, w.log...), e4, e5), nil); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("want ErrBadSignature, got %v", err)
 		}
 	})
 	t.Run("write side refuses a non-member", func(t *testing.T) {
-		if _, err := w.ring.Add(head, w.outsider.Member(), w.outsider, MemPins()); !errors.Is(err, ErrBadSignature) {
+		if _, err := w.ring.Add(head, w.outsider.Member(), w.outsider, pinnedAt(t, head)); !errors.Is(err, ErrBadSignature) {
 			t.Fatalf("want ErrBadSignature, got %v", err)
 		}
 		if _, _, err := Recover(head, w.outsider, []Member{w.outsider.Member()}, MemPins()); !errors.Is(err, ErrBadSignature) {
@@ -377,7 +396,7 @@ func TestPinRejectsReplayAndTruncation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		alt, _, err := k.Rotate(w.log[1], w.a, MemPins())
+		alt, _, err := k.Rotate(w.log[1], w.a, pinnedAt(t, w.log[1]))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +431,7 @@ func TestPinRejectsReplayAndTruncation(t *testing.T) {
 		}
 		// A later join on a fork that does not contain the pin fails.
 		k, _ := Open(w.log[1], w.a)
-		alt, _, _ := k.Rotate(w.log[1], w.a, MemPins())
+		alt, _, _ := k.Rotate(w.log[1], w.a, pinnedAt(t, w.log[1]))
 		fork := []LogEntry{w.log[0], w.log[1], alt}
 		afp, _ := Fingerprint(alt)
 		if _, err := Join(fork, afp, pins); !errors.Is(err, ErrBrokenChain) {
@@ -474,13 +493,13 @@ func TestWrongADFails(t *testing.T) {
 		if _, err := other.OpenValue("p", relabeled); !errors.Is(err, ErrAuthFailed) {
 			t.Fatalf("relabeled: %v", err)
 		}
-		blob, _ := k.SealFile([]byte("file"))
-		if _, err := other.OpenFile(blob); !errors.Is(err, ErrNotMember) {
+		blob, _ := k.SealFile(tp, []byte("file"))
+		if _, err := other.OpenFile(tp, blob); !errors.Is(err, ErrNotMember) {
 			t.Fatalf("file other ring: %v", err)
 		}
 	})
 	t.Run("epoch", func(t *testing.T) {
-		_, k2, err := k.Rotate(w.head(), w.a, MemPins())
+		_, k2, err := k.Rotate(w.head(), w.a, pinnedAt(t, w.head()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -496,10 +515,10 @@ func TestWrongADFails(t *testing.T) {
 		if _, err := k2.OpenValue("p", unknown); !errors.Is(err, ErrUnknownEpoch) {
 			t.Fatalf("unknown epoch: %v", err)
 		}
-		blob, _ := k2.SealFile([]byte("file"))
+		blob, _ := k2.SealFile(tp, []byte("file"))
 		h := fileHeader("personal", 2)
 		bad := append(fileHeader("personal", 1), blob[len(h):]...)
-		if _, err := k2.OpenFile(bad); !errors.Is(err, ErrAuthFailed) {
+		if _, err := k2.OpenFile(tp, bad); !errors.Is(err, ErrAuthFailed) {
 			t.Fatalf("file epoch: %v", err)
 		}
 		rtok, _ := k2.SealRegion("l", []byte("b"))
@@ -508,17 +527,17 @@ func TestWrongADFails(t *testing.T) {
 		}
 	})
 	t.Run("tampered ciphertext", func(t *testing.T) {
-		blob, _ := k.SealFile([]byte("file body"))
+		blob, _ := k.SealFile(tp, []byte("file body"))
 		blob[len(blob)-1] ^= 1
-		if _, err := k.OpenFile(blob); !errors.Is(err, ErrAuthFailed) {
+		if _, err := k.OpenFile(tp, blob); !errors.Is(err, ErrAuthFailed) {
 			t.Fatalf("tampered: %v", err)
 		}
 	})
 	t.Run("not sealed", func(t *testing.T) {
-		if _, err := k.OpenFile([]byte("plain")); !errors.Is(err, ErrNotSealed) {
+		if _, err := k.OpenFile(tp, []byte("plain")); !errors.Is(err, ErrNotSealed) {
 			t.Fatal(err)
 		}
-		if _, err := k.OpenFile([]byte(FileMagic + "\x02")); !errors.Is(err, ErrNotSealed) {
+		if _, err := k.OpenFile(tp, []byte(FileMagic+"\x02")); !errors.Is(err, ErrNotSealed) {
 			t.Fatal(err)
 		}
 		if _, err := k.OpenValue("p", "plain"); !errors.Is(err, ErrNotSealed) {
@@ -537,13 +556,13 @@ func TestDeterminism(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, pt := range [][]byte{[]byte("same plaintext"), {}} {
-		f1, _ := w.ring.SealFile(pt)
-		f2, _ := w.ring.SealFile(pt)
-		f3, _ := kb.SealFile(pt) // another member converges on the same blob
+		f1, _ := w.ring.SealFile(tp, pt)
+		f2, _ := w.ring.SealFile(tp, pt)
+		f3, _ := kb.SealFile(tp, pt) // another member converges on the same blob
 		if !bytes.Equal(f1, f2) || !bytes.Equal(f1, f3) {
 			t.Fatal("file sealing is not deterministic")
 		}
-		if got, err := kb.OpenFile(f1); err != nil || !bytes.Equal(got, pt) {
+		if got, err := kb.OpenFile(tp, f1); err != nil || !bytes.Equal(got, pt) {
 			t.Fatalf("open: %q %v", got, err)
 		}
 		v1, _ := w.ring.SealValue("a.b", pt)
@@ -555,9 +574,9 @@ func TestDeterminism(t *testing.T) {
 		}
 	}
 	// An add keeps the epoch, so blobs do not churn.
-	before, _ := w.ring.SealFile([]byte("x"))
+	before, _ := w.ring.SealFile(tp, []byte("x"))
 	kc, _ := Open(w.head(), w.c)
-	after, _ := kc.SealFile([]byte("x"))
+	after, _ := kc.SealFile(tp, []byte("x"))
 	if !bytes.Equal(before, after) {
 		t.Fatal("add changed the sealing key")
 	}
@@ -573,16 +592,16 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldBlob, _ := w.ring.SealFile([]byte("before removal"))
+	oldBlob, _ := w.ring.SealFile(tp, []byte("before removal"))
 
-	e4, k4, err := w.ring.Remove(w.head(), hostB, w.a, MemPins())
+	e4, k4, err := w.ring.Remove(w.head(), hostB, w.a, pinnedAt(t, w.head()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if e4.Epoch != 2 || k4.Current != 2 {
 		t.Fatalf("epoch %d", e4.Epoch)
 	}
-	newBlob, _ := k4.SealFile([]byte("after removal"))
+	newBlob, _ := k4.SealFile(tp, []byte("after removal"))
 	newTok, _ := k4.SealValue("p", []byte("after"))
 	newReg, _ := k4.SealRegion("l", []byte("after"))
 
@@ -594,7 +613,7 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	// hostB's old ring has no key for the new epoch.
-	if _, err := kb.OpenFile(newBlob); !errors.Is(err, ErrUnknownEpoch) {
+	if _, err := kb.OpenFile(tp, newBlob); !errors.Is(err, ErrUnknownEpoch) {
 		t.Fatalf("file: %v", err)
 	}
 	if _, err := kb.OpenValue("p", newTok); !errors.Is(err, ErrUnknownEpoch) {
@@ -604,7 +623,7 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 		t.Fatalf("region: %v", err)
 	}
 	// As designed, it keeps what it had.
-	if pt, err := kb.OpenFile(oldBlob); err != nil || string(pt) != "before removal" {
+	if pt, err := kb.OpenFile(tp, oldBlob); err != nil || string(pt) != "before removal" {
 		t.Fatalf("old data: %v", err)
 	}
 	// Remaining members open both.
@@ -613,7 +632,7 @@ func TestRemovedMemberCannotOpenNewData(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, b := range [][]byte{oldBlob, newBlob} {
-		if _, err := kc.OpenFile(b); err != nil {
+		if _, err := kc.OpenFile(tp, b); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -827,9 +846,13 @@ func TestParseValueToken(t *testing.T) {
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
-// fileSealer is the importer's Sealer contract; *Set must satisfy it.
+// tp is the source path test containers are bound to.
+const tp model.SourcePath = "sealed/personal/x"
+
+// fileSealer is the path-bound whole-file contract *Set offers.
 var _ interface {
-	SealFile(model.EnclaveName, []byte) ([]byte, error)
+	SealFile(model.EnclaveName, model.SourcePath, []byte) ([]byte, error)
+	OpenFile(model.EnclaveName, model.SourcePath, []byte) ([]byte, error)
 } = (*Set)(nil)
 
 func TestSetSealFile(t *testing.T) {
@@ -839,27 +862,27 @@ func TestSetSealFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	set := &Set{Rings: map[model.EnclaveName]*Keyring{"personal": wp.ring, "client": ck}}
-	ct, err := set.SealFile("personal", []byte("canary-body"))
+	ct, err := set.SealFile("personal", tp, []byte("canary-body"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(ct, []byte("canary-body")) || !IsSealedFile(ct) {
 		t.Fatal("not sealed")
 	}
-	if pt, err := set.OpenFile("personal", ct); err != nil || string(pt) != "canary-body" {
+	if pt, err := set.OpenFile("personal", tp, ct); err != nil || string(pt) != "canary-body" {
 		t.Fatalf("open: %q %v", pt, err)
 	}
-	if _, err := set.OpenFile("client", ct); err == nil {
+	if _, err := set.OpenFile("client", tp, ct); err == nil {
 		t.Fatal("opened a personal container as client")
 	}
-	if _, err := set.SealFile("other", []byte("x")); !errors.Is(err, ErrNotMember) {
+	if _, err := set.SealFile("other", tp, []byte("x")); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("seal for unknown enclave: %v", err)
 	}
 	var none *Set
-	if _, err := none.SealFile("personal", []byte("x")); !errors.Is(err, ErrNotMember) {
+	if _, err := none.SealFile("personal", tp, []byte("x")); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("nil set: %v", err)
 	}
-	if _, err := none.OpenFile("personal", ct); !errors.Is(err, ErrNotMember) {
+	if _, err := none.OpenFile("personal", tp, ct); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("nil set open: %v", err)
 	}
 }

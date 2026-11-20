@@ -12,6 +12,7 @@ import (
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
 )
 
@@ -85,13 +86,31 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 	}
 	plain := raw
 	if oldEnc != "" {
-		if plain, err = snap.cr().OpenFile(oldEnc, raw); err != nil {
+		if plain, err = snap.cr().OpenFile(oldEnc, oldSrc, raw); err != nil {
 			return Capture{}, fmt.Errorf("retag %s: open: %w", t, err)
 		}
 	}
+	// Sealed values and regions are bound to the source path: a move
+	// opens them under the old path and seals them under the new one.
+	if spec := rules.SpecOf(entry); newSrc != oldSrc && (len(spec.Seal) > 0 || spec.Regions) {
+		if entry.Template {
+			return Capture{}, fmt.Errorf("retag %s: a template with sealed values or regions cannot move; edit it by hand", t)
+		}
+		from, to := spec, spec
+		from.Source, to.Source = oldSrc, newSrc
+		open, err := e.Rules.ToTarget(plain, nil, from, snap.sealer())
+		if err != nil {
+			return Capture{}, fmt.Errorf("retag %s: open sealed parts: %w", t, err)
+		}
+		moved, vio, err := e.Rules.ToSource(open, nil, to, snap.sealer())
+		if err != nil || len(vio) > 0 {
+			return Capture{}, fmt.Errorf("retag %s: reseal sealed parts: %v %v", t, err, vio)
+		}
+		plain = moved
+	}
 	newRaw := plain
 	if newEnc != "" {
-		if newRaw, err = snap.cr().SealFile(newEnc, plain); err != nil {
+		if newRaw, err = snap.cr().SealFile(newEnc, newSrc, plain); err != nil {
 			return Capture{}, fmt.Errorf("retag %s: seal: %w", t, err)
 		}
 	}

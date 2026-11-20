@@ -37,16 +37,18 @@ type Gate interface {
 	Check(ctx context.Context, staged []Staged, req extexec.Request) (pass []model.Target, holds []model.Hold, verdicts []Verdict)
 }
 
-// NewGate returns the gate for the checks a plan selected. Staged plaintext
-// goes to temp files under the system temp directory; use NewGateIn to pick
-// the directory.
+// NewGate returns the gate for the checks a plan selected, with no staging
+// directory: a check that matches a staged target fails closed. Use
+// NewGateIn with the state directory to run checks.
 func NewGate(checks map[string]manifest.CheckDef, r extexec.Runner, allow AllowList) Gate {
 	return NewGateIn(checks, r, allow, "")
 }
 
 // NewGateIn is NewGate with the directory that holds staged plaintext while
-// a check runs. Each check gets a fresh 0700 subdirectory, removed when the
-// check returns, on every path. An empty dir means os.TempDir().
+// a check runs: the state directory, never a shared temp directory. Each
+// check gets a fresh 0700 subdirectory, removed when the check returns, on
+// every path. An empty dir stages nothing: every check that matches a
+// staged target holds it as check_failed.
 //
 // The gate fails closed:
 //   - a nil AllowList or Runner holds every staged target;
@@ -54,7 +56,8 @@ func NewGate(checks map[string]manifest.CheckDef, r extexec.Runner, allow AllowL
 //   - a check that is not allowed holds its targets as task_untrusted;
 //   - a check that errors, exits non-zero, times out, returns invalid JSON or
 //     ok=false holds its targets as check_failed;
-//   - a failure to write the temp files holds the check's targets.
+//   - a failure to write the temp files, or no staging directory, holds the
+//     check's targets.
 //
 // A target that no check matches passes. One hold is made per failing
 // target; its reason is that of the first failing check in name order, and
@@ -140,6 +143,9 @@ func (g *gate) Check(ctx context.Context, staged []Staged, req extexec.Request) 
 // runCheck writes the matched plaintext to private temp files, runs the
 // check, and removes the files before it returns.
 func (g *gate) runCheck(ctx context.Context, name string, def manifest.CheckDef, matched []Staged, req extexec.Request) (err error) {
+	if g.dir == "" {
+		return errors.New("staging: no state directory to stage plaintext in; refusing the system temp directory")
+	}
 	dir, err := os.MkdirTemp(g.dir, "yadm-check-")
 	if err != nil {
 		return fmt.Errorf("staging: %w", err)

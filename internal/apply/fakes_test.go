@@ -21,6 +21,7 @@ import (
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
+	"github.com/noahkiss/yadm/internal/tasks"
 	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
@@ -90,13 +91,13 @@ func xor(b []byte) []byte {
 }
 
 func (c fakeCrypto) CanOpen(e model.EnclaveName) bool { return c.members[e] }
-func (c fakeCrypto) SealFile(e model.EnclaveName, pt []byte) ([]byte, error) {
+func (c fakeCrypto) SealFile(e model.EnclaveName, _ model.SourcePath, pt []byte) ([]byte, error) {
 	if !c.members[e] {
 		return nil, crypt.ErrNotMember
 	}
 	return append([]byte(crypt.FileMagic+string(e)+"\x00"+string(rune('0'+c.epoch))), xor(pt)...), nil
 }
-func (c fakeCrypto) OpenFile(e model.EnclaveName, ct []byte) ([]byte, error) {
+func (c fakeCrypto) OpenFile(e model.EnclaveName, _ model.SourcePath, ct []byte) ([]byte, error) {
 	if !c.members[e] {
 		return nil, crypt.ErrNotMember
 	}
@@ -307,6 +308,7 @@ func newWorld(t *testing.T, members ...model.EnclaveName) *world {
 		Home:         w.home,
 		User:         "user",
 		StateDir:     w.stateDir,
+		Allow:        tasks.FileAllowList(w.stateDir),
 		Now:          func() time.Time { return w.clock },
 		LoadSnapshot: w.load,
 		Rules:        fakeRules{},
@@ -318,6 +320,17 @@ func newWorld(t *testing.T, members ...model.EnclaveName) *world {
 }
 
 func (w *world) tick(d time.Duration) { w.clock = w.clock.Add(d) }
+
+// allowRoots allows every owned root of a commit on this machine, as the
+// user does with `yadm root allow`.
+func (w *world) allowRoots(rev model.CommitID) {
+	w.t.Helper()
+	for _, r := range w.plans[rev].Roots {
+		if err := w.eng.AllowRoot(context.Background(), rev, r.Path); err != nil {
+			w.t.Fatal(err)
+		}
+	}
+}
 
 // commit records a source commit. files maps source paths to bytes; entries
 // is the manifest. A file's plaintext under sealed/<e>/ is sealed here.
@@ -331,7 +344,7 @@ func (w *world) commit(files map[model.SourcePath]string, entries ...manifest.En
 		b := []byte(s)
 		if enc, _, ok := sealedEnclave(p); ok {
 			var err error
-			if b, err = sealer.SealFile(enc, b); err != nil {
+			if b, err = sealer.SealFile(enc, p, b); err != nil {
 				w.t.Fatal(err)
 			}
 		}

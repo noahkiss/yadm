@@ -23,7 +23,8 @@ func TestResealMovesTokensToTheCurrentEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	head, k1, err := crypt.Create("personal", a, rec.Member(), crypt.MemPins())
+	pins := crypt.MemPins()
+	head, k1, err := crypt.Create("personal", a, rec.Member(), pins)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestResealMovesTokensToTheCurrentEpoch(t *testing.T) {
 	}
 	old := &crypt.Set{Rings: map[model.EnclaveName]*crypt.Keyring{"personal": k1, "client": ck}}
 
-	spec := rules.Spec{Format: manifest.FormatJSONC, Seal: map[string]model.EnclaveName{"sync.token": "personal", "other.token": "client"}, Regions: true}
+	spec := rules.Spec{Source: "files/test", Format: manifest.FormatJSONC, Seal: map[string]model.EnclaveName{"sync.token": "personal", "other.token": "client"}, Regions: true}
 	target := []byte("{\n  // yadm:seal personal hosts\n  // " + canary.String() + "\n  // yadm:end\n  \"sync\": {\"token\": \"v-" + canary.String() + "\"},\n  \"other\": {\"token\": \"client-value\"}\n}\n")
 	src, vio, err := rules.ToSource(target, nil, spec, old)
 	if err != nil || len(vio) > 0 {
@@ -43,7 +44,7 @@ func TestResealMovesTokensToTheCurrentEpoch(t *testing.T) {
 		t.Fatalf("not sealed at epoch 1: %s", src)
 	}
 
-	_, k2, err := k1.Rotate(head, a, crypt.MemPins())
+	_, k2, err := k1.Rotate(head, a, pins)
 	if err != nil {
 		t.Fatal(err)
 	}

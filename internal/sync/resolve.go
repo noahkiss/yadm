@@ -202,7 +202,7 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 		if err != nil || !sealed {
 			return b, err
 		}
-		return r.snap.Crypto.OpenFile(enc, b)
+		return r.snap.Crypto.OpenFile(enc, c.Path, b)
 	}
 	base, err := read(c.Base)
 	if err != nil {
@@ -221,7 +221,7 @@ func (r *resolver) resolve(ctx context.Context, c conflict) (*store.Change, *mod
 			return &store.Change{Path: c.Path, Delete: true}, nil, rung, nil
 		}
 		if sealed {
-			if b, err = r.snap.Crypto.SealFile(enc, b); err != nil {
+			if b, err = r.snap.Crypto.SealFile(enc, c.Path, b); err != nil {
 				return nil, nil, "", fmt.Errorf("resolve %s: seal: %w", c.Path, err)
 			}
 		}

@@ -155,7 +155,8 @@ func (f *Fixture) sealFiles(e model.EnclaveName) error {
 		if err != nil {
 			return err
 		}
-		blob, err := f.Rings[e].SealFile(f.Plaintext(e, b))
+		at := model.SourcePath("sealed/" + string(e) + "/" + filepath.ToSlash(rel))
+		blob, err := f.Rings[e].SealFile(at, f.Plaintext(e, b))
 		if err != nil {
 			return err
 		}
@@ -166,12 +167,19 @@ func (f *Fixture) sealFiles(e model.EnclaveName) error {
 var placeholder = regexp.MustCompile(`@@(SEAL|REGION):([^:@]+):([^@]+)@@`)
 
 // replacePlaceholders swaps @@SEAL:<enclave>:<keypath>@@ for a value token
-// and @@REGION:<enclave>:<label>@@ for a "# yadm:sealed ..." line.
+// and @@REGION:<enclave>:<label>@@ for a "# yadm:sealed ..." line. Each
+// token is bound to the file's source path and the concrete key path or
+// label (crypt.PartName), as package rules binds it.
 func (f *Fixture) replacePlaceholders() error {
 	return filepath.WalkDir(f.Root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
+		rel, err := filepath.Rel(f.Root, p)
+		if err != nil {
+			return err
+		}
+		source := model.SourcePath(filepath.ToSlash(rel))
 		b, err := os.ReadFile(p)
 		if err != nil {
 			return err
@@ -196,9 +204,9 @@ func (f *Fixture) replacePlaceholders() error {
 			}
 			var tok string
 			if kind == "SEAL" {
-				tok, err = ring.SealValue(name, f.Plaintext(e, plain))
+				tok, err = ring.SealValue(crypt.PartName(source, name), f.Plaintext(e, plain))
 			} else {
-				tok, err = ring.SealRegion(name, f.Plaintext(e, plain))
+				tok, err = ring.SealRegion(crypt.PartName(source, name), f.Plaintext(e, plain))
 				tok = "# " + tok
 			}
 			if err != nil {

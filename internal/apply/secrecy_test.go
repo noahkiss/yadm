@@ -131,9 +131,9 @@ func TestSecrecyMemberCaptureSealsBeforeTheStore(t *testing.T) {
 
 	// Merge output is sealed too.
 	snap, _ := w.load(context.Background(), c)
-	ours, _ := w.crypto.SealFile("personal", []byte(canary.String()+"\nours\n"))
-	base, _ := w.crypto.SealFile("personal", []byte(canary.String()+"\n"))
-	theirs, _ := w.crypto.SealFile("personal", []byte(canary.String()+"\ntheirs\n"))
+	ours, _ := w.crypto.SealFile("personal", "", []byte(canary.String()+"\nours\n"))
+	base, _ := w.crypto.SealFile("personal", "", []byte(canary.String()+"\n"))
+	theirs, _ := w.crypto.SealFile("personal", "", []byte(canary.String()+"\ntheirs\n"))
 	for _, b := range [][]byte{ours, base, theirs} {
 		w.st.blobs[blobID(b)] = b
 	}

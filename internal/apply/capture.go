@@ -98,6 +98,10 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	if have && r.Source != ts.Source {
 		return hold(model.HoldUncapturable, fmt.Sprintf("source moved from %s to %s since last apply", ts.Source, r.Source))
 	}
+	if detail, weak := e.weakened(ts, have, r); weak {
+		h := weakHold(st, now, t, scope, ts.ChangedAt, detail)
+		return nil, &h, nil
+	}
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
 		return hold(model.HoldSealGuard, "not a member of "+string(enc)+"; cannot seal")
 	}
@@ -131,12 +135,13 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	enc := r.Entry.Enclave
 	prevPlain := prevRaw
 	if enc != "" {
-		if prevPlain, err = snap.cr().OpenFile(enc, prevRaw); err != nil {
+		// The previous source is only compared against, never delivered.
+		if prevPlain, err = snap.history().cr().OpenFile(enc, r.Source, prevRaw); err != nil {
 			return hold(model.HoldUncapturable, "cannot open the stored source: "+err.Error())
 		}
 	}
 
-	spec := rules.SpecOf(r.Entry)
+	spec := rules.SpecFor(r)
 	var newPlain []byte
 	failReason := model.HoldUncapturable
 	switch {
@@ -192,7 +197,7 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 
 	newRaw := newPlain
 	if enc != "" {
-		if newRaw, err = snap.cr().SealFile(enc, newPlain); err != nil {
+		if newRaw, err = snap.cr().SealFile(enc, r.Source, newPlain); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -303,13 +308,16 @@ func (e *Engine) prevSource(ctx context.Context, snap *Snapshot, ts TargetState,
 }
 
 // captureNew captures a new file inside an owned root into files/<target>,
-// or sealed/<enclave>/<target> for an enclave root.
+// or sealed/<enclave>/<target> for an enclave root. Only roots this machine
+// accepted (st.Roots) count, never the manifest's own list: a pusher who
+// adds a root or strips its enclave changes nothing here until the user
+// allows it. A file that predates its root (st.Baseline) is never captured.
 func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Drift) (*store.Change, *model.Hold, error) {
 	now := e.Now()
-	root, ok := rootOf(snap.Plan, d.Target)
-	if !ok {
-		root, ok = rootOf(&manifest.Plan{Roots: st.Roots}, d.Target)
+	if inBaseline(st, d.Target) {
+		return nil, nil, nil
 	}
+	root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, d.Target)
 	if !ok {
 		return nil, nil, nil
 	}
@@ -333,11 +341,12 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 		h := fileHold(st, now, d.Target, scope, model.HoldSealGuard, d.Since, "new file in an enclave root, and this machine is not a member")
 		return nil, &h, nil
 	}
-	blob, err := snap.cr().SealFile(root.Enclave, lv.bytes)
+	p := model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target))
+	blob, err := snap.cr().SealFile(root.Enclave, p, lv.bytes)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &store.Change{Path: model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target)), Blob: blob, Mode: mode}, nil, nil
+	return &store.Change{Path: p, Blob: blob, Mode: mode}, nil, nil
 }
 
 func rootOf(p *manifest.Plan, t model.Target) (manifest.Root, bool) {
@@ -398,14 +407,14 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		if !inPlan {
 			// Left the plan: taking the source means removing the target.
 			if lv.exists && lv.info.Mode().IsRegular() {
-				if err := e.backup(now, t, lv.bytes); err != nil {
+				if err := e.backup(now, t, st.Targets[t].prot(), lv.bytes); err != nil {
 					return Result{}, err
 				}
 				if err := os.Remove(abs); err != nil {
 					return Result{}, err
 				}
 			}
-			delete(st.Targets, t)
+			forget(st, t, now)
 			clearFileHolds(st, t)
 			return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActDelete, Scope: h.Scope, Reason: "hold resolved: take source"}}}, e.State.Save(st)
 		}
@@ -415,11 +424,18 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		if lv.exists && !lv.info.Mode().IsRegular() {
 			return Result{}, fmt.Errorf("%s: not a regular file; remove it first", t)
 		}
+		ts, have := st.Targets[t]
+		if detail, weak := e.weakened(ts, have, r); weak {
+			return Result{}, fmt.Errorf("%s: %s", t, detail)
+		}
+		if detail, wide := widenedMode(snap, r); wide {
+			return Result{}, fmt.Errorf("%s: %s", t, detail)
+		}
 		var lb []byte
 		if lv.exists {
 			lb = lv.bytes
 		}
-		d, err := e.produce(ctx, snap, r, lb)
+		d, err := e.produce(ctx, snap, r, lb, ts.SourceBlob)
 		if err != nil {
 			return Result{}, err
 		}
@@ -444,7 +460,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 				return Result{}, fmt.Errorf("%s: not a regular file; remove it first", t)
 			}
 			mode = lv.info.Mode().Perm()
-			if err := e.backup(now, t, lv.bytes); err != nil {
+			if err := e.backup(now, t, e.backupProt(snap, st, t), lv.bytes); err != nil {
 				return Result{}, err
 			}
 		} else if r, ok := snap.Plan.Targets[t]; ok {
@@ -459,7 +475,10 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 	ts := st.Targets[t]
 	if _, inPlan := snap.Plan.Targets[t]; !inPlan {
 		// A modified orphan: keep the file as it is and stop managing it.
+		// It goes into the baseline, so an owned root over it never
+		// captures it automatically.
 		delete(st.Targets, t)
+		st.Baseline[t] = now
 		clearFileHolds(st, t)
 		return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActSkip, Scope: h.Scope, Reason: "hold resolved: take target; no longer managed"}}}, e.State.Save(st)
 	}
