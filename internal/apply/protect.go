@@ -27,21 +27,46 @@ const (
 	// regions turned off. The name is the target; the hash covers the
 	// target and its new protection.
 	KindProtection extexec.Kind = "protection"
+	// KindMode allows a wider mode on a target with enclave plaintext than
+	// the one recorded at its last apply. `yadm protection allow` records
+	// it with KindProtection. The hash covers the target and the new mode.
+	KindMode extexec.Kind = "protection_mode"
 	// KindRoot allows an owned root that is new or changed its enclave. The
 	// name is the root path; the hash covers the path and the enclave.
 	KindRoot extexec.Kind = "root"
 )
 
 // protection is what keeps a target's plaintext out of the repository: the
-// whole-file enclave, the sealed keys with their enclaves, and regions.
+// whole-file enclave, the sealed keys with their enclaves, and regions. It
+// also covers what keeps machine-local keys on this machine: keep (the keys
+// the repo owns; the others belong to the app), drop and volatile.
 type protection struct {
-	Enclave model.EnclaveName            `json:"enclave,omitempty"`
-	Seal    map[string]model.EnclaveName `json:"seal,omitempty"`
-	Regions bool                         `json:"regions,omitempty"`
+	Enclave  model.EnclaveName            `json:"enclave,omitempty"`
+	Seal     map[string]model.EnclaveName `json:"seal,omitempty"`
+	Regions  bool                         `json:"regions,omitempty"`
+	Keep     []string                     `json:"keep,omitempty"`
+	Drop     []string                     `json:"drop,omitempty"`
+	Volatile []string                     `json:"volatile,omitempty"`
+}
+
+// sortedKeys returns a sorted copy of ks, or nil when it is empty.
+func sortedKeys(ks []string) []string {
+	if len(ks) == 0 {
+		return nil
+	}
+	out := append([]string(nil), ks...)
+	sort.Strings(out)
+	return out
+}
+
+// hasLocalKeys reports whether an entry keeps any keys on this machine.
+func hasLocalKeys(en manifest.Entry) bool {
+	return len(en.Keep) > 0 || len(en.Drop) > 0 || len(en.Volatile) > 0
 }
 
 func protOf(en manifest.Entry) protection {
-	p := protection{Enclave: en.Enclave, Regions: en.Regions}
+	p := protection{Enclave: en.Enclave, Regions: en.Regions,
+		Keep: sortedKeys(en.Keep), Drop: sortedKeys(en.Drop), Volatile: sortedKeys(en.Volatile)}
 	if len(en.Seal) > 0 {
 		p.Seal = make(map[string]model.EnclaveName, len(en.Seal))
 		for k, v := range en.Seal {
@@ -55,7 +80,8 @@ func protOf(en manifest.Entry) protection {
 // protection fields existed has only SealSet: its keys must stay sealed (to
 // any enclave) and "regions" means regions.
 func (ts TargetState) prot() protection {
-	p := protection{Enclave: ts.Enclave, Regions: ts.Regions, Seal: ts.Seal}
+	p := protection{Enclave: ts.Enclave, Regions: ts.Regions, Seal: ts.Seal,
+		Keep: sortedKeys(ts.Keep), Drop: sortedKeys(ts.Drop), Volatile: sortedKeys(ts.Volatile)}
 	if p.Seal == nil && len(ts.SealSet) > 0 {
 		p.Seal = map[string]model.EnclaveName{}
 		for _, k := range ts.SealSet {
@@ -97,7 +123,38 @@ func weakerBy(old, next protection) []string {
 	if old.Regions && !next.Regions {
 		why = append(why, "regions were turned off")
 	}
+	// keep lists the keys the repo owns: an empty list owns every key, so
+	// removing it, or adding a key to it, makes local keys shared.
+	if len(old.Keep) > 0 {
+		if len(next.Keep) == 0 {
+			why = append(why, "keep was removed")
+		} else if added := missing(next.Keep, old.Keep); len(added) > 0 {
+			why = append(why, "keep gained "+strings.Join(added, ", "))
+		}
+	}
+	// drop and volatile list keys that stay local: removing one shares it.
+	if lost := missing(old.Drop, next.Drop); len(lost) > 0 {
+		why = append(why, "drop lost "+strings.Join(lost, ", "))
+	}
+	if lost := missing(old.Volatile, next.Volatile); len(lost) > 0 {
+		why = append(why, "volatile lost "+strings.Join(lost, ", "))
+	}
 	return why
+}
+
+// missing lists the keys of a that b does not have, in a's order.
+func missing(a, b []string) []string {
+	have := make(map[string]bool, len(b))
+	for _, k := range b {
+		have[k] = true
+	}
+	var out []string
+	for _, k := range a {
+		if !have[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // backupProt is the protection a backup of t follows: the recorded one
@@ -163,7 +220,7 @@ func (e *Engine) weakened(ts TargetState, have bool, r manifest.Resolved) (strin
 // weakHold is the seal_guard hold for a weakened protection.
 func weakHold(st *State, now time.Time, t model.Target, scope model.Scope, since time.Time, detail string) model.Hold {
 	h := fileHold(st, now, t, scope, model.HoldSealGuard, since, detail)
-	h.Next = append([]string{"yadm protection allow " + string(t)}, h.Next...)
+	h.Next = append([]string{"yadm protection allow " + model.ShellQuote(string(t))}, h.Next...)
 	return h
 }
 
@@ -182,6 +239,12 @@ func (e *Engine) AllowProtection(ctx context.Context, rev model.CommitID, t mode
 	r, ok := snap.Plan.Targets[t]
 	if !ok {
 		return fmt.Errorf("allow: %s is not in the plan at %s", t, rev)
+	}
+	if hasPlaintext(r.Entry) {
+		// The mode the entry now asks for, in case it widens the recorded one.
+		if err := a.Allow(KindMode, string(t), modeHash(t, modeOf(snap, r))); err != nil {
+			return err
+		}
 	}
 	return a.Allow(KindProtection, string(t), protectionHash(t, protOf(r.Entry)))
 }
@@ -268,7 +331,7 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 				scope = model.Scope(r.Enclave)
 			}
 			h := model.KeepSince(st.Holds, model.Hold{Target: r.Path, Scope: scope, Reason: model.HoldRootUntrusted, Detail: detail}, now)
-			h.Next = []string{"yadm root allow " + string(r.Path)}
+			h.Next = []string{"yadm root allow " + model.ShellQuote(string(r.Path))}
 			holds = append(holds, h)
 			continue
 		}
@@ -291,7 +354,7 @@ func (e *Engine) acceptRoots(ctx context.Context, snap *Snapshot, st *State, now
 		roots = append(roots, o)
 		h := model.KeepSince(st.Holds, model.Hold{Target: o.Path, Scope: model.Scope(o.Enclave), Reason: model.HoldRootUntrusted,
 			Detail: "enclave owned root left the manifest; it stays until its removal is allowed on this machine"}, now)
-		h.Next = []string{"yadm root allow " + string(o.Path)}
+		h.Next = []string{"yadm root allow " + model.ShellQuote(string(o.Path))}
 		holds = append(holds, h)
 	}
 	st.Roots = roots
@@ -367,7 +430,7 @@ func (e *Engine) baseline(ctx context.Context, st *State, root manifest.Root) bo
 func forget(st *State, t model.Target, now time.Time) {
 	ts, ok := st.Targets[t]
 	delete(st.Targets, t)
-	if p := ts.prot(); ok && (p.Enclave != "" || len(p.Seal) > 0 || p.Regions) {
+	if p := ts.prot(); ok && (p.Enclave != "" || len(p.Seal) > 0 || p.Regions || len(p.Keep) > 0 || len(p.Drop) > 0 || len(p.Volatile) > 0) {
 		st.Baseline[t] = now
 	}
 }

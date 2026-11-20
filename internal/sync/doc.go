@@ -35,6 +35,9 @@
 //     published facts, alerts and the pinned key-log head of each enclave.
 //  8. Push main, the status ref and advanced reviewed refs atomically. On
 //     rejection go back to 4, up to MaxRetries with backoff. Never force.
+//     A fetched reviewed ref moves the local one only when it skips no
+//     commit of its scope; otherwise it is refused with an alert
+//     (AlertReviewedSkip). SeedReviewed seeds empty local refs at init.
 //
 // A quick sync (Options.Quick) first stats the targets and lists the remote
 // heads with `git ls-remote`; it stops there unless the remote moved, a
@@ -71,6 +74,7 @@
 //	type ReviewItem struct{ Commit store.Commit; Scope model.Scope; Diff string }
 //	func Unreviewed(ctx, st store.Store, keys *crypt.Set, scope model.Scope) ([]ReviewItem, error)
 //	func Ack(ctx, st store.Store, scope model.Scope, upTo model.CommitID) error
+//	func SeedReviewed(ctx, st store.Store) error; const AlertReviewedSkip
 //	const RefReviewNotes = "refs/yadm/notes/review"; const NoteSchema = 1; var ErrNoteNeedsSeal
 //	type NoteOptions struct{ Commit; Why; PathsOnly; Seal; Machine; Now }
 //	type Note struct{ Commit; Machine; Time; Why; PathsOnly; Sealed; Enclave; Opened }; func (Note) Text() string

@@ -2,6 +2,7 @@ package rules
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -37,12 +38,24 @@ type tbuild struct {
 	headers []*node // in document order, with start = section start
 }
 
+// tomlError reports where a TOML document fails to parse, never what it
+// says there: the parser's own text quotes keys and values, and the error
+// can reach a hold detail.
+func tomlError(err error) error {
+	var de *toml.DecodeError
+	if errors.As(err, &de) {
+		row, col := de.Position()
+		return fmt.Errorf("toml: the document does not parse at line %d, column %d", row, col)
+	}
+	return errors.New("toml: the document does not parse")
+}
+
 func (tomlFormat) parse(b []byte) (*node, error) {
 	// Decoding with go-toml catches semantic errors (redefinitions) that the
 	// unstable parser leaves to its caller.
 	var v map[string]any
 	if err := toml.Unmarshal(b, &v); err != nil {
-		return nil, fmt.Errorf("toml: %w", err)
+		return nil, tomlError(err)
 	}
 	p := &unstable.Parser{KeepComments: true}
 	p.Reset(b)
@@ -77,7 +90,7 @@ func (tomlFormat) parse(b []byte) (*node, error) {
 		}
 	}
 	if err := p.Error(); err != nil {
-		return nil, fmt.Errorf("toml: %w", err)
+		return nil, tomlError(err)
 	}
 	for i, h := range tb.headers {
 		end := len(b)
@@ -134,7 +147,7 @@ func (tb *tbuild) header(keys []string, array bool) (*node, error) {
 			n.add(arr)
 		}
 		if arr.role != tArrayTables {
-			return nil, fmt.Errorf("toml: %s is not an array of tables", strings.Join(keys, "."))
+			return nil, errors.New("toml: a table header redefines a key that is not an array of tables")
 		}
 		el := newNode(strconv.Itoa(len(arr.children)), kObject)
 		el.role = tHeader

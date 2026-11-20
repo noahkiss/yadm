@@ -208,6 +208,10 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	defer repo.Close()
+	// A new machine trusts the fleet's review of the history it joins.
+	if err := sync.SeedReviewed(ctx, repo); err != nil {
+		return result{}, err
+	}
 	head, err := repo.ResolveRef(ctx, store.RefMain)
 	if err != nil {
 		return result{}, err
@@ -276,7 +280,7 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 		next = append(next, fmt.Sprintf("add [machines.%s] with name = %q, types, os and arch to %s, then commit it", d.Machine, name, fleet.FileName))
 	}
 	if fl != nil && len(fl.Enclaves()) > 0 {
-		next = append(next, fmt.Sprintf("on a member machine: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s", d.Machine, d.Recipient, d.SignKey),
+		next = append(next, fmt.Sprintf("on a member machine: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s", model.ShellQuote(string(d.Machine)), model.ShellQuote(d.Recipient), model.ShellQuote(d.SignKey)),
 			"then here: yadm enclave join <enclave> --expect <fingerprint>")
 	}
 	next = append(next, "yadm adopt --dry-run", "yadm apply")
@@ -944,7 +948,11 @@ func (a *app) cmdCollect(cmd *cobra.Command, args []string) (result, error) {
 	}
 	var next []string
 	if len(skipped) > 0 {
-		next = []string{"yadm task allow " + strings.Join(skipped, " ")}
+		q := make([]string, len(skipped))
+		for i, s := range skipped {
+			q[i] = model.ShellQuote(s)
+		}
+		next = []string{"yadm task allow " + strings.Join(q, " ")}
 	}
 	return result{data: map[string]any{"observed": obs, "skipped": skipped}, next: next}, nil
 }

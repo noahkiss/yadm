@@ -47,7 +47,7 @@ func TestExpandRootsLeavesNamedFilesAlone(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			man := &manifest.Manifest{Schema: 1, Entries: c.entries, Roots: []manifest.Root{plain, sealed}, Tasks: c.tasks}
 			plan := &manifest.Plan{Targets: map[model.Target]manifest.Resolved{}, Roots: []manifest.Root{plain, sealed}}
-			ExpandRoots(man, plan, []model.SourcePath{c.file})
+			ExpandRoots(man, plan, []model.SourcePath{c.file}, nil)
 			if c.want == "" {
 				if len(plan.Targets) != 0 {
 					t.Fatalf("added %v", plan.Targets)

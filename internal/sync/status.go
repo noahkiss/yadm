@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -178,9 +179,12 @@ const remoteYadmPrefix = "refs/remotes/origin/yadm/"
 // remoteReviewed is the fetched copy of a reviewed ref.
 func remoteReviewed(s model.Scope) string { return remoteYadmPrefix + "reviewed/" + string(s) }
 
-// reviewedSpecs fast-forwards local reviewed refs the remote advanced, and
-// returns refspecs for the ones this machine advanced. Diverged refs are
-// left for the next ack.
+// reviewedSpecs returns refspecs for the reviewed refs this machine
+// advanced. A remote advance moves the local ref only when it skips no
+// commit of the scope: another machine's ack never hides a commit from this
+// machine's review queue. A remote advance that skips commits is refused
+// and alerted once; with no local ref, every commit of the scope counts.
+// Diverged refs are left for the next ack.
 func (s *Syncer) reviewedSpecs(ctx context.Context) ([]string, error) {
 	scopes, err := reviewScopes(ctx, s.Store)
 	if err != nil {
@@ -201,6 +205,16 @@ func (s *Syncer) reviewedSpecs(ctx context.Context) ([]string, error) {
 		case local == remote:
 			continue
 		case local == "":
+			n, err := skippedInScope(ctx, s.Store, sc, "", remote)
+			if err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				if err := s.alertReviewedSkip(ctx, sc, remote, n); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if err := s.Store.UpdateRef(ctx, ref, remote, ""); err != nil {
 				return nil, err
 			}
@@ -212,6 +226,16 @@ func (s *Syncer) reviewedSpecs(ctx context.Context) ([]string, error) {
 		if ok, err := s.Store.IsAncestor(ctx, local, remote); err != nil {
 			return nil, err
 		} else if ok {
+			n, err := skippedInScope(ctx, s.Store, sc, local, remote)
+			if err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				if err := s.alertReviewedSkip(ctx, sc, remote, n); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if err := s.Store.UpdateRef(ctx, ref, remote, local); err != nil {
 				return nil, err
 			}
@@ -224,6 +248,24 @@ func (s *Syncer) reviewedSpecs(ctx context.Context) ([]string, error) {
 		}
 	}
 	return specs, nil
+}
+
+// AlertReviewedSkip is the alert kind for a fetched reviewed ref that would
+// skip unreviewed commits of a scope here.
+const AlertReviewedSkip = "reviewed_ref_refused"
+
+// alertReviewedSkip records and sends, once per scope and remote commit,
+// that a fetched reviewed ref was not taken.
+func (s *Syncer) alertReviewedSkip(ctx context.Context, sc model.Scope, remote model.CommitID, n int) error {
+	detail := fmt.Sprintf("the fetched reviewed ref of %s skips %d commit(s) of the scope that this machine has not reviewed; it was not taken (yadm review list %s)", sc, n, model.ShellQuote(string(sc)))
+	for _, a := range s.loadAlerts() {
+		if a.Kind == AlertReviewedSkip && a.Commit == remote && a.Detail == detail {
+			return nil
+		}
+	}
+	a := model.Alert{Kind: AlertReviewedSkip, Commit: remote, Detail: detail, At: s.now()}
+	s.notify(ctx, a)
+	return s.recordAlerts([]model.Alert{a})
 }
 
 // enclavesAt lists the enclaves of the fleet file at rev.

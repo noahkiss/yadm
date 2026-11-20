@@ -42,7 +42,7 @@ func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, sel
 	var holds []model.Hold
 	hold := func(t model.Target, scope model.Scope, detail string) {
 		holds = append(holds, targetHold(st, now, t, scope, model.HoldProtected, sinceOf(st, t, now), detail,
-			"yadm commit "+string(t)))
+			"yadm commit "+model.ShellQuote(string(t))))
 	}
 
 	perScope := map[model.Scope]int{}

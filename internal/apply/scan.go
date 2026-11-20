@@ -160,6 +160,11 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 		d.Kind, d.Detail = DriftUnreadable, "scan budget exhausted"
 		return d, true, nil
 	}
+	if err := InsideHome(e.Home, abs); err != nil {
+		// Never read through a link that leaves $HOME; capture holds it.
+		d.Kind, d.Detail = DriftModified, err.Error()
+		return d, true, nil
+	}
 	b, err := bounded(ctx, min(e.StatTimeout, left), func() ([]byte, error) { return e.fs.ReadFile(abs) })
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -273,6 +278,15 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	for t := range st.Ignored {
 		ignored[t] = true
 	}
+	// A baseline walk resolves a root that is itself a symlink to a
+	// directory: the files behind it are on disk when the root is accepted,
+	// and a later adopt copies them into a real directory there.
+	start := abs
+	if all {
+		if li, err := e.fs.Lstat(abs); err == nil && li.Mode()&fs.ModeSymlink != 0 {
+			start = abs + string(filepath.Separator)
+		}
+	}
 	var (
 		mu    sync.Mutex
 		found []Drift
@@ -281,7 +295,7 @@ func (e *Engine) walkRoot(ctx context.Context, st *State, root manifest.Root, li
 	)
 	go func() {
 		defer close(done)
-		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 			select {
 			case <-stop:
 				return filepath.SkipAll

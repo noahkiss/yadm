@@ -238,6 +238,9 @@ func policy(s *apply.Snapshot) sync.Policy {
 			p.Quiet = q
 		}
 		p.Protected = append(p.Protected, s.Manifest.Protected...)
+		// A named-conditions include decides which machines get which
+		// entries, as manifest.toml does: it never auto-commits.
+		p.Protected = append(p.Protected, s.Manifest.Includes()...)
 	}
 	if s != nil && s.Plan != nil {
 		plan := s.Plan
@@ -396,6 +399,12 @@ func target(home, p string) (model.Target, error) {
 	if p == "." || strings.HasPrefix(p, "../") || p == ".." {
 		return "", usagef("%q is not under $HOME", p)
 	}
+	if model.HasControl(p) {
+		return "", usagef("%q: the path holds a control character", p)
+	}
+	if err := apply.InsideHome(home, filepath.Join(home, filepath.FromSlash(p))); err != nil {
+		return "", usagef("%q is not under $HOME: %v", p, err)
+	}
 	return model.Target(p), nil
 }
 
@@ -421,7 +430,7 @@ func withHoldNext(hs []model.Hold) []model.Hold {
 		if len(h.Next) == 0 {
 			h.Next = []string{"yadm hold show " + h.ID}
 			if h.Task != "" {
-				h.Next = append(h.Next, "yadm task allow "+h.Task)
+				h.Next = append(h.Next, "yadm task allow "+model.ShellQuote(h.Task))
 			} else {
 				h.Next = append(h.Next, "yadm hold resolve "+h.ID+" --take source", "yadm hold resolve "+h.ID+" --take target")
 			}

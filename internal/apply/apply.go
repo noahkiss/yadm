@@ -43,10 +43,20 @@ type TargetState struct {
 	// The protection recorded at last apply: whole-file enclave, sealed keys
 	// with their enclaves, regions. Apply and capture hold the target when
 	// the manifest weakens it, until the change is allowed locally.
-	Enclave    model.EnclaveName            `json:"enclave,omitempty"`
-	Seal       map[string]model.EnclaveName `json:"seal,omitempty"`
-	Regions    bool                         `json:"regions,omitempty"`
-	RenderHash string                       `json:"render_hash,omitempty"` // templates: hex SHA-256 of the last rendered bytes; the bytes are recomputed, never stored
+	Enclave model.EnclaveName            `json:"enclave,omitempty"`
+	Seal    map[string]model.EnclaveName `json:"seal,omitempty"`
+	Regions bool                         `json:"regions,omitempty"`
+	// The machine-local key paths recorded at last apply: keep (the keys
+	// the repo owns), drop and volatile. A manifest that removes or widens
+	// them would make capture commit keys that stayed on this machine.
+	Keep     []string `json:"keep,omitempty"`
+	Drop     []string `json:"drop,omitempty"`
+	Volatile []string `json:"volatile,omitempty"`
+	// ExplicitMode is the entry's explicit `mode` at last apply, 0 when the
+	// mode followed the source. A manifest may not widen it on a file with
+	// enclave plaintext without a local allow.
+	ExplicitMode uint32 `json:"explicit_mode,omitempty"`
+	RenderHash   string `json:"render_hash,omitempty"` // templates: hex SHA-256 of the last rendered bytes; the bytes are recomputed, never stored
 	// ApplyKey fingerprints what apply computed the target from, besides
 	// the source blob: the resolved entry and, for a template, the render
 	// inputs. Apply skips an unchanged target only while it matches.

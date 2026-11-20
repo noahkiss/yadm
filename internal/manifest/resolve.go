@@ -327,12 +327,12 @@ func (m *Manifest) Outputs() []string {
 }
 
 // Protected reports whether a target never auto-commits on its own: it
-// matches BuiltinProtected or a manifest `protected` glob, or its entry has
-// `review = true`. BuiltinProtected names source-root files, which are never
+// matches BuiltinProtected or a manifest `protected` glob, its entry has
+// `review = true`, or its source is a `conditions.include` file. BuiltinProtected names source-root files, which are never
 // targets; Protected matches them literally so a target of the same name is
 // protected too.
 func (p *Plan) Protected(t model.Target) bool {
-	if r, ok := p.Targets[t]; ok && r.Entry.Review {
+	if r, ok := p.Targets[t]; ok && (r.Entry.Review || p.m != nil && slices.Contains(p.m.named.includes, string(r.Source))) {
 		return true
 	}
 	for _, g := range BuiltinProtected {

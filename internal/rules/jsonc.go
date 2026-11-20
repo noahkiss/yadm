@@ -25,7 +25,7 @@ func (jsonFormat) parse(b []byte) (*node, error) {
 		return nil, err
 	}
 	if j = langJSON.skipGap(b, j); j != len(b) {
-		return nil, fmt.Errorf("json: unexpected %q at byte %d", b[j], j)
+		return nil, fmt.Errorf("json: unexpected data after the document at byte %d", j)
 	}
 	// The root node is the document value.
 	n.parent = nil
@@ -85,7 +85,7 @@ func (p *jparser) value(i int, _ *node) (*node, int, error) {
 				}
 				j = langJSON.skipGap(b, j+1)
 				if n.child(key) != nil {
-					return nil, mstart, fmt.Errorf("json: duplicate key %q at byte %d", key, mstart)
+					return nil, mstart, fmt.Errorf("json: duplicate key at byte %d", mstart)
 				}
 			} else {
 				key = strconv.Itoa(idx)

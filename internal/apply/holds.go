@@ -13,10 +13,11 @@ import (
 // apply, adopt or capture of a target clears them; other reasons belong to
 // sync, the gate and tasks and are left alone.
 var fileHoldReasons = map[model.HoldReason]bool{
-	model.HoldDrifted:      true,
-	model.HoldUncapturable: true,
-	model.HoldSealGuard:    true,
-	model.HoldRenderedEdit: true,
+	model.HoldDrifted:       true,
+	model.HoldUncapturable:  true,
+	model.HoldSealGuard:     true,
+	model.HoldRenderedEdit:  true,
+	model.HoldNeedsDecision: true,
 }
 
 // HoldID returns the stable id of a hold. It is model.HoldID, kept here for
@@ -45,6 +46,19 @@ func fileHold(st *State, now time.Time, t model.Target, scope model.Scope, reaso
 	h := model.KeepSince(st.Holds, model.Hold{Target: t, Scope: scope, Reason: reason, Since: since}, now)
 	h.Detail = fmt.Sprintf("%s; since %s (%s ago)", detail, h.Since.UTC().Format(time.RFC3339), age(now, h.Since))
 	h.Next = []string{"yadm hold show " + h.ID, "yadm hold resolve " + h.ID + " --take target", "yadm hold resolve " + h.ID + " --take source"}
+	return h
+}
+
+// badNameDetail is the detail of a hold on a target whose name holds a
+// control character. Such a file is never written, captured or resolved:
+// its name cannot be shown or passed to a command safely.
+const badNameDetail = "the file name holds a control character; it is never written or captured"
+
+// badNameHold holds a target whose name holds a control character. Its
+// only suggested command shows it; rename or remove the file to clear it.
+func badNameHold(st *State, now time.Time, t model.Target, scope model.Scope, since time.Time) model.Hold {
+	h := fileHold(st, now, t, scope, model.HoldUncapturable, since, badNameDetail)
+	h.Next = []string{"yadm hold show " + h.ID}
 	return h
 }
 

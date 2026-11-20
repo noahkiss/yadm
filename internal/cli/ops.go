@@ -359,7 +359,7 @@ func (a *app) cmdHoldIgnore(cmd *cobra.Command, args []string) (result, error) {
 		return lockedResult(err), err
 	}
 	return result{data: map[string]any{"ignored": h.Target, "hold": h.ID},
-		next: []string{"yadm commit " + string(h.Target)},
+		next: []string{"yadm commit " + model.ShellQuote(string(h.Target))},
 		text: "ignored " + string(h.Target) + " on this machine; `yadm commit " + string(h.Target) + "` tracks it again"}, nil
 }
 
@@ -367,7 +367,7 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	ctx := cmd.Context()
 	take, _ := cmd.Flags().GetString("take")
 	if take == "" {
-		return result{next: []string{"yadm hold resolve " + args[0] + " --take source", "yadm hold resolve " + args[0] + " --take target"}},
+		return result{next: []string{"yadm hold resolve " + model.ShellQuote(args[0]) + " --take source", "yadm hold resolve " + model.ShellQuote(args[0]) + " --take target"}},
 			usagef("--take source|target|<file> is required")
 	}
 	m, err := open(ctx)
@@ -406,7 +406,7 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 		Message: "resolve " + string(h.Target) + " (" + string(h.Reason) + ")",
 	})
 	if err != nil {
-		return result{data: data, next: []string{"yadm commit " + string(h.Target)}}, err
+		return result{data: data, next: []string{"yadm commit " + model.ShellQuote(string(h.Target))}}, err
 	}
 	rep = reportData(rep)
 	data["commits"] = rep.Committed
@@ -424,6 +424,9 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 // and rewrites the target from the source; the replaced bytes are backed up.
 func (a *app) resolveConflict(ctx context.Context, m *machineEnv, h model.Hold, take string) (result, error) {
 	abs := filepath.Join(m.home, filepath.FromSlash(string(h.Target)))
+	if err := apply.InsideHome(m.home, abs); err != nil {
+		return result{}, fmt.Errorf("%s: %w", h.Target, err)
+	}
 	data := map[string]any{"resolved": h.ID}
 	switch take {
 	case "source":
@@ -694,7 +697,7 @@ func (a *app) cmdTaskList(cmd *cobra.Command, args []string) (result, error) {
 	for _, d := range defs {
 		fmt.Fprintf(&b, "%-10s %-20s allowed=%v applies=%v\n", d.Kind, d.Name, d.Allowed, d.Applies)
 		if !d.Allowed {
-			next = append(next, "yadm task allow "+d.Name)
+			next = append(next, "yadm task allow "+model.ShellQuote(d.Name))
 		}
 	}
 	return result{data: map[string]any{"definitions": defs}, text: b.String(), next: next}, nil
@@ -724,7 +727,7 @@ func (a *app) cmdTaskRun(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	if !m.allow.Allowed(extexec.KindTask, args[0], h) {
-		return result{next: []string{"yadm task allow " + args[0]}}, fmt.Errorf("%w: task %s is not allowed on this machine", ErrRefused, args[0])
+		return result{next: []string{"yadm task allow " + model.ShellQuote(args[0])}}, fmt.Errorf("%w: task %s is not allowed on this machine", ErrRefused, args[0])
 	}
 	runner := &tasks.Runner{Exec: m.exec, Allow: m.allow}
 	req := m.request(extexec.KindTask, args[0], a.json)
@@ -846,7 +849,7 @@ func (a *app) cmdReviewNote(cmd *cobra.Command, args []string) (result, error) {
 		return nil
 	})
 	if errors.Is(err, sync.ErrNoteNeedsSeal) {
-		return result{next: []string{"yadm review note " + args[0] + " --paths-only"}}, fmt.Errorf("%w: %v", ErrRefused, err)
+		return result{next: []string{"yadm review note " + model.ShellQuote(args[0]) + " --paths-only"}}, fmt.Errorf("%w: %v", ErrRefused, err)
 	}
 	if err != nil {
 		return result{}, err

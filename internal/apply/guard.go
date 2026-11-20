@@ -67,7 +67,7 @@ func (g *Guard) Weakened(from, to *Snapshot) []string {
 		if len(w) == 0 || g.allowed(KindProtection, string(t), protectionHash(t, next)) {
 			continue
 		}
-		why = append(why, fmt.Sprintf("%s: %s (yadm protection allow %s)", t, strings.Join(w, ", "), t))
+		why = append(why, fmt.Sprintf("%s: %s (yadm protection allow %s)", t, strings.Join(w, ", "), model.ShellQuote(string(t))))
 	}
 	oldRoots := map[model.Target]manifest.Root{}
 	for _, r := range from.Plan.Roots {
@@ -82,7 +82,7 @@ func (g *Guard) Weakened(from, to *Snapshot) []string {
 		if cover == "" || g.allowed(KindRoot, string(r.Path), rootHash(r)) {
 			continue
 		}
-		why = append(why, fmt.Sprintf("owned root %s (enclave %q) covers %s (yadm root allow %s)", r.Path, r.Enclave, cover, r.Path))
+		why = append(why, fmt.Sprintf("owned root %s (enclave %q) covers %s (yadm root allow %s)", r.Path, r.Enclave, cover, model.ShellQuote(string(r.Path))))
 	}
 	return why
 }
