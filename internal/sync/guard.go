@@ -2,7 +2,9 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -274,7 +276,7 @@ func (s *Syncer) setRefusal(r *refusal) (bool, error) {
 	n := len(st.Holds)
 	out := st.Holds[:0]
 	for _, h := range st.Holds {
-		if h.Target == "" && h.Reason == model.HoldProtected && (h.Task == HoldTaskKeyLog || h.Task == HoldTaskGuard) {
+		if refusalHold(h) {
 			if r != nil && h.Task == r.task {
 				out = append(out, h)
 				fresh = false
@@ -294,24 +296,128 @@ func (s *Syncer) setRefusal(r *refusal) (bool, error) {
 	return fresh, s.Apply.State.Save(st)
 }
 
-// AcceptedFile records the last fetched remote main this machine accepted.
-// The key-log rule compares each new fetch with it, so a refused fetch stays
-// refused on the next run.
+// AcceptedFile records the fetched remote main this machine last accepted:
+// the base the key-log rule and the RemoteGuard judge each fetch from. A
+// fetch never moves it; only an accepted source does. A machine with no
+// record seeds one before its first fetch with the origin/main its clone
+// holds (the clone's own fetch is the trusted start), so a source refused
+// on the first sync stays refused on every later one. The record of an
+// empty remote is emptySource.
 const AcceptedFile = "remote-accepted"
 
-func (s *Syncer) accepted() model.CommitID {
-	if s.Apply.StateDir == "" {
-		return ""
+// emptySource is the record of a start with an empty remote.
+const emptySource = "-"
+
+// ReadAccepted reads the AcceptedFile record in stateDir: the accepted
+// commit ("" for an empty remote) and whether a record exists.
+func ReadAccepted(stateDir string) (model.CommitID, bool) {
+	if stateDir == "" {
+		return "", false
 	}
-	b, err := os.ReadFile(filepath.Join(s.Apply.StateDir, AcceptedFile))
+	b, err := os.ReadFile(filepath.Join(stateDir, AcceptedFile))
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return model.CommitID(strings.TrimSpace(string(b)))
+	switch id := strings.TrimSpace(string(b)); id {
+	case "":
+		return "", false
+	case emptySource:
+		return "", true
+	default:
+		return model.CommitID(id), true
+	}
+}
+
+// SeedAccepted records start ("" for an empty remote) as the accepted
+// remote main in stateDir when no record exists. It never replaces one.
+func SeedAccepted(stateDir string, start model.CommitID) error {
+	if stateDir == "" {
+		return nil
+	}
+	if _, ok := ReadAccepted(stateDir); ok {
+		return nil
+	}
+	v := string(start)
+	if v == "" {
+		v = emptySource
+	}
+	p := filepath.Join(stateDir, AcceptedFile)
+	tmp, err := os.CreateTemp(stateDir, AcceptedFile+".seed-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.WriteString(v + "\n")
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	// A link fails when the record exists: a concurrent seed or accept won.
+	if err := os.Link(tmp.Name(), p); err != nil && !errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *Syncer) acceptedRecord() (model.CommitID, bool) {
+	if s.Apply == nil {
+		return "", false
+	}
+	return ReadAccepted(s.Apply.StateDir)
+}
+
+func (s *Syncer) accepted() model.CommitID {
+	id, _ := s.acceptedRecord()
+	return id
+}
+
+// startBase is the base a fetched source is judged from: the record, else
+// preFetch (origin/main before the first fetch), which it records. A
+// machine that refused a source before the record existed (an open
+// key-log or manifest-guard hold) records local main instead: its
+// origin/main may already hold the refused source, while local main moved
+// only by its own commits and by sources it accepted.
+func (s *Syncer) startBase(ctx context.Context, preFetch model.CommitID) (model.CommitID, error) {
+	if id, ok := s.acceptedRecord(); ok {
+		return id, nil
+	}
+	start := preFetch
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return "", err
+	}
+	for _, h := range st.Holds {
+		if refusalHold(h) {
+			if start, err = s.Store.ResolveRef(ctx, store.RefMain); err != nil {
+				return "", err
+			}
+			break
+		}
+	}
+	if s.Apply.StateDir == "" {
+		return start, nil
+	}
+	if err := SeedAccepted(s.Apply.StateDir, start); err != nil {
+		return "", fmt.Errorf("record the accepted remote: %w", err)
+	}
+	if id, ok := s.acceptedRecord(); ok {
+		return id, nil
+	}
+	return start, nil
+}
+
+// refusalHold reports a hold of a refused fetch.
+func refusalHold(h model.Hold) bool {
+	return h.Target == "" && h.Reason == model.HoldProtected && (h.Task == HoldTaskKeyLog || h.Task == HoldTaskGuard)
 }
 
 func (s *Syncer) setAccepted(id model.CommitID) error {
-	if s.Apply.StateDir == "" || id == "" || id == s.accepted() {
+	if s.Apply.StateDir == "" || id == "" {
+		return nil
+	}
+	if cur, ok := s.acceptedRecord(); ok && cur == id {
 		return nil
 	}
 	p := filepath.Join(s.Apply.StateDir, AcceptedFile)

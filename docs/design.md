@@ -18,7 +18,7 @@ This document specifies how `yadm` works. The Go package docs (`go doc ./interna
 | Path | Content |
 |---|---|
 | `$XDG_DATA_HOME/yadm/source` | The source clone. Default `~/.local/share/yadm/source`. |
-| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
+| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `remote-accepted` (the accepted remote `main`, section 10), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
 | `$XDG_STATE_HOME/yadm/identity.age.key` | This machine's age X25519 identity, mode 0600. |
 | `$XDG_STATE_HOME/yadm/identity.sign.key` | This machine's Ed25519 signing key, mode 0600. |
 | `$XDG_CONFIG_HOME/yadm/machine.toml` | Local identity: machine id, remote, notify and busy commands. Untracked. |
@@ -514,7 +514,7 @@ The steps:
 1. Scan and capture.
 2. With `--auto`, auto-commit by policy (section 9.3).
 3. Run allowed collectors.
-4. Fetch `main` and `refs/yadm/*` (the fetch phase, before step 1). On a first sync, the key-log and manifest guards compare the fetched source with the `origin/main` the clone had before this fetch.
+4. Fetch `main` and `refs/yadm/*` (the fetch phase, before step 1). The key-log and manifest guards compare the fetched source with the accepted remote `main` (below).
 5. If local `main` is not an ancestor of `origin/main`, replay each local commit onto `origin/main` with `git merge-tree --write-tree`, in memory:
    - clean: `commit-tree` with the original message and trailers;
    - conflict on a sealed file this machine can open: open the three stages, merge them in memory (`textmerge.Merge3`), reseal, write the tree; a remaining conflict is held like any other;
@@ -533,6 +533,8 @@ A manual commit, a hold resolve that commits, `retag`, `track` and the enclave c
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
 
 A fetched manifest that weakens protection is refused the same way, with a `manifest-guard` hold: a target both sources plan loses its enclave, a seal key or regions, or a new or changed owned root covers a path the accepted source protects. The guard compares the last accepted remote with the fetched one, and refuses only what local `main` does not already run. `yadm protection allow <target>` or `yadm root allow <path>` names the refused source while the hold is open; the next sync takes it.
+
+The accepted remote `main` lives in `remote-accepted` in the state directory. Only a fetched source that passes both guards moves it; a fetch never does. `init` records the `origin/main` of its clone, an empty remote included: the clone's own fetch is the trusted start. A machine with no record writes one before any fetch (a sync, a commit that pushes, a notes push): the `origin/main` it holds then, or local `main` when a `key-log` or `manifest-guard` hold is already open. A fetch that cannot record its start fails. A refusal therefore holds on every later sync, not only the first. There is no local override: `yadm hold resolve` does not settle these holds. A `key-log` hold clears when the remote drops the offending commits (history, not a revert, since entries never change in history). A `manifest-guard` hold clears through the allow above. A machine whose recorded start is itself bad has no other way out than a new `init`.
 
 A hold on a managed target settles by itself when a complete scan finds the target back at what this machine last wrote or captured: its drift, failed capture or failed check no longer applies. Conflict holds and weakened-protection holds stay until resolved or allowed.
 

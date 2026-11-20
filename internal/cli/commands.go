@@ -216,6 +216,15 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 	if err := sync.SeedReviewed(ctx, repo); err != nil {
 		return result{}, err
 	}
+	// The clone's own fetch is the trusted start every later fetch is
+	// judged from.
+	start, err := repo.ResolveRef(ctx, store.RemoteMain)
+	if err != nil {
+		return result{}, err
+	}
+	if err := sync.SeedAccepted(p.State, start); err != nil {
+		return result{}, err
+	}
 	head, err := repo.ResolveRef(ctx, store.RefMain)
 	if err != nil {
 		return result{}, err

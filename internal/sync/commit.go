@@ -584,9 +584,9 @@ func (s *Syncer) catchUp(ctx context.Context, rep *Report, f fetched) (bool, err
 	if f.err != nil {
 		return false, nil
 	}
-	base := s.accepted()
-	if base == "" {
-		base = f.base
+	base, err := s.startBase(ctx, f.base)
+	if err != nil {
+		return false, err
 	}
 	local, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {

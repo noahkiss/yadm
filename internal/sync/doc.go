@@ -27,12 +27,16 @@
 //     moved past is merged first, so a commit never reverts what it did not
 //     see. Main moves by compare-and-swap and apply records the targets.
 //  3. Run allowed collectors (fleet.CollectWith, with source and commit).
-//  4. Fetch origin main and refs/yadm/* (first, before step 1). On a first
-//     sync the guard's base is origin main as it was before this fetch.
+//  4. Fetch origin main and refs/yadm/* (first, before step 1). The guard's
+//     base is the accepted remote main recorded in AcceptedFile; only an
+//     accepted source moves it. With no record, the fetch first records the
+//     origin main its clone holds (SeedAccepted; init records it at clone).
 //     A failed fetch still lets steps 1 to 3 run; the sync then ends with
 //     the fetch error. A fetched source that rewrites or
 //     deletes a key-log entry, or that the RemoteGuard refuses, is not taken:
-//     a hold and one alert, local main stays, main is not pushed.
+//     a hold and one alert, local main stays, main is not pushed. It stays
+//     refused on every later sync until the remote drops it or an allow
+//     names it.
 //  5. If local main is not an ancestor of origin main, replay each local
 //     commit onto origin main with `git merge-tree`, in memory. Conflicted
 //     paths go up the resolution ladder: a key-level merge for json, jsonc
