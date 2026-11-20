@@ -14,7 +14,7 @@ import (
 
 // Default values that Parse fills in when the manifest leaves them out.
 const (
-	DefaultQuiet        = 2 * time.Hour
+	DefaultQuiet        = 2 * time.Minute
 	DefaultTaskTimeout  = 5 * time.Minute
 	DefaultCheckTimeout = 30 * time.Second
 )
@@ -88,6 +88,9 @@ func (m *Manifest) validate() error {
 		}
 		if r.Enclave != "" {
 			add(where, validName("enclave", string(r.Enclave)))
+		}
+		for _, g := range r.Ignore {
+			add(where+" ignore", ValidPattern(g))
 		}
 	}
 	for _, name := range sortedKeys(m.Tasks) {
@@ -188,6 +191,19 @@ func validateEntry(e Entry) error {
 	}
 	if e.Mode&^0o777 != 0 {
 		errs = append(errs, fmt.Errorf("mode %#o: only permission bits are allowed", uint32(e.Mode)))
+	}
+	switch e.Merge {
+	case "", MergeText, MergeUnion, MergeAddOnly, MergeOurs, MergeTheirs, MergeGenerated, MergeJSONKeys, MergeTOMLKeys, MergeStructural:
+	default:
+		errs = append(errs, fmt.Errorf("unknown merge policy %q", e.Merge))
+	}
+	if len(e.Volatile) > 0 && !structured && e.Merge != MergeJSONKeys && e.Merge != MergeTOMLKeys {
+		errs = append(errs, errors.New("volatile needs format json, jsonc or toml, or merge json-keys or toml-keys"))
+	}
+	for _, k := range e.Volatile {
+		if k == "" {
+			errs = append(errs, errors.New("volatile: empty key path"))
+		}
 	}
 	if e.Quiet != nil && *e.Quiet < 0 {
 		errs = append(errs, errors.New("negative quiet"))

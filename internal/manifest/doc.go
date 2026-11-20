@@ -24,13 +24,16 @@
 //
 // Parse is strict: unknown keys, unknown enum values, unsafe paths, sources
 // outside `files/` or the entry's own `sealed/<enclave>/`, and rule options
-// that do not fit the format are errors. Parse fills the defaults (quiet 2h,
+// that do not fit the format are errors. Parse fills the defaults (quiet 2m,
 // task timeout 5m, check timeout 30s).
 //
 // Exported API:
 //
 //	type Manifest struct{ Schema; Defaults; Entries ([[file]]); Roots ([[root]]); Tasks ([tasks.x]); Checks ([checks.x]); Units ([[unit]]); Protected }
-//	type Entry struct{ Target, Source, When, Enclave, Template, Mode, Format, Keep, Drop, Seal, Regions, Quiet, Review }
+//	type Entry struct{ Target, Source, When, Enclave, Template, Mode, Format, Keep, Drop, Seal, Regions, Quiet, Review, Merge, Volatile, Ignore }
+//	type Root struct{ Path model.Target; When string; Enclave model.EnclaveName; Ignore []string }
+//	type MergePolicy string // text, union, add-only, ours, theirs, generated, json-keys, toml-keys, structural
+//	func (r Root) Ignored(t model.Target) bool
 //	type TaskDef struct{ On, OnRemove []string; FirstApply bool; When string; Command []string; Timeout model.Duration }
 //	type CheckDef struct{ Paths []string; When string; Command []string; Timeout model.Duration }
 //	type Unit struct{ Target model.Target; Kind UnitKind; When string }
