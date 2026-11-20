@@ -38,7 +38,9 @@
 //     capture until AllowProtection. A new keep, drop or volatile entry over
 //     a file yadm never wrote is held with model.HoldNeedsDecision, unless
 //     the file, or the regular file inside $HOME a symlink there resolves
-//     to, is byte-identical to the source's own (opened) bytes. An owned
+//     to, is byte-identical to the source's own (opened) bytes. ResolveHold
+//     with take target is that decision: it records the target as managed
+//     with the entry's protection, then captures it. An owned
 //     root that is new or changed its enclave takes effect, for capture and
 //     delivery, only after AllowRoot (model.HoldRootUntrusted until then);
 //     files already in it, or copied in by adopt, go into State.Baseline and

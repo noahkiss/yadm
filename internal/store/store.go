@@ -130,6 +130,8 @@ type Store interface {
 	Push(ctx context.Context, refspecs []string) error
 	Log(ctx context.Context, rangeSpec string, paths []model.SourcePath) ([]Commit, error)
 	IsAncestor(ctx context.Context, a, b model.CommitID) (bool, error)
+	// CheckWorktree is ErrDirty if the clone has local edits. Run it before main moves.
+	CheckWorktree(ctx context.Context) error
 	// SyncWorktree moves the clone's worktree and index to rev; ErrDirty if it has local edits.
 	SyncWorktree(ctx context.Context, rev model.CommitID) error
 	// CheckSecrecyConfig fails if any setting could write plaintext into the repo,
@@ -812,53 +814,20 @@ func (r *Repo) IsAncestor(ctx context.Context, a, b model.CommitID) (bool, error
 
 // SyncWorktree moves the clone's worktree and index from the commit it was
 // last moved to (recorded in the state directory; HEAD when none) to rev. It
-// moves no ref; callers compare-and-swap main first. Any unstaged edit,
-// staged edit or untracked file in the way is ErrDirty, and nothing changes.
+// moves no ref; callers run CheckWorktree, then compare-and-swap main. Any
+// unstaged edit, staged edit or untracked file in the way is ErrDirty, and
+// nothing changes.
 func (r *Repo) SyncWorktree(ctx context.Context, rev model.CommitID) error {
 	if err := checkRev(string(rev)); err != nil {
 		return err
 	}
-	old, err := r.worktreeHead(ctx)
+	base, err := r.worktreeBase(ctx)
 	if err != nil {
 		return err
 	}
-	// Refresh stat info so a touched but unchanged file is not dirty.
-	r.git(ctx, "update-index", "-q", "--refresh")
-	if _, err := r.git(ctx, "diff-files", "--quiet"); err != nil {
-		if exitCode(err) == 1 {
-			return fmt.Errorf("%w: unstaged edits", ErrDirty)
-		}
-		return err
-	}
-	oldTree := string(old)
-	if old == "" {
-		oldTree = r.emptyTree()
-	} else {
-		oldTree += "^{tree}"
-	}
-	if _, err := r.git(ctx, "diff-index", "--cached", "--quiet", oldTree, "--"); err != nil {
-		if exitCode(err) != 1 {
-			return err
-		}
-		head, ok, rerr := r.staleWorktreeHead(ctx, old)
-		if rerr != nil {
-			return rerr
-		}
-		if !ok {
-			return fmt.Errorf("%w: staged edits", ErrDirty)
-		}
-		// `git checkout` or `git reset` moved HEAD and left a clean index
-		// and worktree there: re-record it and move on from it.
-		if err := r.recordWorktree(head); err != nil {
-			return err
-		}
-		oldTree = string(head) + "^{tree}"
-		// A checkout may have detached HEAD; sync keeps it on main.
-		if sym, _ := r.git(ctx, "symbolic-ref", "-q", "HEAD"); strings.TrimSpace(string(sym)) != RefMain {
-			if _, err := r.git(ctx, "symbolic-ref", "HEAD", RefMain); err != nil {
-				return err
-			}
-		}
+	oldTree := r.emptyTree()
+	if base != "" {
+		oldTree = string(base) + "^{tree}"
 	}
 	if _, err := r.git(ctx, "read-tree", "-m", "-u", oldTree, string(rev)+"^{tree}"); err != nil {
 		var ge *gitError
@@ -869,6 +838,69 @@ func (r *Repo) SyncWorktree(ctx context.Context, rev model.CommitID) error {
 		return err
 	}
 	return r.recordWorktree(rev)
+}
+
+// CheckWorktree reports ErrDirty when the clone has local edits, the test
+// SyncWorktree makes, and records the commit the clone is clean at. Callers
+// run it before they move main: once main (and so HEAD) has moved, a clone
+// whose recorded head is stale or missing looks like one with staged edits.
+func (r *Repo) CheckWorktree(ctx context.Context) error {
+	base, err := r.worktreeBase(ctx)
+	if err != nil || base == "" {
+		return err
+	}
+	return r.recordWorktree(base)
+}
+
+// worktreeBase returns the commit the clone's index and worktree are clean
+// at: the recorded head, or HEAD when a `git commit`, `git checkout` or
+// `git reset` moved it to a commit yadm reached and left the clone clean
+// there. Any other local edit is ErrDirty.
+func (r *Repo) worktreeBase(ctx context.Context) (model.CommitID, error) {
+	old, err := r.worktreeHead(ctx)
+	if err != nil {
+		return "", err
+	}
+	// Refresh stat info so a touched but unchanged file is not dirty.
+	r.git(ctx, "update-index", "-q", "--refresh")
+	if _, err := r.git(ctx, "diff-files", "--quiet"); err != nil {
+		if exitCode(err) == 1 {
+			return "", fmt.Errorf("%w: unstaged edits", ErrDirty)
+		}
+		return "", err
+	}
+	oldTree := string(old)
+	if old == "" {
+		oldTree = r.emptyTree()
+	} else {
+		oldTree += "^{tree}"
+	}
+	_, err = r.git(ctx, "diff-index", "--cached", "--quiet", oldTree, "--")
+	if err == nil {
+		return old, nil
+	}
+	if exitCode(err) != 1 {
+		return "", err
+	}
+	head, ok, err := r.staleWorktreeHead(ctx, old)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: staged edits", ErrDirty)
+	}
+	// HEAD moved and left a clean index and worktree there: re-record it
+	// and move on from it.
+	if err := r.recordWorktree(head); err != nil {
+		return "", err
+	}
+	// A checkout may have detached HEAD; sync keeps it on main.
+	if sym, _ := r.git(ctx, "symbolic-ref", "-q", "HEAD"); strings.TrimSpace(string(sym)) != RefMain {
+		if _, err := r.git(ctx, "symbolic-ref", "HEAD", RefMain); err != nil {
+			return "", err
+		}
+	}
+	return head, nil
 }
 
 // staleWorktreeHead reports HEAD when the recorded worktree head is stale

@@ -577,7 +577,8 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 // store measures local edits against HEAD, and once main exists HEAD names
 // it, so an empty index would read as every file staged for deletion. A
 // worktree with local edits stops the sync with a source_dirty hold and
-// main stays unborn.
+// main stays unborn. Otherwise main moves only over a clean clone, checked
+// while HEAD still names old; a dirty one gets the same hold and main stays.
 func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) (dirty bool, err error) {
 	if old == "" {
 		if err := s.Store.SyncWorktree(ctx, tip); err != nil {
@@ -586,6 +587,15 @@ func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) (dirty bo
 			}
 			return true, s.holdDirty(err)
 		}
+		return false, s.Store.UpdateRef(ctx, store.RefMain, tip, old)
+	}
+	// Main moves only over a clean clone, so the worktree can follow it: a
+	// main moved past a dirty clone leaves its index behind HEAD.
+	if err := s.Store.CheckWorktree(ctx); err != nil {
+		if !errors.Is(err, store.ErrDirty) {
+			return false, err
+		}
+		return true, s.holdDirty(err)
 	}
 	return false, s.Store.UpdateRef(ctx, store.RefMain, tip, old)
 }
@@ -598,7 +608,8 @@ func (s *Syncer) holdDirty(cause error) error {
 	}
 	h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
 		Detail: "the source clone has local edits: " + cause.Error()}, s.now())
-	h.Next = []string{"yadm git status", "yadm git restore ."}
+	// Main never moves past a dirty clone, so HEAD is the commit to return to.
+	h.Next = []string{"yadm git status", "yadm git restore --source=HEAD --staged --worktree ."}
 	putHold(st, h)
 	return s.Apply.State.Save(st)
 }

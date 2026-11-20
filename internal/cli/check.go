@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/store"
 )
 
 type checkItem struct {
@@ -110,12 +112,12 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 	} else {
 		add("secrecy_config", true, "no textconv cache or textconv notes")
 	}
-	if found, err := m.repo.ConfigKeys(ctx, `^(merge\..+\.driver|filter\..+)$`, false); err != nil {
+	if found, err := gitDrivers(ctx, m.repo); err != nil {
 		add("git_drivers", false, "%v", err)
 	} else if len(found) > 0 {
-		add("git_drivers", false, "git config sets merge drivers or filters the tool never uses: %s", strings.Join(found, ", "))
+		add("git_drivers", false, "git config sets merge drivers or filters that could act on the source clone, which the tool never uses: %s", strings.Join(found, ", "))
 	} else {
-		add("git_drivers", true, "no merge.*.driver or filter.* in git config")
+		add("git_drivers", true, "no merge driver or filter in the clone's config or assigned by its attributes")
 	}
 
 	failed := 0
@@ -133,6 +135,40 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		return res, fmt.Errorf("%d of %d checks failed", failed, len(checks))
 	}
 	return res, nil
+}
+
+// gitDrivers returns the filter.* and merge.*.driver keys that could act on
+// the source clone: every one in the clone's local config, and one from any
+// scope whose driver an attribute source of the clone assigns. A global
+// driver no attribute names (git lfs install's filter.lfs.*, for example)
+// never runs on the clone's paths, so it is left alone.
+func gitDrivers(ctx context.Context, repo *store.Repo) ([]string, error) {
+	const re = `^(merge\..+\.driver|filter\..+)$`
+	local, err := repo.ConfigKeys(ctx, re, true)
+	if err != nil {
+		return nil, err
+	}
+	all, err := repo.ConfigKeys(ctx, re, false)
+	if err != nil {
+		return nil, err
+	}
+	used, err := repo.AttributeDrivers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	isLocal := map[string]bool{}
+	for _, k := range local {
+		isLocal[k] = true
+	}
+	var out []string
+	for _, k := range all {
+		// filter.<name>.<var> or merge.<name>.driver; <name> may hold dots.
+		i, j := strings.Index(k, "."), strings.LastIndex(k, ".")
+		if isLocal[k] || (i < j && used[k[:i]+"."+k[i+1:j]]) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
 }
 
 // membershipDiff compares the fleet's machines of an enclave type with the

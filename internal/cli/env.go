@@ -28,6 +28,10 @@ import (
 	"github.com/noahkiss/yadm/internal/tasks"
 )
 
+// forOSLive builds the scheduler behind the default hooks.scheduler. A test
+// replaces it to see the arguments without a real service manager.
+var forOSLive = schedule.ForOSLive
+
 // hooks are the process-wide collaborators tests replace.
 var hooks = struct {
 	scheduler func() (schedule.Scheduler, error)
@@ -42,7 +46,7 @@ var hooks = struct {
 }{
 	// The CLI changes the real schedule: init, adopt and `schedule install`
 	// need the live scheduler. Tests replace this hook.
-	scheduler: func() (schedule.Scheduler, error) { return schedule.ForOSLive(runtime.GOOS, true) },
+	scheduler: func() (schedule.Scheduler, error) { return forOSLive(runtime.GOOS, true) },
 	now:       time.Now,
 	exec:      extexec.NewRunner,
 	units: func() tasks.UnitReloader {

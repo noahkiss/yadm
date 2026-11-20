@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -17,6 +20,109 @@ import (
 // plaintext.
 func (r *Repo) HashBlob(ctx context.Context, b []byte) (string, error) {
 	return r.hashBlob(ctx, b)
+}
+
+// AttributeDrivers returns the filter and merge drivers that git attributes
+// can assign to a path of the clone, as "filter.<name>" and "merge.<name>".
+// It reads every attribute source git consults: each .gitattributes in main's
+// tree and in the worktree (tracked or not), $GIT_DIR/info/attributes, the
+// global file (core.attributesFile, else $XDG_CONFIG_HOME/git/attributes)
+// and the system file. A name counts when any line sets it, whether or not
+// its pattern matches a path today, since a later path can match it.
+func (r *Repo) AttributeDrivers(ctx context.Context) (map[string]bool, error) {
+	out := map[string]bool{}
+	scan := func(b []byte) {
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			for _, f := range strings.Fields(line) {
+				for _, kind := range []string{"filter", "merge"} {
+					if name, ok := strings.CutPrefix(f, kind+"="); ok && name != "" {
+						out[kind+"."+name] = true
+					}
+				}
+			}
+		}
+	}
+	isAttr := func(p string) bool { return p == ".gitattributes" || strings.HasSuffix(p, "/.gitattributes") }
+
+	// main's tree: what the next checkout or merge reads.
+	if head, err := r.ResolveRef(ctx, RefMain); err != nil {
+		return nil, err
+	} else if head != "" {
+		tree, err := r.ListTree(ctx, head)
+		if err != nil {
+			return nil, err
+		}
+		for _, te := range tree {
+			if isAttr(string(te.Path)) {
+				b, err := r.ReadBlob(ctx, te.Blob)
+				if err != nil {
+					return nil, err
+				}
+				scan(b)
+			}
+		}
+	}
+	// The worktree, tracked or not.
+	ls, err := r.git(ctx, "ls-files", "-z", "--cached", "--others", "--", ":(glob)**/.gitattributes")
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, p := range strings.Split(string(ls), "\x00") {
+		if isAttr(p) {
+			files = append(files, filepath.Join(r.dir, filepath.FromSlash(p)))
+		}
+	}
+	info, err := r.git(ctx, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes")
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, strings.TrimSpace(string(info)))
+	files = append(files, r.attributeFiles(ctx)...)
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+				continue
+			}
+			return nil, err
+		}
+		scan(b)
+	}
+	return out, nil
+}
+
+// attributeFiles returns the global and system attribute files git reads.
+// git 2.42 and newer name them with `git var`; older git falls back to
+// core.attributesFile or its XDG default, and the system file is skipped.
+func (r *Repo) attributeFiles(ctx context.Context) []string {
+	var files []string
+	for _, v := range []string{"GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"} {
+		if b, err := r.git(ctx, "var", v); err == nil {
+			if p := strings.TrimSpace(string(b)); p != "" {
+				files = append(files, p)
+			}
+		}
+	}
+	if len(files) > 0 {
+		return files
+	}
+	if b, err := r.git(ctx, "config", "--path", "--get", "core.attributesFile"); err == nil {
+		if p := strings.TrimSpace(string(b)); p != "" {
+			return []string{p}
+		}
+	}
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" && filepath.IsAbs(x) {
+		return []string{filepath.Join(x, "git", "attributes")}
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return []string{filepath.Join(h, ".config", "git", "attributes")}
+	}
+	return nil
 }
 
 // ConfigKeys returns the sorted config keys that match the extended regular

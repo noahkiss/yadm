@@ -21,7 +21,9 @@
 // that does not exist resolves to "", the value UpdateRef reads as "must not
 // exist". SyncWorktree records the commit it last checked out in the state
 // directory, so staged edits in the clone's index count as local edits even
-// after main has moved.
+// after main has moved. CheckWorktree makes the same test without moving
+// anything; callers run it before they move main, so main never moves past
+// a dirty clone.
 //
 // Blob reads (ReadBlob, ReadPath) go through one long-lived
 // `git cat-file --batch` process per Repo. It starts on first read, stops
@@ -43,6 +45,7 @@
 //	func CheckGitVersion(ctx) error
 //	func (r *Repo) HashBlob(ctx, b) (string, error)
 //	func (r *Repo) ConfigKeys(ctx, re string, localOnly bool) ([]string, error)
+//	func (r *Repo) AttributeDrivers(ctx) (map[string]bool, error)                // "filter.<name>", "merge.<name>" any attribute source assigns
 //	func (r *Repo) Git(ctx, stdin, stdout, stderr, args...) (exit int, err error) // `yadm git`
 //	func (r *Repo) RemoteHeads(ctx) (map[string]model.CommitID, error)            // ls-remote main and refs/yadm/*
 //	func Passthrough(ctx, dir, stdin, stdout, stderr, args...) (int, error); func Output(ctx, dir, args...) ([]byte, error)

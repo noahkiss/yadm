@@ -30,7 +30,9 @@
 //     resolution is recorded in a `Yadm-Resolved:` trailer. History stays
 //     linear. There is no autostash and no merge commit.
 //  6. Compare-and-swap local main, move the source worktree (a dirty worktree
-//     stops with a source_dirty hold), apply.
+//     stops with a source_dirty hold), apply. Main moves only after
+//     store.CheckWorktree passes, so the clone's index never falls behind
+//     HEAD; a commit over a dirty clone makes nothing.
 //  7. Publish the status record to this machine's status ref: holds, tasks,
 //     published facts, alerts and the pinned key-log head of each enclave.
 //  8. Push main, the status ref and advanced reviewed refs atomically. On

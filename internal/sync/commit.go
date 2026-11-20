@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,6 +132,15 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	out := commitOut{committed: map[model.Target]bool{}}
 	if len(planned) == 0 {
 		return out, nil
+	}
+	// A dirty clone stops the commit before anything is made: main could
+	// not move, and the worktree could not follow it.
+	if err := s.Store.CheckWorktree(ctx); err != nil {
+		if !errors.Is(err, store.ErrDirty) {
+			return out, err
+		}
+		out.dirty = true
+		return out, s.holdDirty(err)
 	}
 	now := s.now()
 	st, err := s.Apply.State.Load()
@@ -326,6 +336,10 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		return out, nil
 	}
 	if out.dirty, err = s.setMain(ctx, tip, head); err != nil || out.dirty {
+		if out.dirty {
+			// Main did not move: nothing was committed.
+			out.ids, out.committed = nil, map[model.Target]bool{}
+		}
 		return out, err
 	}
 	if partial && !whole && len(touched) > 0 {
