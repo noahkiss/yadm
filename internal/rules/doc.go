@@ -47,8 +47,16 @@
 // source, so a first capture is never held for a line that also stands
 // outside its region.
 //
-// Only string values can be sealed, and a drop or seal path may not name an
-// array element (ErrArrayElement). A sealed string whose spelling cannot be
+// A predicate drop names array elements by content, not index:
+// `hooks.*[?hooks.*.command~=tool run]` (contains) or `list[?name==x]`
+// (equals) on a field path inside each element (empty: the element
+// itself). Selected elements are machine-local: capture removes them, and
+// apply removes the source's and puts the live target's back in order,
+// after the owned element that preceded each in the live file. Unselected
+// elements stay owned. A drop string holding "[?" is always a predicate.
+//
+// Only string values can be sealed, and a plain drop or seal path may not
+// name an array element (ErrArrayElement). A sealed string whose spelling cannot be
 // rebuilt from its value (JSON escapes, invalid UTF-8, TOML multi-line
 // strings) fails the round trip. ToSource returns ErrRoundTrip when its
 // result does not render back to the target, and model.ErrNotImplemented

@@ -128,8 +128,9 @@ type compiled struct {
 	keep  []pattern
 	drop  []pattern
 	seals []sealRule
-	owned []pattern // keep plus seal: what the source holds in keep mode
-	vol   []pattern // volatile: machine-local values
+	owned []pattern  // keep plus seal: what the source holds in keep mode
+	vol   []pattern  // volatile: machine-local values
+	preds []predRule // predicate drops: machine-local array elements
 }
 
 func (s Spec) structured() bool {
@@ -145,7 +146,19 @@ func compile(spec Spec) (*compiled, error) {
 	if c.keep, err = parsePatterns(spec.Keep); err != nil {
 		return nil, err
 	}
-	if c.drop, err = parsePatterns(spec.Drop); err != nil {
+	var plain []string
+	for _, d := range spec.Drop {
+		r, ok, err := splitPredicate(d)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c.preds = append(c.preds, r)
+			continue
+		}
+		plain = append(plain, d)
+	}
+	if c.drop, err = parsePatterns(plain); err != nil {
 		return nil, err
 	}
 	if c.vol, err = parsePatterns(spec.Volatile); err != nil {
@@ -476,6 +489,11 @@ func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error) {
 			}
 		}
 	}
+	if len(c.preds) > 0 {
+		if base, err = c.restorePredicates(base, live); err != nil {
+			return nil, err
+		}
+	}
 	if len(c.vol) > 0 {
 		lroot, _ := c.f.parse(live)
 		for _, p := range matchPaths(lroot, c.vol) {
@@ -691,6 +709,15 @@ func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violati
 				return nil, nil, err
 			}
 			if out, err = deletePaths(c.f, out, drops, false); err != nil {
+				return nil, nil, err
+			}
+		}
+		if len(c.preds) > 0 {
+			sel, err := predPaths(c.f, out, c.preds)
+			if err != nil {
+				return nil, nil, err
+			}
+			if out, err = deletePaths(c.f, out, sel, false); err != nil {
 				return nil, nil, err
 			}
 		}
