@@ -61,7 +61,7 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 		}
 	}
 	if tip != "" {
-		if snap, err := s.Apply.Load(ctx, tip); err == nil {
+		if snap, err := s.load(ctx, tip); err == nil {
 			if snap.Keys != nil {
 				for e, r := range snap.Keys.Rings {
 					if r == nil {

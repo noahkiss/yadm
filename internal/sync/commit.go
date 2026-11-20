@@ -238,6 +238,8 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return rep, err
 	}
 	defer release()
+	s.snaps = nil
+	defer func() { s.snaps = nil }()
 
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -347,7 +349,7 @@ func (s *Syncer) collect(ctx context.Context, head model.CommitID) error {
 	if s.Exec == nil || head == "" {
 		return nil
 	}
-	snap, err := s.Apply.Load(ctx, head)
+	snap, err := s.load(ctx, head)
 	if err != nil {
 		return nil // nothing to resolve collectors against; apply reports the error
 	}

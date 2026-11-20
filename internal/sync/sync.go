@@ -121,7 +121,26 @@ type Deps struct {
 }
 
 // Syncer runs the sync loop.
-type Syncer struct{ Deps }
+type Syncer struct {
+	Deps
+	snaps map[model.CommitID]*apply.Snapshot // per-run cache of loaded snapshots
+}
+
+// load returns the snapshot of a commit id, loading each commit once per run.
+func (s *Syncer) load(ctx context.Context, rev model.CommitID) (*apply.Snapshot, error) {
+	if snap, ok := s.snaps[rev]; ok {
+		return snap, nil
+	}
+	snap, err := s.Apply.Load(ctx, rev)
+	if err != nil {
+		return nil, err
+	}
+	if s.snaps == nil {
+		s.snaps = map[model.CommitID]*apply.Snapshot{}
+	}
+	s.snaps[rev] = snap
+	return snap, nil
+}
 
 func (s *Syncer) now() time.Time {
 	if s.Now != nil {
@@ -180,6 +199,8 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, err
 	}
 	defer release()
+	s.snaps = nil
+	defer func() { s.snaps = nil }()
 
 	start, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
@@ -343,7 +364,7 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, local, remo
 	}
 	var snap *apply.Snapshot
 	if remote != "" {
-		if snap, err = s.Apply.Load(ctx, remote); err != nil {
+		if snap, err = s.load(ctx, remote); err != nil {
 			return "", nil, false, fmt.Errorf("load %s: %w", remote, err)
 		}
 	}
@@ -563,7 +584,7 @@ func (s *Syncer) snapshotAt(ctx context.Context, applied, rev model.CommitID) (*
 	if applied == "" {
 		return nil, nil
 	}
-	return s.Apply.Load(ctx, applied)
+	return s.load(ctx, applied)
 }
 
 // policyFor fills the policy hooks from the manifest of snap.
