@@ -287,6 +287,15 @@ func TestGate(t *testing.T) {
 		if q.Kind != extexec.KindCheck || len(q.Staged) != len(q.Changed) {
 			t.Errorf("check request = %+v", q)
 		}
+		for target, p := range q.Staged {
+			base := filepath.Base(p)
+			if strings.Contains(base, "zshrc") || strings.Contains(base, "settings") || strings.Contains(base, "config") {
+				t.Errorf("staged name %q carries part of %s", base, target)
+			}
+		}
+	}
+	if stagedExt(".config/app/settings.json") != ".json" || stagedExt(".zshrc") != "" || stagedExt(".ssh/config") != "" {
+		t.Error("stagedExt")
 	}
 	if string(ex.seen["scan:.ssh/config"]) != "host" {
 		t.Errorf("check did not see staged plaintext: %q", ex.seen)

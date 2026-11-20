@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"testing"
 	"time"
 )
 
@@ -22,7 +21,9 @@ const DefaultInterval = 5 * time.Minute
 // DefaultLabel names the launchd agent and the systemd units.
 const DefaultLabel = "yadm-sync"
 
-// LiveEnv must be "1" for a test binary to install or remove a real schedule.
+// LiveEnv must be "1" for ForOS to install or remove a real schedule. The
+// gate keeps every build and test from touching the owner's service manager
+// until integration lifts it.
 const LiveEnv = "YADM_SCHEDULE_LIVE"
 
 // Spec describes the schedule to install.
@@ -59,14 +60,14 @@ type Options struct {
 	UID        int       // launchd GUI domain
 	Label      string    // for Uninstall and Status; default DefaultLabel
 	Commander  Commander // runs launchctl or systemctl
-	// Live allows Install and Uninstall to touch the real service manager
-	// from inside a test binary. Outside tests it is ignored.
+	// Live allows Install and Uninstall to run the real launchctl or
+	// systemctl. ForOS sets it from YADM_SCHEDULE_LIVE=1.
 	Live bool
 }
 
-// ErrNotLive is returned when a test binary tries to change the real schedule
-// without YADM_SCHEDULE_LIVE=1.
-var ErrNotLive = errors.New("schedule: refusing to change the real schedule from a test; set " + LiveEnv + "=1")
+// ErrNotLive is returned when Install or Uninstall would change the real
+// schedule without YADM_SCHEDULE_LIVE=1.
+var ErrNotLive = errors.New("schedule: refusing to change the real schedule; set " + LiveEnv + "=1")
 
 // ForOS returns the scheduler for "darwin" (launchd) or "linux" (systemd).
 func ForOS(goos string) (Scheduler, error) {
@@ -83,9 +84,9 @@ func ForOS(goos string) (Scheduler, error) {
 	})
 }
 
-// New returns the scheduler for goos with explicit options. A test binary
-// whose Commander is the real one gets ErrNotLive from Install and Uninstall
-// unless Options.Live is set.
+// New returns the scheduler for goos with explicit options. With the real
+// Commander, Install and Uninstall return ErrNotLive, before writing any
+// file, unless Options.Live is set. Status is read-only and always runs.
 func New(goos string, o Options) (Scheduler, error) {
 	if o.Home == "" || !filepath.IsAbs(o.Home) {
 		return nil, fmt.Errorf("schedule: home %q must be an absolute path", o.Home)
@@ -114,9 +115,9 @@ func New(goos string, o Options) (Scheduler, error) {
 
 type base struct{ o Options }
 
-// guard refuses to change the real service manager from a test binary.
+// guard refuses to change the real service manager unless Live is set.
 func (b base) guard() error {
-	if _, real := b.o.Commander.(execCommander); real && testing.Testing() && !b.o.Live {
+	if _, real := b.o.Commander.(execCommander); real && !b.o.Live {
 		return ErrNotLive
 	}
 	return nil

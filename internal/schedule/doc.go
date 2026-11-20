@@ -19,7 +19,7 @@
 //	func SystemdService(s Spec) ([]byte, error)
 //	func SystemdTimer(s Spec) ([]byte, error)
 //
-// A test binary cannot install or remove the real schedule: Install and
-// Uninstall return ErrNotLive unless YADM_SCHEDULE_LIVE=1. Status on launchd
+// ForOS cannot install or remove the real schedule unless
+// YADM_SCHEDULE_LIVE=1: Install and Uninstall return ErrNotLive. Status on launchd
 // leaves LastRun zero; the caller fills it from the sync state.
 package schedule

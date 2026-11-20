@@ -158,8 +158,9 @@ func (g *gate) runCheck(ctx context.Context, name string, def manifest.CheckDef,
 	q.Changed = nil
 	q.Staged = map[model.Target]string{}
 	for i, s := range matched {
-		// The file name carries no part of the target path.
-		p := filepath.Join(dir, strconv.Itoa(i)+filepath.Ext(string(s.Target)))
+		// The file name carries only the target's extension, so a linter can
+		// pick a parser; a dotfile's whole name (".zshrc") is not an extension.
+		p := filepath.Join(dir, strconv.Itoa(i)+stagedExt(string(s.Target)))
 		if err := writePrivate(p, s.Plaintext); err != nil {
 			return fmt.Errorf("staging: %w", err)
 		}
@@ -172,6 +173,17 @@ func (g *gate) runCheck(ctx context.Context, name string, def manifest.CheckDef,
 	}
 	_, err = g.run.Run(ctx, extexec.Spec{Argv: def.Command, Timeout: timeout}, q)
 	return err
+}
+
+// stagedExt returns the target's extension, or "" when the only dot starts
+// the base name.
+func stagedExt(target string) string {
+	base := filepath.Base(target)
+	ext := filepath.Ext(base)
+	if ext == base {
+		return ""
+	}
+	return ext
 }
 
 func writePrivate(p string, b []byte) error {
