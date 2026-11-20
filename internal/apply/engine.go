@@ -113,6 +113,7 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 	if err != nil {
 		return nil, err
 	}
+	ExpandRoots(man, plan, paths)
 	return &Snapshot{
 		Commit:   rev,
 		Fleet:    fl,
@@ -203,6 +204,7 @@ type desired struct {
 	sealed     bool   // not delivered here: non-member or refused enclave
 	reason     string // why sealed
 	renderHash string
+	key        string // applyKey of the entry at the snapshot
 }
 
 // readSource returns the raw source bytes of a resolved target at the snapshot.
@@ -284,7 +286,7 @@ func sourceMode(snap *Snapshot, p model.SourcePath) uint32 {
 // still holds the old keys, so new content under an old epoch is held until
 // a member reseals it.
 func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolved, lv []byte, known string) (desired, error) {
-	d := desired{res: r, scope: r.Entry.Scope(), mode: modeOf(snap, r)}
+	d := desired{res: r, scope: r.Entry.Scope(), mode: modeOf(snap, r), key: applyKey(snap, r)}
 	if enc := r.Entry.Enclave; enc != "" {
 		if l, ok := snap.Enclaves[enc]; ok && l.Err != nil {
 			d.sealed, d.reason = true, "enclave refused: "+l.Err.Error()
@@ -391,6 +393,7 @@ type step struct {
 	hold   *model.Hold
 	chmod  bool // bytes already equal; fix the mode only
 	forget bool // drop the target from state
+	keep   bool // unchanged since the last apply: state stays as it is
 }
 
 func inFilter(paths []model.Target, t model.Target) bool {
@@ -499,6 +502,11 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	if detail, wide := widenedMode(snap, r); wide {
 		return guard(detail)
 	}
+	if !adopt && have && e.unchangedSince(ctx, snap, st, r, ts, abs) {
+		s.Kind, s.keep = ActSkip, true
+		s.d = desired{res: r, scope: s.Scope, mode: modeOf(snap, r), blob: ts.SourceBlob, key: ts.ApplyKey}
+		return s, nil
+	}
 
 	lv, err := e.readTarget(ctx, abs)
 	if err != nil {
@@ -565,6 +573,105 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	default:
 		return hold("modified since last written; not overwritten")
 	}
+}
+
+// unchangedSince reports whether target r is exactly as the last apply or
+// capture left it, so apply can skip it without reading its source or the
+// file: the source blob, the entry and (for a template) the render inputs
+// are unchanged, the file's stat tuple matches the state, and nothing about
+// it is held or pending. A target with intra-file rules is always
+// recomputed, since its output merges the live file. The strict epoch
+// check is untouched: it applies only to a blob new to this machine, and a
+// skipped target's blob is the one it already knows.
+func (e *Engine) unchangedSince(ctx context.Context, snap *Snapshot, st *State, r manifest.Resolved, ts TargetState, abs string) bool {
+	te, ok := snap.Tree[r.Source]
+	switch {
+	case !ok || te.Blob == "" || te.Blob != ts.SourceBlob:
+		return false
+	case ts.Written == "" || ts.ApplyKey == "" || !ts.ChangedAt.IsZero():
+		return false
+	case ts.Source != r.Source || ts.Scope != r.Entry.Scope():
+		return false
+	case !rules.SpecFor(r).Empty():
+		return false
+	case !sameProt(ts.prot(), protOf(r.Entry)):
+		return false
+	case uint32(modeOf(snap, r)) != ts.Mode:
+		return false
+	case ts.ApplyKey != applyKey(snap, r):
+		return false
+	}
+	t := r.Target
+	for _, h := range st.Holds {
+		if h.Target == t {
+			return false
+		}
+	}
+	if _, ok := st.Seen[t]; ok {
+		return false
+	}
+	if _, ok := st.Baseline[t]; ok {
+		return false
+	}
+	if _, ok := st.Ignored[t]; ok {
+		return false
+	}
+	info, err := bounded(ctx, e.StatTimeout, func() (fs.FileInfo, error) { return e.fs.Lstat(abs) })
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return info.Size() == ts.Size && info.ModTime().Equal(ts.ModTime) && uint32(info.Mode().Perm()) == ts.Mode
+}
+
+// applyKey fingerprints what apply computes r's target from at snap,
+// besides the source blob: the resolved entry and, for a template, the
+// manifest and fleet blobs (named conditions, types) and the parts of the
+// Context a render reads. Observed facts count by their items and error,
+// not their collection time.
+func applyKey(snap *Snapshot, r manifest.Resolved) string {
+	type fact struct {
+		Items []string `json:"items,omitempty"`
+		Error string   `json:"error,omitempty"`
+	}
+	k := struct {
+		Target   model.Target     `json:"target"`
+		Source   model.SourcePath `json:"source"`
+		Entry    manifest.Entry   `json:"entry"`
+		Manifest string           `json:"manifest,omitempty"`
+		Fleet    string           `json:"fleet,omitempty"`
+		Machine  *model.Machine   `json:"machine,omitempty"`
+		Home     string           `json:"home,omitempty"`
+		User     string           `json:"user,omitempty"`
+		Observed map[string]fact  `json:"observed,omitempty"`
+	}{Target: r.Target, Source: r.Source, Entry: r.Entry}
+	if r.Entry.Template {
+		k.Manifest = snap.Tree[manifest.FileName].Blob
+		k.Fleet = snap.Tree[fleet.FileName].Blob
+		m := snap.Context.Machine
+		k.Machine, k.Home, k.User = &m, snap.Context.Home, snap.Context.User
+		k.Observed = map[string]fact{}
+		for c, f := range snap.Context.Observed {
+			k.Observed[c] = fact{Items: f.Items, Error: f.Error}
+		}
+	}
+	b, err := json.Marshal(k)
+	if err != nil {
+		return ""
+	}
+	return hashOf(b)
+}
+
+// sameProt reports whether two protections are equal.
+func sameProt(a, b protection) bool {
+	if a.Enclave != b.Enclave || a.Regions != b.Regions || len(a.Seal) != len(b.Seal) {
+		return false
+	}
+	for k, v := range a.Seal {
+		if w, ok := b.Seal[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
 }
 
 // Plan computes the actions apply would take for rev.
@@ -778,6 +885,9 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 	case ActSealed:
 		return nil
 	case ActSkip:
+		if s.keep {
+			return nil
+		}
 		if s.forget {
 			forget(st, t, now)
 			clearFileHolds(st, t)
@@ -853,6 +963,7 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 		ModTime:    info.ModTime(),
 		Mode:       uint32(info.Mode().Perm()),
 		RenderHash: s.d.renderHash,
+		ApplyKey:   s.d.key,
 	}
 	prot := protOf(s.d.res.Entry)
 	if old, had := st.Targets[s.Target]; had {

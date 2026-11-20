@@ -207,6 +207,7 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	defer repo.Close()
 	head, err := repo.ResolveRef(ctx, store.RefMain)
 	if err != nil {
 		return result{}, err

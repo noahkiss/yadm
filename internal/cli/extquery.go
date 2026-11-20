@@ -168,6 +168,7 @@ func resolveFor(m *machineEnv, pub map[model.MachineID]model.Status, id model.Ma
 		mm.Error = err.Error()
 		return mm
 	}
+	apply.ExpandRoots(m.snap.Manifest, plan, paths)
 	targets := make([]model.Target, 0, len(plan.Targets))
 	for t := range plan.Targets {
 		targets = append(targets, t)

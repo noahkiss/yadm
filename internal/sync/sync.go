@@ -139,6 +139,18 @@ type Deps struct {
 type Syncer struct {
 	Deps
 	snaps map[model.CommitID]*apply.Snapshot // per-run cache of loaded snapshots
+
+	// Per-run apply bookkeeping. applied is the commit a full apply reached
+	// in this run; partial is a commit applied only for the targets a
+	// commit touched, so a full apply is still due before the run ends.
+	applied model.CommitID
+	partial model.CommitID
+}
+
+// begin resets the per-run caches; the returned func clears them again.
+func (s *Syncer) begin() func() {
+	s.snaps, s.applied, s.partial = nil, "", ""
+	return func() { s.snaps, s.applied, s.partial = nil, "", "" }
 }
 
 // load returns the snapshot of a commit id, loading each commit once per run.
@@ -229,8 +241,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, err
 	}
 	defer release()
-	s.snaps = nil
-	defer func() { s.snaps = nil }()
+	defer s.begin()()
 
 	if opts.Quick && !opts.DryRun {
 		why, err := s.quickDue(ctx)
@@ -311,9 +322,9 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		if err := s.Apply.State.Save(st); err != nil {
 			return rep, err
 		}
-		out, err := s.commit(ctx, &rep, snap, planned, drift, nil)
+		out, err := s.commit(ctx, &rep, snap, planned, drift, nil, true)
 		if err != nil {
-			return rep, err
+			return s.settle(ctx, rep, cp.Paths, committed, err)
 		}
 		rep.Committed = out.ids
 		rep.Resolutions = append(rep.Resolutions, out.resolutions...)
@@ -333,7 +344,28 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, nil
 	}
 
-	return s.exchange(ctx, rep, start, cp.Paths, committed, opts)
+	rep, err = s.exchange(ctx, rep, start, cp.Paths, committed, opts)
+	return s.settle(ctx, rep, cp.Paths, committed, err)
+}
+
+// settle runs the full apply a run still owes: a commit applied only the
+// targets it touched, and the exchange that applies everything did not get
+// that far (a fetch that failed on a late network, a refused remote, an
+// error). It applies local main, so the state records the commit and every
+// target, owned root and task is current. err is the run's error so far.
+func (s *Syncer) settle(ctx context.Context, rep Report, captured []model.Target, committed map[model.Target]bool, err error) (Report, error) {
+	if s.partial == "" {
+		return rep, err
+	}
+	head, herr := s.Store.ResolveRef(ctx, store.RefMain)
+	if herr == nil && head != "" {
+		_, herr = s.moveAndApply(ctx, &rep, head, false)
+		rep.Holds = s.currentHolds(captured, committed)
+	}
+	if err == nil {
+		err = herr
+	}
+	return rep, err
 }
 
 // exchange runs steps 3 to 9 under the lock the caller holds: collectors,
@@ -481,8 +513,8 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 			out.alerts = append(out.alerts, a)
 		}
 		out.tip = local
-		if local != "" && local != st.Applied {
-			out.dirty, err = s.moveAndApply(ctx, rep, local)
+		if local != "" && (local != st.Applied || s.partial != "") {
+			out.dirty, err = s.moveAndApply(ctx, rep, local, false)
 		}
 		return out, err
 	}
@@ -531,31 +563,67 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		return out, nil
 	}
 	if in.tip != local {
-		if err := s.Store.UpdateRef(ctx, store.RefMain, in.tip, local); err != nil {
+		if out.dirty, err = s.setMain(ctx, in.tip, local); err != nil || out.dirty {
 			return out, err
 		}
 	}
 	out.tip = in.tip
-	out.dirty, err = s.moveAndApply(ctx, rep, in.tip)
+	out.dirty, err = s.moveAndApply(ctx, rep, in.tip, len(in.holds) > 0)
 	return out, err
 }
 
-// moveAndApply moves the source worktree to tip and applies it. A worktree
-// with local edits stops the sync with a source_dirty hold; nothing is stashed.
-func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.CommitID) (bool, error) {
+// setMain compare-and-swaps main from old to tip. When main is unborn (a
+// clone of a remote that was empty), the worktree moves to tip first: the
+// store measures local edits against HEAD, and once main exists HEAD names
+// it, so an empty index would read as every file staged for deletion. A
+// worktree with local edits stops the sync with a source_dirty hold and
+// main stays unborn.
+func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) (dirty bool, err error) {
+	if old == "" {
+		if err := s.Store.SyncWorktree(ctx, tip); err != nil {
+			if !errors.Is(err, store.ErrDirty) {
+				return false, err
+			}
+			return true, s.holdDirty(err)
+		}
+	}
+	return false, s.Store.UpdateRef(ctx, store.RefMain, tip, old)
+}
+
+// holdDirty records the source_dirty hold for a worktree that did not move.
+func (s *Syncer) holdDirty(cause error) error {
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
+		Detail: "the source clone has local edits: " + cause.Error()}, s.now())
+	h.Next = []string{"yadm git status", "yadm git restore ."}
+	putHold(st, h)
+	return s.Apply.State.Save(st)
+}
+
+// moveAndApply moves the source worktree to tip and applies it in full. A
+// worktree with local edits stops the sync with a source_dirty hold;
+// nothing is stashed. A run applies one commit in full once: when tip is
+// the commit this run already applied in full, it does nothing, unless
+// again is set (integrate raised holds that apply must honour).
+func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.CommitID, again bool) (bool, error) {
+	if tip != "" && tip == s.applied && !again {
+		rep.Applied = tip
+		return false, nil
+	}
+	return s.moveAndApplyPaths(ctx, rep, tip, nil)
+}
+
+// moveAndApplyPaths is moveAndApply for the targets in paths only, or every
+// target when paths is empty. A partial apply leaves a full one due.
+func (s *Syncer) moveAndApplyPaths(ctx context.Context, rep *Report, tip model.CommitID, paths []model.Target) (bool, error) {
 	if err := s.Store.SyncWorktree(ctx, tip); err != nil {
 		if !errors.Is(err, store.ErrDirty) {
 			return false, err
 		}
-		st, lerr := s.Apply.State.Load()
-		if lerr != nil {
-			return false, lerr
-		}
-		h := model.KeepSince(st.Holds, model.Hold{Scope: model.ScopeShared, Reason: model.HoldSourceDirty,
-			Detail: "the source clone has local edits: " + err.Error()}, s.now())
-		h.Next = []string{"yadm git status", "yadm git restore ."}
-		putHold(st, h)
-		return true, s.Apply.State.Save(st)
+		return true, s.holdDirty(err)
 	}
 	if err := s.clearSourceDirty(); err != nil {
 		return false, err
@@ -563,9 +631,15 @@ func (s *Syncer) moveAndApply(ctx context.Context, rep *Report, tip model.Commit
 	if err := s.guardConflicts(); err != nil {
 		return false, err
 	}
-	res, err := s.Apply.Apply(ctx, tip, apply.ApplyOptions{})
+	s.applied = ""
+	res, err := s.Apply.Apply(ctx, tip, apply.ApplyOptions{Paths: paths})
 	if err != nil {
 		return false, fmt.Errorf("apply: %w", err)
+	}
+	if len(paths) == 0 {
+		s.applied, s.partial = tip, ""
+	} else {
+		s.partial = tip
 	}
 	rep.Applied = tip
 	rep.Tasks = append(rep.Tasks, res.Tasks...)
