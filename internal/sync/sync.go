@@ -531,13 +531,27 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		return out, nil
 	}
 	if in.tip != local {
-		if err := s.Store.UpdateRef(ctx, store.RefMain, in.tip, local); err != nil {
+		if err := s.setMain(ctx, in.tip, local); err != nil {
 			return out, err
 		}
 	}
 	out.tip = in.tip
 	out.dirty, err = s.moveAndApply(ctx, rep, in.tip)
 	return out, err
+}
+
+// setMain compare-and-swaps main from old to tip. When main is unborn (a
+// clone of a remote that was empty), the worktree moves to tip first: the
+// store measures local edits against HEAD, and once main exists HEAD names
+// it, so an empty index would read as every file staged for deletion. A
+// worktree that does not move here is left to moveAndApply, which holds it.
+func (s *Syncer) setMain(ctx context.Context, tip, old model.CommitID) error {
+	if old == "" {
+		if err := s.Store.SyncWorktree(ctx, tip); err != nil && !errors.Is(err, store.ErrDirty) {
+			return err
+		}
+	}
+	return s.Store.UpdateRef(ctx, store.RefMain, tip, old)
 }
 
 // moveAndApply moves the source worktree to tip and applies it. A worktree

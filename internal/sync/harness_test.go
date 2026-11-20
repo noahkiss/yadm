@@ -151,7 +151,9 @@ func (w *world) newMachine(id model.MachineID) *machine {
 	runner := &tasks.Runner{Exec: m.exec, Allow: m.allows, Units: nopUnits{}}
 	m.eng = apply.New(apply.Deps{Store: repo, Self: id, Identity: w.f.Identities[id], Pins: crypt.FilePins(m.state),
 		State: apply.FileStateDB(m.state), Home: m.home, User: "user", StateDir: m.state, Tasks: runner, Allow: m.allows, Now: w.clock.Now})
-	m.allowRoots(m.main())
+	if head := m.main(); head != "" {
+		m.allowRoots(head)
+	}
 	m.s = &Syncer{Deps: Deps{Store: repo, Apply: m.eng, Status: store.StatusRefs(repo, id), Exec: m.exec,
 		Identity: fleet.Identity{Machine: id, Notify: []string{"notify-hook"}}, Lock: FileLock(m.state), Leases: FileLeases(m.state),
 		Version: "test", Now: w.clock.Now, Backoff: time.Millisecond}}
