@@ -23,6 +23,7 @@ One JSON object on stdin. The fields are those of the Claude Code hook input; ot
 | `tool_input.file_path`, `tool_input.notebook_path`, `tool_input.path` | `post-edit` | The edited file |
 | `agent_id` | `post-edit`, `stop` | The subagent that made the edit |
 | `action` | `post-edit` | Normalized tool kind: `shell`, `file_read`, `file_write`, `file_edit`, `web_fetch`, `web_search`, `mcp_call`, `agent_spawn`. Only empty, `file_write` and `file_edit` name a path. |
+| `mcp_server` | none | With `action` = `mcp_call`, the MCP server that owns the tool. An adapter fills it, for example from a tool name such as `mcp__<server>__<tool>`. Other hook consumers may match on it; yadm ignores it. |
 | `harness` | all | Opaque. Echoed in the verdict. yadm never branches on it. |
 | `intent` | `post-edit` | A short reason for the edit, used as the commit subject |
 
