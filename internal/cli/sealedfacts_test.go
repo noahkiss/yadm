@@ -43,8 +43,9 @@ func TestSealedObservedFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only the sealed collector, so `observed: published` on manifest and
+	// eval comes from the opened facts alone.
 	facts := map[string]model.ObservedFact{
-		"packages":     {Collector: "packages", Items: []string{"tool-one"}, CollectedAt: time.Now().UTC()},
 		"client-tools": {Collector: "client-tools", Items: []string{canary.String(), visible}, CollectedAt: time.Now().UTC()},
 	}
 	plain, sealed, problems := fleet.Published(m.snap.Fleet, facts, m.snap.Keys)
@@ -106,8 +107,12 @@ func TestSealedObservedFacts(t *testing.T) {
 		t.Fatalf("non-member diff: %+v", d)
 	}
 	env = yadmOK(t, "eval", cond, "--as", "host-c")
-	if ev := decode[evalQuery](t, env.Data); ev.Result || len(ev.Unavailable) != 1 || ev.Unavailable[0] != "client-tools" {
+	if ev := decode[evalQuery](t, env.Data); ev.Result || len(ev.Unavailable) != 1 || ev.Unavailable[0] != "client-tools" || ev.Observed != observedNone {
 		t.Fatalf("non-member eval: %+v", ev)
+	}
+	env = yadmOK(t, "manifest", "--as", "host-c")
+	if q := decode[manifestQuery](t, env.Data); len(q.Machines) != 1 || q.Machines[0].Observed != observedNone {
+		t.Fatalf("non-member manifest: %+v", q)
 	}
 	for _, args := range [][]string{
 		{"fleet", "show", "host-c"}, {"fleet", "list"}, {"fleet", "diff", "client-tools"},
