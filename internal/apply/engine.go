@@ -24,6 +24,7 @@ import (
 	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/tasks"
+	"github.com/noahkiss/yadm/internal/textmerge"
 )
 
 // Load reads fleet.toml, manifest.toml and every key log at rev, verifies
@@ -440,9 +441,10 @@ type step struct {
 	live   live
 	abs    string
 	hold   *model.Hold
-	chmod  bool // bytes already equal; fix the mode only
-	forget bool // drop the target from state
-	keep   bool // unchanged since the last apply: state stays as it is
+	chmod  bool   // bytes already equal; fix the mode only
+	forget bool   // drop the target from state
+	keep   bool   // unchanged since the last apply: state stays as it is
+	merged []byte // union of source and target: written instead of d.bytes
 }
 
 func inFilter(paths []model.Target, t model.Target) bool {
@@ -670,11 +672,50 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		return s, nil
 	case !have:
 		return hold("exists, differs and was never written by yadm; not overwritten")
+	case r.Entry.Merge == manifest.MergeUnion && hashOf(d.bytes) != ts.Written:
+		// Both sides changed a line-set file: write the union. The state
+		// keeps the source as written, so the next capture commits it.
+		merged, why := e.unionMerge(ctx, snap, r, ts, d.bytes, lv.bytes)
+		if why != "" {
+			return hold("modified since last written; not overwritten: " + why)
+		}
+		s.Kind, s.merged, s.Reason = ActWrite, merged, "union"
+		return s, nil
 	case r.Entry.Template:
 		return hold("rendered output edited by hand since last written; not re-rendered")
 	default:
 		return hold("modified since last written; not overwritten")
 	}
+}
+
+// unionMerge computes the line union of a `merge = "union"` target that
+// changed here while its source changed too: base is the source as last
+// written (opened, for a sealed file), ours the new source, theirs the
+// target. The source's lines come first, then lines only the target has; a
+// line either side removed stays removed. why is set when the union cannot
+// be computed: rules or a template between source and target, a base that
+// is gone or does not open, or binary content.
+func (e *Engine) unionMerge(ctx context.Context, snap *Snapshot, r manifest.Resolved, ts TargetState, source, target []byte) (merged []byte, why string) {
+	if r.Entry.Template || !rules.SpecFor(r).Empty() {
+		return nil, "a union merge needs a plain file without template or rules"
+	}
+	base, err := e.prevSource(ctx, snap, ts, r.Source)
+	if err != nil {
+		return nil, "cannot read the source last written"
+	}
+	if enc := r.Entry.Enclave; enc != "" {
+		// The base is only compared against, never delivered.
+		if base, err = snap.history().cr().OpenFile(enc, r.Source, base); err != nil {
+			return nil, "cannot open the source last written"
+		}
+	}
+	if hashOf(base) != ts.Written {
+		return nil, "the source last written is not what the target was written from"
+	}
+	if textmerge.IsBinary(base) || textmerge.IsBinary(source) || textmerge.IsBinary(target) {
+		return nil, "binary content"
+	}
+	return textmerge.Union(base, source, target), ""
 }
 
 // unchangedSince reports whether target r is exactly as the last apply or
@@ -1011,15 +1052,29 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 			}
 			return e.record(st, s, now)
 		}
-		if s.live.exists && !bytes.Equal(s.live.bytes, s.d.bytes) {
+		out := s.d.bytes
+		if s.merged != nil {
+			out = s.merged
+		}
+		if s.live.exists && !bytes.Equal(s.live.bytes, out) {
 			if err := e.backup(now, t, union(protOf(s.d.res.Entry), st.Targets[t].prot()), s.live.bytes); err != nil {
 				return err
 			}
 		}
-		if err := e.writeAtomic(s.abs, s.d.bytes, s.d.mode, func() error { return unchanged(s) }); err != nil {
+		if err := e.writeAtomic(s.abs, out, s.d.mode, func() error { return unchanged(s) }); err != nil {
 			return err
 		}
-		return e.record(st, s, now)
+		if err := e.record(st, s, now); err != nil {
+			return err
+		}
+		if s.merged != nil && !bytes.Equal(out, s.d.bytes) {
+			// Recorded as the source wrote it, with no stat to match, so
+			// the next scan hashes the union and capture commits it.
+			ts := st.Targets[t]
+			ts.ModTime = time.Time{}
+			st.Targets[t] = ts
+		}
+		return nil
 	case ActDelete:
 		if err := unchanged(s); err != nil {
 			return err

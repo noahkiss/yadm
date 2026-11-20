@@ -171,7 +171,7 @@ Resolution for one machine:
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
-- `merge` picks the sync conflict policy (section 10): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
+- `merge` picks the sync conflict policy (section 10), and `union` also lets apply merge a target changed on both sides (section 8.3): `text` (default), `union`, `add-only`, `ours`, `theirs`, `generated`, `json-keys`, `toml-keys` or `structural`. `volatile` lists key paths (keep and drop syntax) that stay machine-local: capture never commits a change to one (section 6), and a key-level merge always resolves one to this machine's value.
 - An owned root shares the files under its source directory: a file at `files/<root>/<rest>` (plain root) or `sealed/<enclave>/<root>/<rest>` (enclave root) that no entry names, by target, source or glob, is a target with the root's enclave on every machine the root applies to. Capture writes a new file of a root there, so committing it shares it. To narrow who gets it, `yadm retag` gives it its own entry.
 - A root's `ignore` globs, relative to its path, name files that are never reported as new. `yadm hold ignore <id>` does the same for one file on this machine only.
 
@@ -382,11 +382,13 @@ A file that matches a task's `outputs` glob (section 12.1) is generated: scan ne
 
 1. Resolve the manifest for this machine; render each target in memory.
 2. Skip a target whose bytes already match.
-3. Hold a target whose current hash differs from the last written hash (`drifted`). Apply never overwrites it. The usual path captures it first.
+3. Hold a target whose current hash differs from the last written hash (`drifted`). Apply never overwrites it. The usual path captures it first. One exception: a `merge = "union"` target whose source changed too is merged, not held (see below).
 4. Write changed targets atomically (temp file and rename), with the entry's mode. Copy the replaced bytes into `backup/` for 30 days. Apply never changes only the mode of a target whose stricter mode is not drift (section 8.2): it widens that mode only when it writes new bytes. When the entry's mode changes, apply sets the new mode on a target whose mode is still the one it last recorded.
 5. Delete a target that left the plan, only if it is unchanged since written; otherwise hold it.
 6. On a non-member, skip sealed files (`sealed` action) and leave sealed values and regions out.
 7. Run triggered tasks (section 12): path tasks, remove tasks, unit reloads and, once per machine, first-apply tasks.
+
+A `merge = "union"` target can change here while a sync brings a new source, for example an append-only list appended on two machines before either committed. Apply then writes the line union instead of holding the target. The base is the source as last written (opened, for a sealed file on a member), ours is the new source and theirs is the target. The union keeps every line either side added, the source's lines first, then the lines only the target has; a line either side removed stays removed. The state still records the source as written, so the next scan finds the union as drift and capture commits it. The write follows the mode rules of section 8.2 and backs up the replaced bytes. The target is held as `drifted` when the union cannot be computed: binary content, a template or intra-file rules on the entry, or a last-written source that is gone or does not open. Without a source change, a local edit of a union target is ordinary drift for capture.
 
 ### 8.4 Capture
 

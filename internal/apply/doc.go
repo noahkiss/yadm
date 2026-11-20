@@ -8,8 +8,12 @@
 //   - Apply writes a target atomically (temp file plus rename) and only when its
 //     bytes change. It never overwrites a target whose current hash differs from
 //     the hash it last wrote: that target is drifted, and apply captures it
-//     first or holds it (model.HoldDrifted). Bytes it does replace go to a
-//     backup directory in the state directory for 30 days.
+//     first or holds it (model.HoldDrifted). The exception is a
+//     `merge = "union"` target whose source changed too: apply writes the
+//     line union (textmerge.Union, the source's lines first) and records the
+//     source as written, so the next capture commits the union. Bytes it
+//     does replace go to a backup directory in the state directory for 30
+//     days.
 //   - Capture is accepted only if rendering the new source for this machine
 //     reproduces the target byte for byte (the round-trip check). Otherwise the
 //     file is held as uncapturable. Templates capture with
