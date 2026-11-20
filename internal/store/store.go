@@ -721,16 +721,22 @@ func (r *Repo) Push(ctx context.Context, refspecs []string) error {
 }
 
 // pushRejected reports whether porcelain output shows a ref the remote
-// refused because it moved (non-fast-forward, fetch first, stale info).
+// refused because it moved (non-fast-forward, fetch first, stale info), or
+// moved while it received the push: the server's ref transaction failed
+// ("atomic transaction failed", "cannot lock ref ... but expected").
 func pushRejected(stdout, stderr string) bool {
 	for _, l := range strings.Split(stdout, "\n") {
 		if !strings.HasPrefix(l, "!") {
 			continue
 		}
 		if strings.Contains(l, "non-fast-forward") || strings.Contains(l, "fetch first") ||
-			strings.Contains(l, "stale info") || strings.Contains(l, "already exists") {
+			strings.Contains(l, "stale info") || strings.Contains(l, "already exists") ||
+			strings.Contains(l, "atomic transaction failed") {
 			return true
 		}
+	}
+	if strings.Contains(stderr, "cannot lock ref") && strings.Contains(stderr, "but expected") {
+		return true
 	}
 	return strings.Contains(stderr, "non-fast-forward") || strings.Contains(stderr, "fetch first")
 }
