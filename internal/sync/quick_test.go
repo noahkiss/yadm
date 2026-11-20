@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -159,5 +160,41 @@ func TestCommitMessageSubjects(t *testing.T) {
 	m := commitMessage(MessageInfo{Trigger: TriggerStop, Session: "s\nx", Tool: "Write"}, "m-x", "personal", []MessageItem{{".n", "update"}})
 	if trailer(m, TrailerSession) != "s x" || trailer(m, store.TrailerScope) != "personal" || trailer(m, store.TrailerAuto) != TriggerStop {
 		t.Errorf("trailers %+v", m.Trailers)
+	}
+}
+
+// TestQuickSyncBacksOffAnUnreachableRemote: a failed remote check skips the
+// run and backs off (1 min, doubling, capped) instead of a full sync that
+// reaches the same remote; hooks read the backoff; a later answer clears it.
+func TestQuickSyncBacksOffAnUnreachableRemote(t *testing.T) {
+	if netBackoff(1) != time.Minute || netBackoff(2) != 2*time.Minute || netBackoff(10) != NetBackoffMax {
+		t.Fatalf("backoff steps: %s %s %s", netBackoff(1), netBackoff(2), netBackoff(10))
+	}
+	a := fixture.HostA
+	w := newWorld(t, nil, a)
+	A := w.machines[a]
+	quick(t, A)
+	gone := w.remote + ".gone"
+	if err := os.Rename(w.remote, gone); err != nil {
+		t.Fatal(err)
+	}
+	if r := quick(t, A); !r.Skipped {
+		t.Fatalf("a failed remote check ran a full sync: %+v", r)
+	}
+	if !NetBackingOff(A.state, w.clock.Now()) {
+		t.Fatal("no backoff recorded after a failed remote check")
+	}
+	if r := quick(t, A); !r.Skipped {
+		t.Fatalf("within the backoff: %+v", r)
+	}
+	if err := os.Rename(gone, w.remote); err != nil {
+		t.Fatal(err)
+	}
+	w.clock.offset += 2 * time.Minute
+	if r := quick(t, A); !r.Skipped {
+		t.Fatalf("remote back, nothing moved: %+v", r)
+	}
+	if NetBackingOff(A.state, w.clock.Now()) {
+		t.Fatal("backoff still set after the remote answered")
 	}
 }

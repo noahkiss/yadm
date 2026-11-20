@@ -35,6 +35,38 @@ type quickState struct {
 	LastCheck time.Time                 `json:"last_check"`
 	Heads     map[string]model.CommitID `json:"heads"` // remote main and refs/yadm/* after the last full sync
 	Drift     map[model.Target]string   `json:"drift"` // drift the last full sync left (held, pending), by hash
+	// Network backoff: consecutive failed remote checks, and the time before
+	// which the quick check does not reach the remote again.
+	NetFailures int       `json:"net_failures,omitempty"`
+	NetRetryAt  time.Time `json:"net_retry_at,omitempty"`
+}
+
+// NetBackoffMax caps the wait between remote checks after repeated failures.
+const NetBackoffMax = 15 * time.Minute
+
+// netBackoff is the wait after n consecutive failed remote checks: 1 min,
+// doubling, at most NetBackoffMax.
+func netBackoff(n int) time.Duration {
+	d := time.Minute
+	for i := 1; i < n && d < NetBackoffMax; i++ {
+		d *= 2
+	}
+	if d > NetBackoffMax {
+		d = NetBackoffMax
+	}
+	return d
+}
+
+// NetBackingOff reports whether the remote failed recently and the quick
+// check is still waiting before it reaches it again. Hooks read it to commit
+// without pushing, so many sessions do not keep opening connections to a
+// remote that refuses them.
+func NetBackingOff(stateDir string, now time.Time) bool {
+	var q quickState
+	if b, err := os.ReadFile(filepath.Join(stateDir, QuickFile)); err == nil {
+		_ = json.Unmarshal(b, &q)
+	}
+	return now.Before(q.NetRetryAt)
 }
 
 func (s *Syncer) quickPath() string { return filepath.Join(s.Apply.StateDir, QuickFile) }
@@ -75,10 +107,19 @@ func (s *Syncer) quickDue(ctx context.Context) (string, error) {
 	if !ok {
 		return "no remote check", nil
 	}
+	if now.Before(q.NetRetryAt) {
+		return "", nil // backing off: the remote refused recently
+	}
 	heads, err := rh.RemoteHeads(ctx)
 	if err != nil {
-		return "remote check failed", nil // the full sync reports the network
+		// Back off instead of a full sync that would reach the same remote
+		// again. The wake and periodic paths above still run the full sync,
+		// which reports the network error.
+		q.NetFailures++
+		q.NetRetryAt = now.Add(netBackoff(q.NetFailures))
+		return "", nil
 	}
+	q.NetFailures, q.NetRetryAt = 0, time.Time{}
 	if !sameHeads(heads, q.Heads, s.self()) {
 		return "remote moved", nil
 	}
@@ -146,6 +187,7 @@ func (s *Syncer) recordFull(ctx context.Context) {
 		q.Drift = driftSig(drift)
 	}
 	q.LastFull, q.LastCheck = s.now(), s.now()
+	q.NetFailures, q.NetRetryAt = 0, time.Time{} // the remote answered
 	q.Heads = map[string]model.CommitID{}
 	if id, err := s.Store.ResolveRef(ctx, store.RemoteMain); err == nil && id != "" {
 		q.Heads[store.RefMain] = id
