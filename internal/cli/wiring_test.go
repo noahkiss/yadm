@@ -49,14 +49,24 @@ func TestContractsCompose(t *testing.T) {
 	_ = sealer
 	_ = statusDB
 
+	// cond, manifest and render are implemented: they must reject bad input
+	// with their own errors, not ErrNotImplemented.
 	_, err := cond.Parse("type:x", voc)
-	ni("cond.Parse", err)
+	var ce *cond.Error
+	if !errors.As(err, &ce) {
+		t.Errorf("cond.Parse: want *cond.Error for an unknown type, got %v", err)
+	}
 	_, err = fleet.Parse(nil)
 	ni("fleet.Parse", err)
 	_, err = manifest.Parse(nil)
-	ni("manifest.Parse", err)
-	_, err = eng.Render("t", nil, model.Context{})
-	ni("render", err)
+	if err == nil || errors.Is(err, model.ErrNotImplemented) {
+		t.Errorf("manifest.Parse: want a schema error for an empty manifest, got %v", err)
+	}
+	_, err = eng.Render("t", []byte("{{ nope }}"), model.Context{})
+	var re *render.Error
+	if !errors.As(err, &re) {
+		t.Errorf("render: want *render.Error for an unknown variable, got %v", err)
+	}
 	_, err = rules.ToTarget(nil, nil, rules.Spec{}, keys)
 	ni("rules.ToTarget", err)
 	_, err = crypt.LoadIdentity(t.TempDir())
