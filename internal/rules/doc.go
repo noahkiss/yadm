@@ -27,9 +27,18 @@
 // non-member's target keeps the two marker lines with nothing between them.
 //
 // Edits are byte-level: a no-op round trip returns the input unchanged, and a
-// change touches only the bytes of the values it changes. sjson does the JSON
-// edits; the TOML span editor sits on go-toml's unstable parser. Comment
-// ownership on delete is decided here (sjson removes a preceding comment).
+// change touches only the bytes of the values it changes. The JSON and JSONC
+// editor is this package's own scanner (sjson deletes the comment above a key
+// and cannot expand `*`); the TOML span editor sits on go-toml's unstable
+// parser. Every edit re-parses its output and fails closed. A delete keeps
+// the comment lines above a key, except when keep-mode pruning removes an
+// app-owned key, which takes its comments with it. An insert lands after the
+// previous sibling, below the comment lines that sat between them.
+//
+// Only string values can be sealed. ToSource returns ErrRoundTrip when its
+// result does not render back to the target, and model.ErrNotImplemented
+// (wrapped) for an edit the span editors do not perform, such as adding an
+// element to an array of tables.
 //
 // Exported API:
 //

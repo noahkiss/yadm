@@ -4,6 +4,9 @@
 // hand edit of its rendered output. Everything happens in memory; no plaintext
 // is written to disk or passed to git.
 //
+// Lines keep their terminators, so CRLF and a missing final newline survive.
+// Binary inputs (a NUL in the first 8000 bytes) fail with ErrBinary.
+//
 // Exported API:
 //
 //	func Merge3(base, ours, theirs []byte) (merged []byte, conflicts []Region, err error)
