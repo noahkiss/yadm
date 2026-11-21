@@ -20,6 +20,9 @@ type Staged struct {
 	Target    model.Target
 	Scope     model.Scope
 	Plaintext []byte // written to a 0600 temp file for the check, removed afterwards
+	// Entry is the manifest entry the target has once the commit lands
+	// (Request.Entries); nil when no entry or owned root covers it.
+	Entry *extexec.Entry
 }
 
 // Verdict is the commit gate's answer for one target.
@@ -163,6 +166,7 @@ func (g *gate) runCheck(ctx context.Context, name string, def manifest.CheckDef,
 	q.Name = name
 	q.Changed = nil
 	q.Staged = map[model.Target]string{}
+	q.Entries = nil
 	for i, s := range matched {
 		// The file name carries only the target's extension, so a linter can
 		// pick a parser; a dotfile's whole name (".zshrc") is not an extension.
@@ -172,6 +176,12 @@ func (g *gate) runCheck(ctx context.Context, name string, def manifest.CheckDef,
 		}
 		q.Changed = append(q.Changed, s.Target)
 		q.Staged[s.Target] = p
+		if s.Entry != nil {
+			if q.Entries == nil {
+				q.Entries = map[model.Target]extexec.Entry{}
+			}
+			q.Entries[s.Target] = *s.Entry
+		}
 	}
 	timeout := def.Timeout.D()
 	if timeout <= 0 {

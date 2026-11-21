@@ -421,7 +421,7 @@ Every git call the tool runs against the source clone, `yadm git` included, sets
 
 ### 9.2 Commit gate
 
-Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets and the paths of 0600 temp files holding their plaintext. The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
+Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets, the paths of 0600 temp files holding their plaintext, and the entry each target has once the commit lands (`entries`, section 12.4). The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
 Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag, a track or a committed deletion. They hold no plaintext, and check `paths` name targets. They still commit under the sync lock, through a private index.
 
@@ -631,6 +631,16 @@ One contract covers external subcommands, collectors, tasks, checks, the notify 
     "home": "/home/user", "source": "/home/user/.local/share/yadm/source",
     "commit": "<commit>", "changed": [".config/packages/list"], "trigger": "paths", "json": true }
   ```
+
+- A check's request adds `staged` and `entries`, keyed by target. `staged` maps a target to a 0600 temp file holding its plaintext; the file is removed when the check returns. `entries` gives the manifest entry the target has once the commit lands, read from the planned manifest, so the entry a `track` or `retag` adds in the same commit counts:
+
+  ```json
+  { "kind": "check", "changed": [".config/app/token"],
+    "staged": { ".config/app/token": "<state>/yadm-check-1/0" },
+    "entries": { ".config/app/token": { "target": ".config/app/token", "source": "sealed/personal/.config/app/token", "when": "type:personal", "enclave": "personal" } } }
+  ```
+
+  `target` is the entry's target: the path, or the glob that covers it. `when` is the condition as written, true here or not; `""` means every machine, and `enclave` `""` means plaintext. A file in an owned root gets `"root": true` and the root's path, `when` and `enclave`. A target that no entry or owned root covers has no key. `entries` holds manifest fields only, never file content. A check judges the commit from it, not from `yadm why`, which reads the committed source.
 
 - The environment carries the same context for plain scripts: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES` (comma-separated), `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON=1`, and `YADM_FACT_<KEY>` per declared fact.
 - On exit 0, stdout is one JSON response when its first non-space byte is `{`:

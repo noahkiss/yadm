@@ -10,7 +10,7 @@ An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and 
 
 ## Exec contract (section 12.4)
 
-- Request on stdin: `schema = 1`, with `kind` (`subcommand`, `task`, `check`, `collector`, `nudge`, `notify`, `busy`), `name`, `machine`, `home`, `source`, `commit`, `changed`, `removed`, `trigger` and `args`.
+- Request on stdin: `schema = 1`, with `kind` (`subcommand`, `task`, `check`, `collector`, `nudge`, `notify`, `busy`), `name`, `machine`, `home`, `source`, `commit`, `changed`, `removed`, `trigger` and `args`; a check also gets `staged` and `entries`.
 - The same context is in the environment: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES`, `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON`, `YADM_FACT_<KEY>`.
 - Response on stdout, on exit 0: one JSON object with `schema = 1`, `ok`, `items`, `data`, `message`, `next`; or one item per line.
 - A task's `trigger` is `paths`, `remove`, `first-apply`, `fact` or `render`.

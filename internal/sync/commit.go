@@ -11,6 +11,7 @@ import (
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/extexec"
+	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/tasks"
@@ -162,7 +163,12 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		}
 	}
 
-	// The commit gate sees the target plaintext of every staged, non-deleted file.
+	// The commit gate sees the target plaintext of every staged, non-deleted
+	// file, and the entry each one has once the commit lands.
+	pm, err := s.plannedManifest(ctx, headTree, planned)
+	if err != nil {
+		return out, err
+	}
 	var staged []tasks.Staged
 	unreadable := map[model.Target]bool{}
 	direct := map[model.Target]bool{}
@@ -184,7 +190,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 				putHold(st, targetHold(st, now, t, pc.Scope, model.HoldCheckFailed, now, "unreadable for the commit gate: "+err.Error()))
 				continue
 			}
-			staged = append(staged, tasks.Staged{Target: t, Scope: pc.Scope, Plaintext: b})
+			staged = append(staged, tasks.Staged{Target: t, Scope: pc.Scope, Plaintext: b, Entry: plannedEntry(pm, t, pc.Changes[i].Path)})
 		}
 	}
 	pass := map[model.Target]bool{}
@@ -785,6 +791,66 @@ func (s *Syncer) collect(ctx context.Context, head model.CommitID) error {
 	// even the same commit must run in full.
 	s.applied = ""
 	return s.Apply.State.Save(st)
+}
+
+// plannedManifest returns the manifest as the planned commits leave it: a
+// planned manifest edit (track, retag, a committed deletion), else the one
+// at head. It is nil when head has no manifest.
+func (s *Syncer) plannedManifest(ctx context.Context, headTree map[model.SourcePath]store.TreeEntry, planned []PlannedCommit) (*manifest.Manifest, error) {
+	var b []byte
+	found := false
+	for _, pc := range planned {
+		for _, ch := range pc.Changes {
+			if ch.Path == manifest.FileName {
+				if ch.Delete {
+					return nil, nil
+				}
+				b, found = ch.Blob, true
+			}
+		}
+	}
+	if !found {
+		te, ok := headTree[manifest.FileName]
+		if !ok {
+			return nil, nil
+		}
+		var err error
+		if b, err = s.Store.ReadBlob(ctx, te.Blob); err != nil {
+			return nil, err
+		}
+	}
+	m, err := manifest.Parse(b)
+	if err != nil {
+		return nil, fmt.Errorf("commit gate: planned %s: %w", manifest.FileName, err)
+	}
+	return m, nil
+}
+
+// plannedEntry returns the entry that gives target t from source src in
+// manifest m, as written: the first [[file]] entry in manifest order that
+// produces (t, src) whether or not its when holds here, else the deepest
+// owned root that contains t, else nil.
+func plannedEntry(m *manifest.Manifest, t model.Target, src model.SourcePath) *extexec.Entry {
+	if m == nil {
+		return nil
+	}
+	for _, e := range m.Entries {
+		for _, r := range manifest.Expand(e, []model.SourcePath{src}) {
+			if r.Target == t && r.Source == src {
+				return &extexec.Entry{Target: e.Target, Source: src, When: e.When, Enclave: e.Enclave}
+			}
+		}
+	}
+	var best *manifest.Root
+	for i, r := range m.Roots {
+		if strings.HasPrefix(string(t), string(r.Path)+"/") && (best == nil || len(r.Path) > len(best.Path)) {
+			best = &m.Roots[i]
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	return &extexec.Entry{Target: best.Path, Source: src, When: best.When, Enclave: best.Enclave, Root: true}
 }
 
 // isDirect reports whether Changes[i] is not a target.

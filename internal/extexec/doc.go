@@ -16,6 +16,12 @@
 //     it and never retries within the same run.
 //   - Stderr is captured (bounded) for the result record and never parsed.
 //
+// A check (KindCheck) also gets Request.Staged, target -> a 0600 temp
+// file with its plaintext, and Request.Entries, target -> the Entry it has
+// once the commit lands. Entries is read from the planned manifest, so a
+// manifest edit in the same commit counts; it holds manifest fields only.
+// A target that no entry or owned root covers has no key.
+//
 // External subcommands: `yadm foo args...` runs `yadm-foo` from PATH when foo
 // is not a built-in command, with Request.Kind = "subcommand" and Args set.
 // Its Response is wrapped in the normal CLI envelope under --json.
@@ -25,6 +31,7 @@
 //	type Kind string                    // KindSubcommand, KindCollector, KindTask, KindCheck, KindNotify, KindBusy, KindNudge
 //	func Env(req Request) []string
 //	type Request struct{...}            // stdin payload
+//	type Entry struct{ Target model.Target; Source model.SourcePath; When string; Enclave model.EnclaveName; Root bool } // a check's view of a staged target's entry
 //	type Response struct{...}           // stdout payload
 //	type Result struct{...}             // what the runner observed
 //	type Runner interface{ Run(ctx, Spec, Request) (Result, error) }

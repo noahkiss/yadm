@@ -24,7 +24,9 @@
 // A check is declared in the manifest too. The Gate runs matching checks on
 // the staged targets before any commit, manual or automatic, and fails closed:
 // a failing, timed-out or disallowed check holds its files; other files still
-// commit.
+// commit. Each Staged carries the entry its target has once the commit lands
+// (the caller reads it from the planned manifest); a check's request lists
+// the entries of the targets it matched in Request.Entries.
 //
 // The core knows no package manager or provisioning tool. Bootstrap is a task
 // with `first_apply = true`; package-manager integration ships, if ever, as a
@@ -63,6 +65,7 @@
 //	func FileAllowList(stateDir string) AllowList
 //	type Runner struct{ Exec extexec.Runner; Allow AllowList; Units UnitReloader }
 //	func (r *Runner) Run(ctx, ev Event, sel []Selected, req extexec.Request) ([]model.TaskResult, []model.Hold)
+//	type Staged struct{ Target model.Target; Scope model.Scope; Plaintext []byte; Entry *extexec.Entry }
 //	type Gate interface{ Check(ctx, staged []Staged, req extexec.Request) (pass []model.Target, holds []model.Hold, verdicts []Verdict) }
 //	func NewGate(checks map[string]manifest.CheckDef, r extexec.Runner, allow AllowList) Gate
 //	func NewGateIn(checks, r, allow, dir string) Gate // dir (the state dir) holds staged plaintext; "" fails closed

@@ -44,10 +44,23 @@ type Request struct {
 	Changed []model.Target          `json:"changed,omitempty"` // tasks: targets written; checks: targets staged
 	Removed []model.Target          `json:"removed,omitempty"` // tasks: targets removed on this apply
 	Staged  map[model.Target]string `json:"staged,omitempty"`  // checks: target -> path of a temp file with the staged plaintext (0600, deleted after)
+	Entries map[model.Target]Entry  `json:"entries,omitempty"` // checks: target -> the entry it has once the commit lands; absent when none covers it
 	Trigger string                  `json:"trigger,omitempty"` // tasks: "paths", "remove", "first-apply", "fact" (an on_fact input changed) or "render" (on_render)
 	Args    []string                `json:"args,omitempty"`    // subcommands
 	JSON    bool                    `json:"json"`              // the caller asked for --json
 	Event   map[string]any          `json:"event,omitempty"`   // notify: the event being reported
+}
+
+// Entry is the manifest entry a staged target has once the commit under
+// the gate lands: read from the planned manifest, so a manifest edit in the
+// same commit (track, retag) counts. It holds manifest fields only, never
+// file content.
+type Entry struct {
+	Target  model.Target      `json:"target"`         // the entry's target: the path, or the glob that covers it; for an owned root, the root's path
+	Source  model.SourcePath  `json:"source"`         // the target's source path
+	When    string            `json:"when"`           // the condition as written; "" means every machine
+	Enclave model.EnclaveName `json:"enclave"`        // "" means plaintext
+	Root    bool              `json:"root,omitempty"` // an owned root covers it; When and Enclave are the root's
 }
 
 // Response is the optional JSON object an executable prints on stdout.

@@ -260,9 +260,9 @@ func TestGate(t *testing.T) {
 	}
 	allow := allowAll(t, extexec.KindCheck, map[string]any{"scan": checks["scan"], "json-lint": checks["json-lint"]})
 	staged := []Staged{
-		{Target: ".zshrc", Scope: model.ScopeShared, Plaintext: []byte("z")},
+		{Target: ".zshrc", Scope: model.ScopeShared, Plaintext: []byte("z"), Entry: &extexec.Entry{Target: ".zshrc", Source: "files/.zshrc", When: "os:linux"}},
 		{Target: ".config/app/settings.json", Scope: model.ScopeShared, Plaintext: []byte("{}")},
-		{Target: ".ssh/config", Scope: "personal", Plaintext: []byte("host")},
+		{Target: ".ssh/config", Scope: "personal", Plaintext: []byte("host"), Entry: &extexec.Entry{Target: ".ssh/*", Source: "sealed/personal/.ssh/config", Enclave: "personal"}},
 	}
 	ex := &fakeExec{err: map[string]error{"json-lint": errors.New("lint: timed out")}}
 	tmp := t.TempDir()
@@ -286,6 +286,17 @@ func TestGate(t *testing.T) {
 	for _, q := range ex.reqs {
 		if q.Kind != extexec.KindCheck || len(q.Staged) != len(q.Changed) {
 			t.Errorf("check request = %+v", q)
+		}
+		// Entries holds exactly the matched targets that have an entry.
+		for _, c := range q.Changed {
+			e, ok := q.Entries[c]
+			want := c != ".config/app/settings.json"
+			if ok != want || ok && e.Target == "" {
+				t.Errorf("%s: entries[%s] = %+v, %v", q.Name, c, e, ok)
+			}
+		}
+		if len(q.Entries) > len(q.Changed) {
+			t.Errorf("%s: entries for unmatched targets: %+v", q.Name, q.Entries)
 		}
 		for target, p := range q.Staged {
 			base := filepath.Base(p)
