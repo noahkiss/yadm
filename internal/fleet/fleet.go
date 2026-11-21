@@ -408,6 +408,21 @@ func Collect(ctx context.Context, f *File, mctx model.Context, r extexec.Runner,
 // A nil allowed function allows nothing. A `when` that cannot be evaluated
 // yields a fact with Error set and runs nothing. The error result is non-nil
 // only when ctx ends; facts collected so far are returned with it.
+// CollectorApplies reports whether the named collector's `when` matches the
+// machine in mctx. An unknown name, or a `when` that cannot be evaluated, does
+// not apply.
+func (f *File) CollectorApplies(name string, mctx model.Context) bool {
+	if f == nil {
+		return false
+	}
+	def, ok := f.Collectors[name]
+	if !ok {
+		return false
+	}
+	ok, err := matchWhen(def.When, f.Vocabulary(), mctx)
+	return err == nil && ok
+}
+
 func CollectWith(ctx context.Context, f *File, mctx model.Context, r extexec.Runner, allowed func(name string, def CollectorDef) bool, base extexec.Request) (map[string]model.ObservedFact, []string, error) {
 	facts := map[string]model.ObservedFact{}
 	var skipped []string

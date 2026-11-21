@@ -85,6 +85,31 @@ func TestCollectorWhenUsesCond(t *testing.T) {
 	}
 }
 
+// TestCollectorApplies: `task list` reads a collector's `when` the way collect
+// does; a machine outside it, an unknown name or a bad `when` does not apply.
+func TestCollectorApplies(t *testing.T) {
+	f := fixtureFleet(t)
+	host := func(id model.MachineID) model.Context { return model.Context{Machine: f.Machines[id]} }
+	f.Collectors["work-only"] = CollectorDef{Command: []string{"true"}, When: "type:work & os:linux"}
+	f.Collectors["everywhere"] = CollectorDef{Command: []string{"true"}}
+	f.Collectors["broken"] = CollectorDef{Command: []string{"true"}, When: "type:nosuch"}
+	for _, c := range []struct {
+		name string
+		id   model.MachineID
+		want bool
+	}{
+		{"work-only", fixture.HostC, true},
+		{"work-only", fixture.HostB, false},
+		{"everywhere", fixture.HostA, true},
+		{"broken", fixture.HostA, false},
+		{"missing", fixture.HostA, false},
+	} {
+		if got := f.CollectorApplies(c.name, host(c.id)); got != c.want {
+			t.Errorf("%s on %s = %v; want %v", c.name, c.id, got, c.want)
+		}
+	}
+}
+
 const base = `schema = 1
 [types.personal]
 enclave = true
