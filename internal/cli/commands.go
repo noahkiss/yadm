@@ -748,12 +748,21 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	full, _ := cmd.Flags().GetBool("full")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	dry, _ := cmd.Flags().GetBool("dry-run")
-	m, err := open(ctx)
-	if err != nil {
-		return notInit(err), err
+	stamp := func() {
+		if auto && !a.json {
+			// The schedule log gets a time for every failure.
+			fmt.Fprint(a.stderr, hooks.now().UTC().Format(time.RFC3339)+" ")
+		}
 	}
 	if auto {
-		markScheduledRun(m.paths.State)
+		if p, err := DefaultPaths(); err == nil {
+			markScheduledRun(p.State)
+		}
+	}
+	m, err := open(ctx)
+	if err != nil {
+		stamp()
+		return notInit(err), err
 	}
 	_, _ = m.load(ctx)
 	rep, err := m.syncer(a.version).Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries, Quick: (quick || auto) && !full})
@@ -767,14 +776,15 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 		}
 	}
 	if err != nil {
-		if auto && !a.json {
-			// The schedule log gets a time for every failure.
-			fmt.Fprint(a.stderr, hooks.now().UTC().Format(time.RFC3339)+" ")
+		stamp()
+		var data any
+		if healed != "" {
+			data = map[string]string{"schedule_healed": healed}
 		}
 		if errors.Is(err, sync.ErrLocked) {
-			return result{next: []string{"yadm sync"}}, err
+			return result{data: data, next: []string{"yadm sync"}}, err
 		}
-		return result{}, err
+		return result{data: data}, err
 	}
 	rep = reportData(rep)
 	var next []string

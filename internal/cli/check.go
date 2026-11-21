@@ -44,7 +44,7 @@ func scheduleCheck(st schedule.Status, lastRun, now time.Time) (checkItem, bool)
 	}
 	switch why := st.Broken(); {
 	case why != "":
-		it.Detail = fmt.Sprintf("the scheduled sync cannot start (%s): launchd refuses the job, usually after an upgrade replaced the binary, and this machine has stopped syncing; fix: yadm schedule install", why)
+		it.Detail = fmt.Sprintf("the scheduled sync cannot start (%s): the service manager refuses the job, usually after an upgrade replaced the binary, and this machine has stopped syncing; fix: yadm schedule install", why)
 		return it, true
 	case !st.Loaded:
 		it.Detail = fmt.Sprintf("%s %s; fix: yadm schedule install", state, st.UnitPath)

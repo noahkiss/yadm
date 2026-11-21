@@ -34,7 +34,13 @@ func markScheduledRun(stateDir string) {
 	writeStamp(filepath.Join(stateDir, scheduleRunFile), hooks.now())
 	p := filepath.Join(stateDir, scheduleLogFile)
 	if fi, err := os.Stat(p); err == nil && fi.Size() > scheduleLogMax {
-		_ = os.Rename(p, p+".1")
+		// launchd keeps writing this run's output to the moved file and
+		// opens the new one for the next run; create it private first.
+		if os.Rename(p, p+".1") == nil {
+			if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+				f.Close()
+			}
+		}
 	}
 }
 

@@ -130,8 +130,8 @@ func TestMarkScheduledRunRotatesLog(t *testing.T) {
 	if !lastScheduledRun(state).Equal(now) {
 		t.Errorf("last run = %v", lastScheduledRun(state))
 	}
-	if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
-		t.Error("full log not rotated")
+	if fi, err := os.Stat(log); err != nil || fi.Size() != 0 || fi.Mode().Perm() != 0o600 {
+		t.Errorf("new log after rotation: %v %v", fi, err)
 	}
 	if fi, err := os.Stat(log + ".1"); err != nil || fi.Size() != scheduleLogMax+1 {
 		t.Errorf("rotated log: %v %v", fi, err)
