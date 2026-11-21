@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -230,7 +232,10 @@ func (m *machineEnv) writeEntry(ctx context.Context, version string, e crypt.Log
 		Changes:      []store.Change{{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}},
 		ChangesScope: model.Scope(e.Enclave),
 		Capture:      reseal,
-		Push:         true,
+		// A reseal lands whole with its entry, or nothing lands: an entry
+		// that starts an epoch must never commit without the reseal.
+		Atomic: reseal != nil,
+		Push:   true,
 	}
 	if reseal == nil {
 		opts.Capture = &apply.Capture{}
@@ -388,8 +393,15 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, &c, fmt.Sprintf("enclave %s: remove %s", e, who))
 	d.Resealed = c.Paths
+	if d.Commit == "" {
+		// Nothing landed: no entry, no pin, no epoch change.
+		return result{data: d, next: heldNext(d.Holds)}, removeHeld(e, who, c.Paths, d.Holds, err)
+	}
+	if err == nil {
+		err = m.resealLanded(ctx, d.Commit, c)
+	}
 	retired := false
-	if err == nil && d.Commit != "" {
+	if err == nil {
 		// The reseal landed: retire the old epochs now, so a forgery pushed
 		// under an old key is never opened for delivery again.
 		var re crypt.LogEntry
@@ -408,6 +420,54 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 		"rotate every real secret stored in enclave "+string(e)+": "+string(who)+" keeps all keys up to epoch "+fmt.Sprint(head.Epoch),
 	)
 	return result{data: d, next: next}, err
+}
+
+// removeHeld is the error of a remove whose atomic commit did not land: the
+// gate or a conflict held part of the reseal, so neither the entry nor the
+// reseal was committed.
+func removeHeld(e model.EnclaveName, who model.MachineID, resealed []model.Target, holds []model.Hold, cause error) error {
+	var held []string
+	for _, h := range holds {
+		if slices.Contains(resealed, h.Target) && !slices.Contains(held, string(h.Target)) {
+			held = append(held, string(h.Target))
+		}
+	}
+	sort.Strings(held)
+	if len(held) == 0 {
+		return fmt.Errorf("remove %s from %s did not commit; the key log, pins and epoch are unchanged: %v", who, e, cause)
+	}
+	return fmt.Errorf("remove %s from %s did not commit: the commit gate held the reseal of %s; the key log, pins and epoch are unchanged; settle the holds, then run remove again", who, e, strings.Join(held, ", "))
+}
+
+// heldNext collects the suggested commands of holds, without repeats.
+func heldNext(holds []model.Hold) []string {
+	var out []string
+	for _, h := range holds {
+		for _, n := range h.Next {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// resealLanded checks that commit holds every resealed source as the
+// reseal wrote it. The atomic commit makes a partial reseal unlikely; a
+// conflict resolved against a fetched source is the one way left, and then
+// the old epochs must stay open until a member reseals again.
+func (m *machineEnv) resealLanded(ctx context.Context, commit model.CommitID, c apply.Capture) error {
+	var missing []string
+	for i, ch := range c.Changes {
+		b, err := m.repo.ReadPath(ctx, commit, ch.Path)
+		if err != nil || !bytes.Equal(b, ch.Blob) {
+			missing = append(missing, string(c.Paths[i]))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the remove entry committed, but the reseal of %s did not land as written; old epochs are not retired: a member reseals them, then runs yadm enclave retire", strings.Join(missing, ", "))
 }
 
 func (a *app) cmdEnclaveRetire(cmd *cobra.Command, args []string) (result, error) {

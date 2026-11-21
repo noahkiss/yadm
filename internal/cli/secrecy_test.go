@@ -103,7 +103,9 @@ func TestSecrecyThroughCLI(t *testing.T) {
 	}
 
 	// Add host-b to personal, then remove it again: the remove reseals under a
-	// new epoch and nothing leaks into either repository.
+	// new epoch and nothing leaks into either repository. The reseal passes
+	// the commit gate, so this machine allows the fixture's check.
+	passGate(t)
 	hb := fx.Identities[fixture.HostB].Member()
 	env = yadmOK(t, "enclave", "add", "host-b", "--enclave", "personal", "--recipient", hb.Recipient, "--sign-key", hb.SignKey)
 	added := decode[entryData](t, env.Data)

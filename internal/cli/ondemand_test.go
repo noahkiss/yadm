@@ -12,6 +12,19 @@ import (
 	"github.com/noahkiss/yadm/internal/secrecytest"
 )
 
+// passGate puts a passing secret-check stub on PATH, for the fixture's
+// commit-gate check, and allows every definition on the current machine.
+func passGate(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "secret-check"), "#!/bin/sh\ncat >/dev/null\necho '{\"schema\":1,\"ok\":true}'\n")
+	if err := os.Chmod(filepath.Join(bin, "secret-check"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	yadmOK(t, "task", "allow")
+}
+
 // checkNamed returns the check items of one name whose detail mentions sub.
 func checkNamed(t *testing.T, env Envelope, name, sub string) []checkItem {
 	t.Helper()

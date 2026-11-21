@@ -54,7 +54,8 @@
 //	                               fleet.DiffObserved; a non-member's output holds no sealed facts
 //	enclave create|add|remove|retire|set-recovery
 //	                               crypt.Create/Add/Remove/Retire/SetRecovery, crypt.MarshalLogEntry, sync.Commit (Changes),
-//	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal
+//	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal,
+//	                               committed with its entry atomically (sync.CommitOptions.Atomic), retired only once it landed
 //	review list|ok|revert          sync.Unreviewed (Snapshot.Readable), sync.Ack, store.CommitTree
 //	hold list|show|resolve         apply.Engine.Holds, ResolveHold; conflicts through sync.Commit{Resolve}
 //	lease take|release|list        sync.FileLeases
