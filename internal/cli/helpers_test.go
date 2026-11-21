@@ -21,6 +21,11 @@ func hermetic(t *testing.T) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	// The global excludes file ($XDG_CONFIG_HOME/git/ignore or
+	// $HOME/.config/git/ignore) would hide fixture files from `git add`.
+	neutral := t.TempDir()
+	t.Setenv("HOME", neutral)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(neutral, ".config"))
 	t.Setenv("GIT_AUTHOR_NAME", "Test User")
 	t.Setenv("GIT_AUTHOR_EMAIL", "user@example.invalid")
 	t.Setenv("GIT_COMMITTER_NAME", "Test User")
