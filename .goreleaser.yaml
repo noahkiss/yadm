@@ -1,5 +1,11 @@
-# Release build. The release workflow runs it on a v* tag.
+# Release build. The release workflow runs it on a v* tag, on a macOS runner.
 # Rehearse locally with: goreleaser release --snapshot --clean
+#
+# Each darwin binary is signed by scripts/macos-sign.sh as it is built, so the
+# archives and checksums.txt hold the signed files. The identifiers below are
+# permanent: macOS ties launch constraints and privacy grants to them.
+# The release is created as a draft; the workflow notarizes the darwin
+# binaries, attaches a .sha256 beside each darwin archive, then publishes it.
 version: 2
 
 project_name: yadm
@@ -18,6 +24,10 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w -X main.version={{ .Version }}
+    hooks:
+      post:
+        - cmd: ./scripts/macos-sign.sh {{ .Os }} {{ .Path }} com.nkmkdigital.yadm
+          output: true
   - id: yadm-oracle
     main: ./cmd/yadm-oracle
     binary: yadm-oracle
@@ -27,6 +37,10 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w
+    hooks:
+      post:
+        - cmd: ./scripts/macos-sign.sh {{ .Os }} {{ .Path }} com.nkmkdigital.yadm.oracle
+          output: true
 
 archives:
   - formats: [tar.gz]
@@ -42,5 +56,6 @@ changelog:
   use: github-native
 
 release:
-  draft: false
+  draft: true
+  replace_existing_draft: true
   prerelease: auto
