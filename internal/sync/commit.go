@@ -241,6 +241,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 	tip := head
 	written := map[model.Target]string{}
 	var touched []model.Target // targets whose source the commits change
+	var forget []model.Target  // targets an untrack stops managing here (CommitOptions.Forget)
 	whole := false             // a commit changes a source that is not a target
 	for _, pc := range planned {
 		var changes []store.Change
@@ -348,6 +349,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		}
 		tip = id
 		out.ids = append(out.ids, id)
+		forget = append(forget, pc.forget...)
 		for _, t := range landed {
 			out.committed[t] = true
 		}
@@ -384,6 +386,21 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			out.ids, out.committed = nil, map[model.Target]bool{}
 		}
 		return out, err
+	}
+	// An untracked target stays on disk: this machine stops managing it
+	// before the apply below, which would delete it as one that left the
+	// plan.
+	if len(forget) > 0 {
+		st, err := s.Apply.State.Load()
+		if err != nil {
+			return out, err
+		}
+		for _, t := range forget {
+			apply.Forget(st, t, now)
+		}
+		if err := s.Apply.State.Save(st); err != nil {
+			return out, err
+		}
 	}
 	if partial && !whole && len(touched) > 0 {
 		out.dirty, err = s.moveAndApplyPaths(ctx, rep, tip, touched)
@@ -561,6 +578,13 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		pc.Changes = append(pc.Changes, ch)
 		pc.Targets = append(pc.Targets, model.Target(ch.Path))
 		pc.direct = append(pc.direct, true)
+	}
+	if len(opts.Forget) > 0 && len(opts.Changes) > 0 {
+		scope := opts.ChangesScope
+		if scope == "" {
+			scope = model.ScopeShared
+		}
+		plan(scope).forget = opts.Forget
 	}
 	scopes := make([]model.Scope, 0, len(byScope))
 	for sc := range byScope {

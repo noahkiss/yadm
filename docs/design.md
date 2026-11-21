@@ -260,7 +260,7 @@ Behaviour:
 | Cipher | AES-SIV (RFC 5297), 512-bit key, from `tink-go` `daead/subtle`. Deterministic. |
 | Epoch key | 32 random bytes per enclave per epoch. |
 | Subkeys | HKDF-SHA256(epoch key, info = `yadm v1 <purpose> <enclave>`), 64 bytes. Purposes: `file`, `value`, `region`, `name`. |
-| File container | `"yadm-sealed\0"`, version byte 2, enclave name (length-prefixed), epoch (uint32 BE), SIV ciphertext. AD = the header bytes, then the source path (length-prefixed), which the container does not store. A blob moved to another path fails to open, so a rename needs a member to reseal it; `yadm retag` does. Version 1, which had no path in the AD, is refused. |
+| File container | `"yadm-sealed\0"`, version byte 2, enclave name (length-prefixed), epoch (uint32 BE), SIV ciphertext. AD = the header bytes, then the source path (length-prefixed), which the container does not store. A blob moved to another path fails to open, so a rename needs a member to reseal it: `yadm source mv` does within an enclave, `yadm retag` across scopes. Version 1, which had no path in the AD, is refused. |
 | Value token | `yadm:1:<enclave>:<epoch>:<base64url>`. AD = enclave, epoch, and the source path of the file and the concrete key path (escaped, never the manifest pattern). A token moved to another key or another file fails. |
 | Region token | `yadm:sealed 1 <epoch> <base64>`. AD = enclave, epoch, and the source path of the file and the region label. A token moved to another file fails. |
 | Wrapping | Every key-log entry carries all epoch keys so far, age-encrypted (X25519) to each member and to the recovery recipient. |
@@ -415,6 +415,20 @@ A `merge = "union"` target can change here while a sync brings a new source, for
 
 Track refuses, with exit 2 and nothing committed, a path that a manifest entry names or an owned root contains, a path a glob entry matches when `--when` or `--enclave` is given or the glob does not apply here (a second entry would collide), and a path two applying globs match (the error names which; `yadm retag` and `yadm commit` handle those), a path outside `$HOME`, a directory (share one with a `[[root]]`), and a path that is not a regular file. An `--enclave` that is not an enclave type fails; one this machine is not a member of is refused with exit 6.
 
+### 8.7 Source move
+
+`yadm source mv <old-source> <new-source> [--dry-run] [--no-push]` renames a source within its scope: `files/…` to `files/…`, or `sealed/<e>/…` to `sealed/<e>/…`. Paths are relative to the source root. Every literal entry that reads the old source gets its `source` line pointed at the new path; a new path that is the entry's default (`files/<target>` or `sealed/<e>/<target>`) drops the line instead. No other manifest line changes, comments included. The content moves with the path binding renewed: a sealed blob is opened under the old path and sealed under the new one with the enclave's current epoch, and sealed values and regions are rebound the same way, all in memory. The manifest edit, the old source's deletion and the new blob land in one protected commit (subject `move <old> to <new>`) through the normal commit path, and the commit is pushed; `--no-push` leaves it to the next sync. The content every target gets stays the same, so no machine rewrites a target.
+
+It refuses, with exit 2 and nothing committed, a move between `files/` and `sealed/<e>/` (`yadm retag` changes who can read a file), an old source that no literal entry reads (an owned root's entry-less file) or that a glob entry reads, and a new source that exists or that another entry or glob would read. A non-member of the enclave, or of an enclave whose sealed values or regions the file holds, is refused with exit 6.
+
+### 8.8 Untrack
+
+`yadm untrack <path> [--source <source>] [--dry-run] [--no-push]` stops syncing one entry. It removes the entry's `[[file]]` table, with its `[file.*]` sub-tables and the comment lines directly above it, and deletes its source, in one protected commit (subject `untrack <path>`) that is pushed; `--no-push` leaves it to the next sync. A source that another entry (on any machine) still reads stays, and the output says so (`source_kept`). The path is a target; a target with several entries needs `--source`, and a path under `files/` or `sealed/<e>/` that no entry names as its target picks the entry that reads that source.
+
+The file stays on disk on this machine. When the entry applies here, this machine stops managing the target in the same step as the commit lands: its state record and holds go, and a file inside an owned root is recorded as ignored here (as `yadm hold ignore` does), so scan never reports it as new. Other machines remove an unchanged copy on their next apply and hold a changed one, as for any target that leaves the plan (section 8.3).
+
+It refuses, with exit 2 and nothing committed, a path no literal entry names: a glob entry's or an owned root's file (commit its deletion with `yadm commit <path>`, or ignore it with `yadm hold ignore`). A non-member of the entry's enclave, or of an enclave whose sealed values or regions the file holds, is refused with exit 6. The commit carries no plaintext.
+
 ## 9. Commits
 
 ### 9.1 Private index
@@ -427,7 +441,7 @@ Every git call the tool runs against the source clone, `yadm git` included, sets
 
 Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets, the paths of 0600 temp files holding their plaintext, and the entry each target has once the commit lands (`entries`, section 12.4). The gate fails closed: a non-zero exit, a timeout, `ok: false`, a planned manifest that does not parse or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
-Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag, a track or a committed deletion. They hold no plaintext, and check `paths` name targets. They still commit under the sync lock, through a private index.
+Source changes that are not targets skip the gate: a key-log entry (signed tool output), the manifest edit of a retag, a track or a committed deletion, and every change of a source move, an untrack, or a retag of an entry that does not apply on this machine. They change no target's plaintext, and check `paths` name targets. They still commit under the sync lock, through a private index.
 
 ### 9.3 Auto-commit
 
@@ -741,6 +755,8 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave <e>] [--source <s>] [--dry-run]` | Section 8.5; commits through the gate and pushes | `{commit, source, when, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
+| `source mv <old> <new> [--dry-run] [--no-push]` | Section 8.7; commits and pushes | `{from, to, targets[], scope, commit, pushed, push_error?}` |
+| `untrack <path> [--source <s>] [--dry-run] [--no-push]` | Section 8.8; commits and pushes; the file stays here | `{target, source, scope, source_kept, commit, pushed, push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |

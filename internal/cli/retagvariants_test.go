@@ -157,6 +157,23 @@ when = "type:home & os:darwin"`, 1)
 	}
 }
 
+// assertCleanOn fails when the current machine has drift or a hold on one
+// of targets.
+func assertCleanOn(t *testing.T, targets ...string) {
+	t.Helper()
+	st := decode[struct {
+		Drift []struct{ Target string }
+		Holds []struct{ Target string }
+	}](t, yadmOK(t, "status").Data)
+	for _, x := range append(st.Drift, st.Holds...) {
+		for _, p := range targets {
+			if x.Target == p {
+				t.Fatalf("status names %s: %+v", p, st)
+			}
+		}
+	}
+}
+
 // assertClean fails when the current machine has drift or holds.
 func assertClean(t *testing.T) {
 	t.Helper()

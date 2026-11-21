@@ -121,8 +121,9 @@ type PlannedCommit struct {
 	Message store.Message
 	Info    MessageInfo // rebuilds Message when only some targets land
 
-	direct []bool // direct[i]: Changes[i] is not a target (a key-log entry)
-	atomic bool   // every change lands, or none does (CommitOptions.Atomic)
+	direct []bool         // direct[i]: Changes[i] is not a target (a key-log entry)
+	atomic bool           // every change lands, or none does (CommitOptions.Atomic)
+	forget []model.Target // stop managing these here once the commit lands (CommitOptions.Forget)
 }
 
 // Deps are the collaborators a Syncer needs.
@@ -229,6 +230,10 @@ type CommitOptions struct {
 	// Atomic commits everything or nothing: when the gate holds a target,
 	// Changes do not land without it (a manifest entry without its source).
 	Atomic bool
+	// Forget lists targets this machine stops managing, leaving the files
+	// on disk, once the commit that carries Changes lands (an untrack):
+	// the commit's own apply then does not delete them.
+	Forget []model.Target
 
 	Trigger string // Yadm-Auto trailer: TriggerManual (default), TriggerHook or TriggerStop
 	Session string // Yadm-Session trailer, the harness session id

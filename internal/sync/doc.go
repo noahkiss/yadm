@@ -28,6 +28,8 @@
 //     see. Main moves by compare-and-swap and apply records the targets.
 //     A deletion commits only when named (Commit); its commit also drops
 //     the target's own [[file]] entry (apply.Engine.DropEntries).
+//     CommitOptions.Forget makes this machine stop managing the named
+//     targets (apply.Forget) once the commit lands, so its apply keeps them.
 //  3. Run allowed collectors (fleet.CollectWith, with source and commit).
 //  4. Fetch origin main and refs/yadm/* (first, before step 1). The guard's
 //     base is the accepted remote main recorded in AcceptedFile; only an
@@ -83,7 +85,7 @@
 // Exported API:
 //
 //	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick bool }
-//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Atomic; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries }
+//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
 //	const FullEvery, WakeGap

@@ -58,6 +58,11 @@
 //   - A committed deletion of a target its own literal [[file]] entry names
 //     drops that entry too (DropEntries), so the manifest never names a
 //     missing source; it refuses when another entry still reads the source.
+//   - Retag, MoveSource and Untrack edit only the lines they change in
+//     manifest.toml and verify the edit parses to what was asked. A sealed
+//     blob, sealed value or region that moves is opened under the old path
+//     and sealed under the new one in memory, under the current epoch only;
+//     a part this machine cannot open fails with crypt.ErrNotMember.
 //   - A full apply drops the holds nothing covers any more (no plan target,
 //     state record, applying glob or owned root), except conflicts, gate holds,
 //     weakened-protection holds and holds without a target.
@@ -98,6 +103,9 @@
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Retagged, error) // opts.Source picks a variant (ErrVariants); when keeps non-type terms (cond.Retype)
 //	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
 //	func (e *Engine) DropEntries(ctx, rev model.CommitID, targets []model.Target) (*store.Change, error) // manifest edit for committed deletions; nil when none needed
+//	func (e *Engine) MoveSource(ctx, from, to model.SourcePath) (SourceMove, error) // rename within a scope, resealed in memory; ErrRefused, crypt.ErrNotMember
+//	func (e *Engine) Untrack(ctx, t model.Target, opts UntrackOptions) (Untracked, error) // drop one entry and its source unless shared; ErrRefused, ErrVariants, crypt.ErrNotMember
+//	func Forget(st *State, t model.Target, now time.Time) // stop managing t here, file kept; ignored inside an accepted root
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error)
