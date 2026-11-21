@@ -618,7 +618,9 @@ type definition struct {
 }
 
 // definitions lists every task, check and collector definition, sorted.
-func definitions(allow tasks.AllowList, man *manifest.Manifest, fl *fleet.File, plan *manifest.Plan) ([]definition, error) {
+// mctx is this machine's context; nil (no snapshot) counts every collector as
+// applying.
+func definitions(allow tasks.AllowList, man *manifest.Manifest, fl *fleet.File, plan *manifest.Plan, mctx *model.Context) ([]definition, error) {
 	var out []definition
 	add := func(kind extexec.Kind, name string, def any, applies bool) error {
 		h, err := definitionHash(def)
@@ -644,7 +646,8 @@ func definitions(allow tasks.AllowList, man *manifest.Manifest, fl *fleet.File, 
 	}
 	if fl != nil {
 		for n, d := range fl.Collectors {
-			if err := add(extexec.KindCollector, n, d, true); err != nil {
+			applies := mctx == nil || fl.CollectorApplies(n, *mctx)
+			if err := add(extexec.KindCollector, n, d, applies); err != nil {
 				return nil, err
 			}
 		}
@@ -673,7 +676,7 @@ func planHas(p *manifest.Plan, name string, task bool) (any, bool) {
 // allowDefinitions allows the named definitions (all when names is empty)
 // and returns "kind:name" for each one allowed.
 func allowDefinitions(allow tasks.AllowList, man *manifest.Manifest, fl *fleet.File, names []string) ([]string, error) {
-	defs, err := definitions(allow, man, fl, nil)
+	defs, err := definitions(allow, man, fl, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -711,7 +714,7 @@ func (a *app) cmdTaskList(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return notInit(err), err
 	}
-	defs, err := definitions(m.allow, m.snap.Manifest, m.snap.Fleet, m.snap.Plan)
+	defs, err := definitions(m.allow, m.snap.Manifest, m.snap.Fleet, m.snap.Plan, &m.snap.Context)
 	if err != nil {
 		return result{}, err
 	}
@@ -722,7 +725,7 @@ func (a *app) cmdTaskList(cmd *cobra.Command, args []string) (result, error) {
 	var next []string
 	for _, d := range defs {
 		fmt.Fprintf(&b, "%-10s %-20s allowed=%v applies=%v\n", d.Kind, d.Name, d.Allowed, d.Applies)
-		if !d.Allowed {
+		if !d.Allowed && d.Applies {
 			next = append(next, "yadm task allow "+model.ShellQuote(d.Name))
 		}
 	}
