@@ -74,7 +74,7 @@ func (e *Engine) Scan(ctx context.Context, opts ScanOptions) ([]Drift, error) {
 	}
 
 	if len(opts.Paths) > 0 {
-		out = append(out, e.scanNamedNew(st, opts.Paths, now)...)
+		out = append(out, e.scanNamedNew(ctx, st, opts.Paths, now)...)
 	}
 	if len(opts.Paths) == 0 {
 		news, ok := e.scanRoots(ctx, st, deadline)
@@ -190,16 +190,35 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 }
 
 // scanNamedNew reports each named path that is an unmanaged regular file
-// inside an accepted owned root, baseline files included, as DriftNew with
-// Named set. A walk of the roots does not run when paths are named.
-func (e *Engine) scanNamedNew(st *State, paths []model.Target, now time.Time) []Drift {
+// as DriftNew with Named set when an applying glob entry of the applied
+// snapshot matches it (its source is not in the tree yet), or when it is
+// inside an accepted owned root, baseline files included. A walk of the
+// roots does not run when paths are named, and no directory is walked for
+// globs: only a named file is new under a glob.
+func (e *Engine) scanNamedNew(ctx context.Context, st *State, paths []model.Target, now time.Time) []Drift {
 	var out []Drift
+	var plan *manifest.Plan
+	loaded := false
 	for _, t := range paths {
 		if _, managed := st.Targets[t]; managed {
 			continue
 		}
-		root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t)
-		if !ok {
+		if !loaded {
+			loaded = true
+			if st.Applied != "" {
+				if snap, err := e.snapshot(ctx, st.Applied); err == nil {
+					plan = snap.Plan
+				}
+			}
+		}
+		scope := model.ScopeShared
+		if r, ok, err := plan.GlobNew(t); err == nil && ok {
+			scope = r.Entry.Scope()
+		} else if root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t); ok {
+			if root.Enclave != "" {
+				scope = model.Scope(root.Enclave)
+			}
+		} else {
 			continue
 		}
 		abs, err := e.abs(t)
@@ -209,10 +228,6 @@ func (e *Engine) scanNamedNew(st *State, paths []model.Target, now time.Time) []
 		info, err := e.fs.Lstat(abs)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
-		}
-		scope := model.ScopeShared
-		if root.Enclave != "" {
-			scope = model.Scope(root.Enclave)
 		}
 		since, ok := st.Seen[t]
 		if !ok {

@@ -229,7 +229,7 @@ var ErrCovered = errors.New("already covered")
 func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, when string, enc model.EnclaveName, verb string) (Capture, error) {
 	for _, en := range snap.Manifest.Entries {
 		if manifest.IsGlob(string(en.Target)) && manifest.Match(string(en.Target), string(t)) {
-			return Capture{}, fmt.Errorf("%s %s: %w: glob entry %q covers it; edit the manifest", verb, t, ErrCovered, en.Target)
+			return Capture{}, fmt.Errorf("%s %s: %w: glob entry %q covers it, so a second entry would collide; capture it under that entry with yadm commit %s, or edit the manifest", verb, t, ErrCovered, en.Target, model.ShellQuote(string(t)))
 		}
 	}
 	if snap.Manifest.Generated(t) {

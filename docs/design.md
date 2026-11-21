@@ -167,7 +167,7 @@ Resolution for one machine:
 - An entry applies when its `when` condition is true. An empty `when` applies everywhere.
 - Two applying entries for one target are a **collision**. Every command that resolves the manifest fails on it, and `yadm check` lists it.
 - Without `source`, the source is `files/<target>`, or `sealed/<enclave>/<target>` when `enclave` is set.
-- A target glob (`.config/tool/**`) expands against the source tree.
+- A target glob (`.config/tool/**`) expands against the source tree. A file in `$HOME` that an applying glob matches but whose source does not exist yet is not a target. `yadm commit <path>` or `yadm track <path>` captures it under that entry: its source is the entry's source directory plus the rest of the path (`files/…`, `sealed/<enclave>/…` for an enclave), with the entry's rules, and no entry is added. The capture is refused when two applying globs match the path, or when another applying entry would also read that source. Scan and sync never look for such files; only a named path is captured.
 - `mode` defaults to 0644, or 0755 for an executable source. Sealed files follow the same rule: sealing changes what the repository stores, not the mode on disk.
 - Without `mode`, a target under `.ssh/` or `.gnupg/` loses group and other access (0600, or 0700 when executable), and apply creates those directories with mode 0700. An explicit `mode` always wins.
 - `review = true` excludes an entry from auto-commit. Its changes wait for `yadm commit`.
@@ -396,6 +396,7 @@ A `merge = "union"` target can change here while a sync brings a new source, for
 - **Sealed file:** the target is sealed under the current epoch. Deterministic sealing makes an unchanged file a no-op.
 - **Template:** capture recomputes the last render (source blob plus stored render Context, checked against the stored hash), diffs it against the target, applies the hunks to the template where their context matches verbatim, re-renders and accepts only if the result equals the target byte for byte. Otherwise the target is held (`rendered_edit`) and status reports it. Apply never re-renders over it. The hold names the template (`source`) and carries a proposed unified diff (`patch`). With `patch_of = "template"` it patches the template: a three-way merge of template and target over the last render, each conflict resolved to the target's lines, accepted only when it renders back to the target on this machine. An edit on an expression or a conditional block thus becomes literal text, so the agent reviews it before committing. When no such candidate exists, `patch_of = "render"` and the diff is the hand edit against the last render. An agent edits the template and commits in one step. An enclave template's hold carries no patch, because holds live in `state.json`, which never holds plaintext.
 - **Intra-file rules:** package rules (section 6), with the seal guard.
+- **New file under a glob entry** (section 4), named by `yadm commit` or `yadm track`: captured as a managed file of that entry with no previous source, so the entry's enclave, sealed values and regions apply. A non-member is held (`seal_guard`). A template glob holds the file (`uncapturable`): its template source is written by hand.
 - **Every capture** passes the round-trip check: render(new source) = target. A failure is held as `uncapturable`, never committed.
 
 ### 8.5 Retag
@@ -404,15 +405,17 @@ A `merge = "union"` target can change here while a sync brings a new source, for
 
 ### 8.6 Track
 
-`yadm track <path> [--when <condition>] [--enclave <name>] [--no-push]` starts syncing a file that nothing covers yet. It appends a `[[file]]` entry for the path to `manifest.toml`, with `when` and `enclave` when given, and adds the file's bytes as its source: `files/<target>`, or `sealed/<enclave>/<target>` sealed under the enclave's current epoch, so a non-member only ever receives ciphertext. Both changes land in one commit (subject `track <path>`) through the commit gate, or neither does: when the gate holds the file, nothing is committed. The commit is pushed in the same call; with `--no-push`, the next sync publishes it. The new `when` is checked against the fleet before anything is committed.
+`yadm track <path> [--when <condition>] [--enclave <name>] [--no-push]` starts syncing a file that nothing covers yet. Without `--when` and `--enclave`, a new file that an applying glob entry matches (section 4) is captured under that entry instead, as `yadm commit <path>` would: no manifest edit, and the output names the glob. It appends a `[[file]]` entry for the path to `manifest.toml`, with `when` and `enclave` when given, and adds the file's bytes as its source: `files/<target>`, or `sealed/<enclave>/<target>` sealed under the enclave's current epoch, so a non-member only ever receives ciphertext. Both changes land in one commit (subject `track <path>`) through the commit gate, or neither does: when the gate holds the file, nothing is committed. The commit is pushed in the same call; with `--no-push`, the next sync publishes it. The new `when` is checked against the fleet before anything is committed.
 
-Track refuses, with exit 2 and nothing committed, a path that a manifest entry names, a glob entry matches or an owned root contains (the error names which; `yadm retag` and `yadm commit` handle those), a path outside `$HOME`, a directory (share one with a `[[root]]`), and a path that is not a regular file. An `--enclave` that is not an enclave type fails; one this machine is not a member of is refused with exit 6.
+Track refuses, with exit 2 and nothing committed, a path that a manifest entry names or an owned root contains, a path a glob entry matches when `--when` or `--enclave` is given or the glob does not apply here (a second entry would collide), and a path two applying globs match (the error names which; `yadm retag` and `yadm commit` handle those), a path outside `$HOME`, a directory (share one with a `[[root]]`), and a path that is not a regular file. An `--enclave` that is not an enclave type fails; one this machine is not a member of is refused with exit 6.
 
 ## 9. Commits
 
 ### 9.1 Private index
 
 Every commit operation builds its own fresh index file in the state directory, seeded from the parent commit and holding only that operation's paths. The source clone's own index and worktree are never used to stage. Parallel agents and the timer never sweep each other's changes.
+
+Every git call the tool runs against the source clone, `yadm git` included, sets `core.excludesFile` to an empty file. The manifest defines what the source holds, so the user's global ignore rules (`core.excludesFile` or `$XDG_CONFIG_HOME/git/ignore`) never hide a file there. A `.gitignore` in the source and `info/exclude` still apply.
 
 ### 9.2 Commit gate
 
@@ -461,7 +464,7 @@ A message names paths only. No subject, body or trailer ever carries file conten
 
 ### 9.5 Manual commits
 
-`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. A named path that no manifest entry or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes. When the push does not happen in this call (another process holds the network lock, or the remote kept moving), the commit stands, `push_error` says why, and the next sync pushes.
+`yadm commit [-m <subject> | --why <intent>] [--no-push] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named file that predates its owned root is captured too. A named new file that an applying glob entry matches is captured under that entry (section 4). A named path that no manifest entry, applying glob or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes. When the push does not happen in this call (another process holds the network lock, or the remote kept moving), the commit stands, `push_error` says why, and the next sync pushes.
 
 ### 9.6 Review
 
@@ -721,7 +724,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
-| `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?}` |
+| `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
