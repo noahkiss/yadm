@@ -208,7 +208,16 @@ type Snapshot struct {
 	Manifest *manifest.Manifest
 	Plan     *manifest.Plan
 	Context  model.Context
-	Keys     *crypt.Set
+	// Keys are the keys delivery may use: every enclave this machine
+	// opens, except the on-demand ones.
+	Keys *crypt.Set
+	// ReadKeys are all the keys this machine holds, on-demand enclaves
+	// included. Only paths that print to stdout or write ciphertext
+	// (review, hold show, show, notes, key-log writes) use them, through
+	// Readable.
+	ReadKeys *crypt.Set
+	// OnDemand holds the enclaves this machine reads on demand only.
+	OnDemand map[model.EnclaveName]bool
 	Enclaves map[model.EnclaveName]crypt.EnclaveLoad
 	Render   render.Engine
 	// Crypto seals and opens for this machine. Load sets it from Keys; nil
@@ -300,6 +309,10 @@ type Deps struct {
 	// Allow is the local allow list for weakened protections and owned
 	// roots. Nil falls back to Tasks.Allow; with neither, nothing is allowed.
 	Allow tasks.AllowList
+	// OnDemand names the enclaves this machine reads on demand only
+	// (machine.toml on_demand). Load leaves their keys out of Keys and
+	// Crypto, so apply, capture and backups treat them as a non-member does.
+	OnDemand []model.EnclaveName
 
 	// Optional. Zero values pick the defaults.
 	LoadSnapshot func(ctx context.Context, rev model.CommitID) (*Snapshot, error) // replaces Load (tests, bisect sandboxes)

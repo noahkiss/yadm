@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -300,6 +301,12 @@ func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) e
 	if encs := backupEnclaves(p, b); len(encs) > 0 {
 		names := make([]string, len(encs))
 		for i, x := range encs {
+			if slices.Contains(e.OnDemand, x) {
+				// An on-demand enclave's plaintext never goes to a backup.
+				// Apply replaces only bytes it wrote itself (anything else
+				// is drift and held), so the source still holds them.
+				return nil
+			}
 			names[i] = string(x)
 		}
 		dir = filepath.Join(dir, enclaveBackupDir, strings.Join(names, "+"))
@@ -313,9 +320,10 @@ func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) e
 
 // pruneBackups removes backup sets older than BackupRetention, and every
 // backup that holds plaintext of an enclave whose verified key log no
-// longer lists this machine. A refused log prunes nothing, so a pusher
-// cannot wipe backups with one bad entry.
-func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.EnclaveLoad) {
+// longer lists this machine or that this machine reads on demand only
+// (onDemand). A refused log prunes nothing, so a pusher cannot wipe backups
+// with one bad entry.
+func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.EnclaveLoad, onDemand map[model.EnclaveName]bool) {
 	if e.StateDir == "" {
 		return
 	}
@@ -329,6 +337,9 @@ func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.E
 		gone := false
 		for _, name := range strings.Split(g.Name(), "+") {
 			if l, ok := loads[model.EnclaveName(name)]; ok && l.Err == nil && !l.Member {
+				gone = true
+			}
+			if onDemand[model.EnclaveName(name)] {
 				gone = true
 			}
 		}

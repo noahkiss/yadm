@@ -254,6 +254,22 @@ func (s *Set) Strict() *Set { return s.view(func(k *Keyring) model.Epoch { retur
 // base, the previously applied source, a diff or log.
 func (s *Set) History() *Set { return s.view(func(*Keyring) model.Epoch { return 1 }) }
 
+// Only returns the subset of s whose enclaves keep(e) accepts. Apply uses
+// it to drop the keyrings of enclaves this machine reads on demand only, so
+// no delivery path can open them.
+func (s *Set) Only(keep func(model.EnclaveName) bool) *Set {
+	if s == nil {
+		return nil
+	}
+	out := &Set{Rings: make(map[model.EnclaveName]*Keyring, len(s.Rings))}
+	for e, k := range s.Rings {
+		if k != nil && keep(e) {
+			out.Rings[e] = k
+		}
+	}
+	return out
+}
+
 func (s *Set) view(floor func(*Keyring) model.Epoch) *Set {
 	if s == nil {
 		return nil

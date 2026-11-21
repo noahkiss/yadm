@@ -100,10 +100,17 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 			logs[enc] = append(logs[enc], le)
 		}
 	}
-	keys, loads, err := crypt.LoadSet(logs, e.Pins, e.Identity)
+	all, loads, err := crypt.LoadSet(logs, e.Pins, e.Identity)
 	if err != nil {
 		return nil, err
 	}
+	// Filter after LoadSet: pins still advance and a bad log is still
+	// refused for an on-demand enclave; only delivery loses its keys.
+	onDemand := map[model.EnclaveName]bool{}
+	for _, x := range e.OnDemand {
+		onDemand[x] = true
+	}
+	keys := all.Only(func(x model.EnclaveName) bool { return !onDemand[x] })
 	// The vocabulary carries the manifest's named conditions, so
 	// templates may say {% if cond:NAME %} as well.
 	voc, err := man.Vocabulary(fl.Vocabulary())
@@ -122,6 +129,8 @@ func (e *Engine) Load(ctx context.Context, rev model.CommitID) (*Snapshot, error
 		Plan:     plan,
 		Context:  mctx,
 		Keys:     keys,
+		ReadKeys: all,
+		OnDemand: onDemand,
 		Enclaves: loads,
 		Render:   render.New(voc),
 		Crypto:   SetCrypto(keys),
@@ -171,6 +180,28 @@ func (s *Snapshot) sealer() rules.Sealer {
 		return noSealer{}
 	}
 	return refusing{c, s.Enclaves}
+}
+
+// Readable returns every key this machine holds, on-demand enclaves
+// included. Use it only for bytes that go to stdout or into ciphertext,
+// never for bytes written to $HOME, backups or the state.
+func (s *Snapshot) Readable() *crypt.Set {
+	if s.ReadKeys != nil {
+		return s.ReadKeys
+	}
+	return s.Keys
+}
+
+// IsOnDemand reports whether this machine reads enclave enc on demand only.
+func (s *Snapshot) IsOnDemand(enc model.EnclaveName) bool { return s.OnDemand[enc] }
+
+// CanRead reports whether this machine may open enc to print it: it holds
+// the key, on demand or not, and the enclave's key log was not refused.
+func (s *Snapshot) CanRead(enc model.EnclaveName) bool {
+	if l, ok := s.Enclaves[enc]; ok && l.Err != nil {
+		return false
+	}
+	return s.Readable().CanOpen(enc)
 }
 
 // canOpen reports whether this machine may open an enclave in this snapshot.
@@ -342,6 +373,10 @@ func (e *Engine) produce(ctx context.Context, snap *Snapshot, r manifest.Resolve
 			d.sealed, d.reason = true, "enclave refused: "+l.Err.Error()
 			return d, nil
 		}
+		if snap.IsOnDemand(enc) {
+			d.sealed, d.reason = true, string(enc)+" is on demand on this machine"
+			return d, nil
+		}
 		if !snap.canOpen(enc) {
 			d.sealed, d.reason = true, "not a member of "+string(enc)
 			return d, nil
@@ -383,6 +418,9 @@ func (e *Engine) Render(ctx context.Context, snap *Snapshot, t model.Target, lv 
 	r, ok := snap.Plan.Targets[t]
 	if !ok {
 		return nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
+	}
+	if enc := r.Entry.Enclave; enc != "" && snap.IsOnDemand(enc) {
+		return nil, fmt.Errorf("%s is on demand on this machine and never delivered; yadm show %s prints it: %w", enc, model.ShellQuote(string(t)), crypt.ErrNotMember)
 	}
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
 		return nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
@@ -497,30 +535,40 @@ func (e *Engine) planSteps(ctx context.Context, snap *Snapshot, st *State, paths
 	}
 	sort.Slice(gone, func(i, j int) bool { return gone[i] < gone[j] })
 	for _, t := range gone {
-		ts := st.Targets[t]
-		abs, err := e.abs(t)
+		s, err := e.leavePlan(ctx, st, t, st.Targets[t], now, "left the plan")
 		if err != nil {
 			return nil, err
-		}
-		s := step{Action: Action{Target: t, Source: ts.Source, Scope: ts.Scope}, abs: abs}
-		lv, err := e.readTarget(ctx, abs)
-		switch {
-		case err != nil:
-			s.Kind, s.Reason = ActHold, "left the plan; target unreadable: "+err.Error()
-		case !lv.exists:
-			s.Kind, s.Reason, s.forget = ActSkip, "left the plan; already absent", true
-		case !lv.info.Mode().IsRegular():
-			h := fileHold(st, now, t, ts.Scope, model.HoldDrifted, ts.ChangedAt, "left the plan; target is no longer a regular file")
-			s.Kind, s.Reason, s.hold = ActHold, "drifted", &h
-		case hashOf(lv.bytes) == ts.Written:
-			s.Kind, s.Reason, s.live = ActDelete, "left the plan", lv
-		default:
-			h := fileHold(st, now, t, ts.Scope, model.HoldDrifted, ts.ChangedAt, "left the plan but was modified since last written; not deleted")
-			s.Kind, s.Reason, s.hold = ActHold, "drifted", &h
 		}
 		steps = append(steps, s)
 	}
 	return steps, nil
+}
+
+// leavePlan is the step for a recorded target apply no longer delivers:
+// delete it when it still holds what apply wrote, hold it otherwise. why
+// says why it is no longer delivered.
+func (e *Engine) leavePlan(ctx context.Context, st *State, t model.Target, ts TargetState, now time.Time, why string) (step, error) {
+	abs, err := e.abs(t)
+	if err != nil {
+		return step{}, err
+	}
+	s := step{Action: Action{Target: t, Source: ts.Source, Scope: ts.Scope}, abs: abs}
+	lv, err := e.readTarget(ctx, abs)
+	switch {
+	case err != nil:
+		s.Kind, s.Reason = ActHold, why+"; target unreadable: "+err.Error()
+	case !lv.exists:
+		s.Kind, s.Reason, s.forget = ActSkip, why+"; already absent", true
+	case !lv.info.Mode().IsRegular():
+		h := fileHold(st, now, t, ts.Scope, model.HoldDrifted, ts.ChangedAt, why+"; target is no longer a regular file")
+		s.Kind, s.Reason, s.hold = ActHold, "drifted", &h
+	case hashOf(lv.bytes) == ts.Written:
+		s.Kind, s.Reason, s.live = ActDelete, why, lv
+	default:
+		h := fileHold(st, now, t, ts.Scope, model.HoldDrifted, ts.ChangedAt, why+" but was modified since last written; not deleted")
+		s.Kind, s.Reason, s.hold = ActHold, "drifted", &h
+	}
+	return s, nil
 }
 
 func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manifest.Resolved, adopt bool, now time.Time) (step, error) {
@@ -547,6 +595,11 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 	// Decide delivery before touching the target, so a non-member never
 	// computes or reads anything for a sealed file.
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
+		if have && snap.IsOnDemand(enc) {
+			// Delivered before the enclave went on demand here: take it
+			// back out of $HOME as if it had left the plan.
+			return e.leavePlan(ctx, st, t, ts, now, string(enc)+" is on demand on this machine")
+		}
 		d, _ := e.produce(ctx, snap, r, nil, "")
 		s.Kind, s.Reason, s.d = ActSealed, d.reason, d
 		return s, nil
@@ -975,13 +1028,15 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		res.Holds = append(res.Holds, e.acceptRoots(ctx, snap, st, now)...)
 		pruneStaleHolds(st, snap)
 	}
+	// Prune first: a failed step must not leave an on-demand enclave's
+	// backup behind until the next clean apply.
+	e.pruneBackups(now, snap.Enclaves, snap.OnDemand)
 	if err := e.State.Save(st); err != nil {
 		return res, err
 	}
 	if execErr != nil {
 		return res, execErr
 	}
-	e.pruneBackups(now, snap.Enclaves)
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
 	if adopt || !st.FirstApplyDone {
 		// A target taken over with its bytes already in place fires its

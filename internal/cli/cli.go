@@ -141,6 +141,7 @@ type result struct {
 	next    []string
 	text    string // human output; empty means a short default
 	details any    // ErrorBody.Details on failure
+	raw     []byte // human output written byte for byte (show); wins over text
 }
 
 type runFunc func(cmd *cobra.Command, args []string) (result, error)
@@ -185,7 +186,9 @@ func (a *app) emit(name string, res result, err error) {
 		_ = enc.Encode(env)
 		return
 	}
-	if res.text != "" {
+	if res.raw != nil && err == nil {
+		_, _ = a.stdout.Write(res.raw)
+	} else if res.text != "" {
 		fmt.Fprintln(a.stdout, strings.TrimRight(res.text, "\n"))
 	} else if res.data != nil && err == nil {
 		// No human rendering: print the data as indented JSON.

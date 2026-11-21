@@ -476,12 +476,12 @@ func TestAttackBackupsPrunedOnRemoval(t *testing.T) {
 	}
 
 	// A refused log prunes nothing.
-	w.eng.pruneBackups(w.clock, map[model.EnclaveName]crypt.EnclaveLoad{"personal": {Err: crypt.ErrBadSignature}})
+	w.eng.pruneBackups(w.clock, map[model.EnclaveName]crypt.EnclaveLoad{"personal": {Err: crypt.ErrBadSignature}}, nil)
 	if _, err := os.Stat(encBackups[0]); err != nil {
 		t.Fatal("refused log pruned a backup")
 	}
 	// A verified head that no longer lists this machine prunes them.
-	w.eng.pruneBackups(w.clock, map[model.EnclaveName]crypt.EnclaveLoad{"personal": {Member: false}})
+	w.eng.pruneBackups(w.clock, map[model.EnclaveName]crypt.EnclaveLoad{"personal": {Member: false}}, nil)
 	if _, err := os.Stat(encBackups[0]); err == nil {
 		t.Fatal("backup kept after removal")
 	}

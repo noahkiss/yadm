@@ -22,6 +22,9 @@ type enclaveSummary struct {
 	Opened  []model.EnclaveName `json:"opened"`
 	Refused []refusedEnclave    `json:"refused"`
 	Other   []model.EnclaveName `json:"other"` // verified, this machine is not a member
+	// OnDemand lists the enclaves this machine holds keys for but reads on
+	// demand only: never applied here. They are not in Opened.
+	OnDemand []model.EnclaveName `json:"on_demand,omitempty"`
 }
 
 type machineData struct {
@@ -44,6 +47,8 @@ func enclavesOf(s *apply.Snapshot) enclaveSummary {
 			out.Refused = append(out.Refused, refusedEnclave{Enclave: e, Error: l.Err.Error()})
 		case s.Keys != nil && s.Keys.CanOpen(e):
 			out.Opened = append(out.Opened, e)
+		case s.IsOnDemand(e) && s.CanRead(e):
+			out.OnDemand = append(out.OnDemand, e)
 		default:
 			out.Other = append(out.Other, e)
 		}

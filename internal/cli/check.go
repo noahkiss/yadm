@@ -4,13 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
@@ -100,6 +98,7 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		if len(enclaves) == 0 {
 			add("key_logs", true, "no enclaves")
 		}
+		claims := onDemandClaims(ctx, m)
 		for _, e := range enclaves {
 			l, ok := snap.Enclaves[e]
 			switch {
@@ -111,11 +110,15 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 				add("key_logs", true, "%s: verified at seq %d, epoch %d", e, l.Head.Seq, l.Head.Epoch)
 			}
 			if ok && l.Err == nil {
-				add("membership", true, "%s", membershipDetail(snap.Fleet, e, l.Head))
-				if d := membershipDiff(snap.Fleet, e, l.Head); d != "" {
-					checks[len(checks)-1] = checkItem{Name: "membership", OK: false, Detail: string(e) + ": " + d}
+				detail, diff := membership(snap.Fleet, e, l.Head, claims[e])
+				if diff != "" {
+					detail += "; " + diff
 				}
+				add("membership", diff == "", "%s", detail)
 			}
+		}
+		for _, e := range m.local.OnDemand {
+			checks = append(checks, onDemandCheck(snap, e))
 		}
 	}
 
@@ -217,39 +220,4 @@ func gitDrivers(ctx context.Context, repo *store.Repo) ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// membershipDiff compares the fleet's machines of an enclave type with the
-// key log's members. Empty means they agree.
-func membershipDiff(f *fleet.File, e model.EnclaveName, head crypt.LogEntry) string {
-	inLog := map[model.MachineID]bool{}
-	for _, mb := range head.Members {
-		inLog[mb.Machine] = true
-	}
-	var onlyFleet, onlyLog []string
-	for id, mc := range f.Machines {
-		if mc.HasType(model.TypeName(e)) && !inLog[id] {
-			onlyFleet = append(onlyFleet, string(id))
-		}
-	}
-	for id := range inLog {
-		mc, ok := f.Machines[id]
-		if !ok || !mc.HasType(model.TypeName(e)) {
-			onlyLog = append(onlyLog, string(id))
-		}
-	}
-	sort.Strings(onlyFleet)
-	sort.Strings(onlyLog)
-	var parts []string
-	if len(onlyFleet) > 0 {
-		parts = append(parts, "typed in the fleet but not key-log members: "+strings.Join(onlyFleet, ","))
-	}
-	if len(onlyLog) > 0 {
-		parts = append(parts, "key-log members without the type in the fleet: "+strings.Join(onlyLog, ","))
-	}
-	return strings.Join(parts, "; ")
-}
-
-func membershipDetail(f *fleet.File, e model.EnclaveName, head crypt.LogEntry) string {
-	return fmt.Sprintf("%s: %d members agree with the fleet", e, len(head.Members))
 }

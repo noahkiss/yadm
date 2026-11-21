@@ -27,7 +27,10 @@
 //	status                         apply.Engine.Scan, apply.Engine.Holds, store.IsAncestor, sync.HeldLocks, sync.NetBackoff
 //	apply                          apply.Engine.Load, Plan, Apply
 //	capture                        apply.Engine.Scan, Capture
-//	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff
+//	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff; an on-demand
+//	                               enclave's target is skipped with a pointer to show
+//	show <path> [--as]             apply.Engine.Render with the machine's plan and context and the keys of the
+//	                               enclaves it is a member of that this machine holds (Snapshot.Readable); stdout only
 //	commit                         refuses named paths no entry, applying glob (manifest.Plan.GlobNew) or owned root covers, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
 //	                               (fetch and push under sync.FileNetLock, never under the sync lock)
 //	sync                           sync.Syncer.Run (--auto implies the quick check and records the run);
@@ -44,13 +47,15 @@
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status
-//	                               (Broken, last scheduled run), git config (merge.*.driver, filter.*)
+//	                               (Broken, last scheduled run), git config (merge.*.driver, filter.*);
+//	                               membership roles per pinned key log, with peers' on_demand from their status refs
+//	enclave on-demand [--off]      fleet.SaveIdentity: the on_demand list of machine.toml
 //	fleet list|show|diff           store.StatusRefs.ReadAll, fleet.OpenAll (members only), fleet.WithVisible,
 //	                               fleet.DiffObserved; a non-member's output holds no sealed facts
 //	enclave create|add|remove|retire|set-recovery
 //	                               crypt.Create/Add/Remove/Retire/SetRecovery, crypt.MarshalLogEntry, sync.Commit (Changes),
 //	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal
-//	review list|ok|revert          sync.Unreviewed, sync.Ack, store.CommitTree
+//	review list|ok|revert          sync.Unreviewed (Snapshot.Readable), sync.Ack, store.CommitTree
 //	hold list|show|resolve         apply.Engine.Holds, ResolveHold; conflicts through sync.Commit{Resolve}
 //	lease take|release|list        sync.FileLeases
 //	task list|allow|run            tasks.FileAllowList, tasks.DefinitionHash, tasks.Runner

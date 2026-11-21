@@ -57,6 +57,8 @@ func (a *app) register(root *cobra.Command) {
 	ap.Flags().Bool("dry-run", false, "plan only")
 	leaf(root, "capture [path...]", "Capture drifted targets into the source without committing", a.cmdCapture)
 	leaf(root, "diff [path...]", "Show plaintext differences between targets and the source", a.cmdDiff)
+	sh := exact(leaf(root, "show <path>", "Print a target as a machine receives it, to stdout only; opens on-demand enclaves", a.cmdShow), 1)
+	sh.Flags().String("as", "", "render for this fleet machine (default: this machine)")
 	cm := leaf(root, "commit [path...]", "Capture, gate and commit now, one commit per scope; a named deleted file drops its source and its own entry", a.cmdCommit)
 	cm.Flags().StringP("message", "m", "", "commit subject")
 	cm.Flags().String("why", "", "short intent; used as the subject when -m is not given")

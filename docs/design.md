@@ -21,7 +21,7 @@ This document specifies how `yadm` works. The Go package docs (`go doc ./interna
 | `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `remote-accepted` (the accepted remote `main`, section 10), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
 | `$XDG_STATE_HOME/yadm/identity.age.key` | This machine's age X25519 identity, mode 0600. |
 | `$XDG_STATE_HOME/yadm/identity.sign.key` | This machine's Ed25519 signing key, mode 0600. |
-| `$XDG_CONFIG_HOME/yadm/machine.toml` | Local identity: machine id, remote, notify and busy commands. Untracked. |
+| `$XDG_CONFIG_HOME/yadm/machine.toml` | Local identity: machine id, remote, notify and busy commands, on-demand enclaves. Untracked. |
 
 `yadm where --json` prints the three directories.
 
@@ -32,6 +32,7 @@ machine = "m-a1b2c3"
 remote  = "git@git.example.invalid:user/dotfiles.git"
 notify  = ["yadm-notify"]          # optional, extexec contract
 busy    = ["yadm-busy-probe"]      # optional, extexec contract
+on_demand = ["work"]               # optional, enclaves read on demand only (section 7.6)
 ```
 
 ### 2.2 Source tree
@@ -82,7 +83,7 @@ Rules:
 
 - Names, nicknames and ids are unique across the fleet.
 - A hostname is not an identity. Store it as a fact if a template needs it.
-- The fleet file never grants enclave membership. The key log does (section 7). `yadm check` reports where `types` and key-log membership disagree.
+- The fleet file never grants enclave membership. The key log does (section 7). `yadm check` reports where `types` and key-log membership disagree. A member that reads the enclave on demand only (section 7.6) needs no type.
 - Fleet entries are plaintext to every machine. Facts that must stay private belong in a sealed file of an enclave, not here.
 
 ## 4. Manifest
@@ -338,11 +339,11 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 
 ### 7.4 Where plaintext may exist
 
-- In a member's `$HOME` (the targets).
+- In a member's `$HOME` (the targets), unless the member reads the enclave on demand (section 7.6).
 - In memory during render, capture, merge and diff. Three-way merges, diffs and template patching run in-process (`internal/textmerge`); plaintext is never handed to git.
-- On stdout for `yadm diff`, `yadm log -p`, `yadm review` and `yadm hold show`.
+- On stdout for `yadm diff`, `yadm log -p`, `yadm review`, `yadm hold show` and `yadm show`.
 - In a 0600 temp file in the state directory while a commit-gate check reads it, removed afterwards. Checks see only files this machine can already open. A gate with no state directory runs no check and holds the files; it never uses the system temp directory.
-- In `backup/enclave/<enclaves>/` in a member's state directory: the bytes apply replaced or deleted from a file with enclave plaintext (a whole sealed file, sealed values or regions), mode 0600, kept 30 days. When a verified key log no longer lists this machine, apply deletes that enclave's backups. A refused log deletes nothing. Other backups go to `backup/<time>/` and hold no enclave plaintext. A non-member never writes an enclave's plaintext, so its backups hold none.
+- In `backup/enclave/<enclaves>/` in a member's state directory: the bytes apply replaced or deleted from a file with enclave plaintext (a whole sealed file, sealed values or regions), mode 0600, kept 30 days. When a verified key log no longer lists this machine, apply deletes that enclave's backups. A refused log deletes nothing. Other backups go to `backup/<time>/` and hold no enclave plaintext. A non-member never writes an enclave's plaintext, so its backups hold none. Neither does a member that reads the enclave on demand (section 7.6).
 
 The state database stores hashes, never rendered bytes. The one exception is the proposed patch of a `rendered_edit` hold on a shared template (section 8.4); an enclave template's hold carries none, so no enclave plaintext enters the state. The last render of a template is recomputed from its source blob and the stored render Context when capture needs it.
 
@@ -361,6 +362,25 @@ Any machine can push `manifest.toml`, so a manifest change that would make a mem
 ### 7.5 Hidden paths (reserved)
 
 A type with `hide_paths = true` would store files as `sealed/<enclave>/<base32(HMAC(name key, path))>` with the real path inside the sealed header. The interface exists (`crypt.NameScheme`, `crypt.HiddenNames`); the implementation is not built. It is off by default. Even when built, counts, sizes, timing and co-change stay visible.
+
+### 7.6 On-demand enclaves
+
+A machine can hold an enclave's keys without receiving its files. The fleet this serves has one enclave per work machine (`work`, `client`), and personal machines that must read those files without taking them home.
+
+- The personal machine becomes a full key-log member through `enclave add` and `enclave join`. The key log has no read-only role: anyone who holds a symmetric epoch key can also seal with it.
+- `on_demand` in `machine.toml` lists the enclaves this machine reads on demand only. It is a local setting, never in the fleet file or the manifest. `yadm enclave on-demand <enclave>` adds a name; `--off` removes it. Set it before `enclave join`, so no sync after the join delivers anything.
+- For an on-demand enclave the machine verifies the key log and advances its pin as for any enclave. Apply then leaves its keys out, so the machine treats the enclave as a non-member does:
+  - Apply never writes its whole files, sealed values or regions into `$HOME`. A shared file is delivered without them.
+  - Capture, `track` and `retag` never seal for it. A sealed value or region in a shared file is restored from the source on capture.
+  - Its plaintext never goes to a backup. Apply replaces only bytes it wrote, so the source still holds them. Older backups of the enclave are deleted.
+  - A target of it that an earlier apply delivered leaves `$HOME` as if it had left the plan: deleted when unchanged, held as `drifted` otherwise.
+  - The commit gate and in-memory merges never open it.
+- The machine opens it only to print to stdout:
+  - `yadm show <path> [--as <machine>]` renders a target as a fleet machine receives it: that machine's plan and condition context, opened with the keys of every enclave it is a member of in the pinned key log. It refuses when that machine is a member of an enclave this machine cannot open. Without `--as` it renders for this machine as if every enclave it is a member of were delivered.
+  - `yadm review`, `yadm hold show` and review notes open it as for any member.
+  - `yadm diff` compares delivered targets with the source; it skips an on-demand target and points to `yadm show`.
+- Key-log writes (`enclave add`, `remove` with its reseal, `retire`) work as for any member. A reseal runs in memory and writes ciphertext only.
+- The machine publishes its `on_demand` list in its status record (section 11). `yadm check` on any machine lists each enclave's members from the pinned head with a role: `type`, `on demand` or `no type`. A member with neither the type nor an on-demand claim fails the `membership` check. An `on_demand` name that is not an enclave in `fleet.toml` fails the `on_demand` check, since a typo would leave the enclave delivered.
 
 ## 8. Apply, scan, capture and drift
 
@@ -565,9 +585,12 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "epochs": { "personal": 1 },
   "observed": { "packages": { "collector": "packages", "items": ["tool-one", "tool-two"], "collected_at": "…" } },
   "sealed": { "client": "<sealed observed facts>" },
-  "tasks": [ { "task": "package-bundle", "trigger": "paths", "commit": "…", "exit_code": 0, "duration_ns": 1200000000 } ]
+  "tasks": [ { "task": "package-bundle", "trigger": "paths", "commit": "…", "exit_code": 0, "duration_ns": 1200000000 } ],
+  "on_demand": ["work"]
 }
 ```
+
+`on_demand` lists the enclaves the machine reads on demand only (section 7.6). It is self-reported: `yadm check` uses it to explain a key-log member without the enclave's type, and a change to it publishes a record on the next sync.
 
 `yadm fleet list --json` reads every status ref and flags machines whose last sync is older than a day. `yadm fleet diff <collector> --json` compares a published collector across machines: the union of items, what each machine lacks, and machines with no value.
 
@@ -721,7 +744,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 |---|---|---|
 | `version` | Version and build | `{version, go, os, arch}` |
 | `where` | Directories | `{source, state, config}` |
-| `machine` | This machine | the fleet `Machine` plus `observed` and `enclaves` (opened, refused) |
+| `machine` | This machine | the fleet `Machine` plus `observed` and `enclaves` (opened, refused, other, on_demand) |
 | `why <path>` | Manifest explanation | `{target, managed, resolved, rejected[], protected, in_root, when_expanded?}` |
 | `manifest [--as <m> \| --fleet]` | Resolved manifest per machine (section 4) | `{schema, commit, outputs[], machines[{machine, name, types, observed, error?, entries[], roots[], tasks[]}]}` |
 | `eval <cond> [--as <m>]` | Evaluate a condition (section 5.1) | `{schema, machine, name, condition, expanded, names[], result, observed, unavailable[], note?}` |
@@ -731,7 +754,8 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?}` |
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
-| `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff}]}` |
+| `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff, skipped?}]}` |
+| `show <path> [--as <m>]` | Print a target as machine `m` (default this one) receives it, to stdout only; opens on-demand enclaves (section 7.6) | `{machine, name, target, source, enclave?, content, encoding}`; without `--json`, the bytes alone |
 | `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
@@ -739,9 +763,10 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
-| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
+| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
-| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
+| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand` |
+| `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |
 | `hold list` / `show <id>` / `resolve <id> --take source\|target\|<file>` / `ignore <id>` | Holds; a take that captures commits and pushes; `ignore` leaves an unmanaged file in an owned root untracked on this machine | hold objects |
@@ -795,6 +820,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - A writer chooses target names. Suggested commands shell-quote them, and names with control characters are held.
 - The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
+- An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies

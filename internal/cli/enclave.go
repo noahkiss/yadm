@@ -37,6 +37,9 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	jn.Args = cobra.ExactArgs(1)
 	jn.Flags().String("expect", "", "required: fingerprint of the key-log entry that added this machine, received out of band")
 	leaf(en, "verify", "Verify every key log against the local pins", a.cmdEnclaveVerify)
+	od := leaf(en, "on-demand <enclave>", "Read an enclave on demand only on this machine: never apply, capture or back it up", a.cmdEnclaveOnDemand)
+	od.Args = cobra.ExactArgs(1)
+	od.Flags().Bool("off", false, "clear the mark: deliver the enclave again where types and membership say so")
 	rt := leaf(en, "retire", "Stop opening ciphertext of older epochs for delivery (after a remove's reseal)", a.cmdEnclaveRetire)
 	rt.Flags().String("enclave", "", "enclave to retire old epochs of (default: the only enclave this machine opens)")
 	sr := leaf(en, "set-recovery", "Name a new recovery identity, signed by the current one", a.cmdEnclaveSetRecovery)
@@ -94,6 +97,7 @@ type enclaveInfo struct {
 	Fingerprint string            `json:"fingerprint,omitempty"`
 	Members     []model.MachineID `json:"members"`
 	Member      bool              `json:"member"`
+	OnDemand    bool              `json:"on_demand,omitempty"` // this machine reads it on demand only
 	Pinned      *crypt.Pin        `json:"pinned"`
 	Error       string            `json:"error,omitempty"`
 }
@@ -110,9 +114,10 @@ func (a *app) cmdEnclaveList(cmd *cobra.Command, args []string) (result, error) 
 	for _, e := range m.snap.Fleet.Enclaves() {
 		info := enclaveInfo{Enclave: e, Members: []model.MachineID{}}
 		info.Pinned, _ = pins.Get(e)
+		info.OnDemand = m.snap.IsOnDemand(e)
 		if l, ok := m.snap.Enclaves[e]; ok {
 			info.Seq, info.Epoch = l.Head.Seq, l.Head.Epoch
-			info.Member = m.snap.Keys != nil && m.snap.Keys.CanOpen(e)
+			info.Member = m.snap.Readable().CanOpen(e)
 			for _, mb := range l.Head.Members {
 				info.Members = append(info.Members, mb.Machine)
 			}
@@ -124,7 +129,7 @@ func (a *app) cmdEnclaveList(cmd *cobra.Command, args []string) (result, error) 
 			}
 		}
 		out = append(out, info)
-		fmt.Fprintf(&b, "%-12s seq %d epoch %d member=%v members=%v %s\n", e, info.Seq, info.Epoch, info.Member, info.Members, info.Error)
+		fmt.Fprintf(&b, "%-12s seq %d epoch %d member=%v on_demand=%v members=%v %s\n", e, info.Seq, info.Epoch, info.Member, info.OnDemand, info.Members, info.Error)
 	}
 	return result{data: map[string]any{"enclaves": out}, text: b.String()}, nil
 }
@@ -148,7 +153,7 @@ func pickEnclave(cmd *cobra.Command, m *machineEnv) (model.EnclaveName, error) {
 	}
 	var opened []model.EnclaveName
 	for _, e := range m.snap.Fleet.Enclaves() {
-		if m.snap.Keys != nil && m.snap.Keys.CanOpen(e) {
+		if m.snap.Readable().CanOpen(e) {
 			opened = append(opened, e)
 		}
 	}
@@ -330,10 +335,10 @@ func ringFor(m *machineEnv, e model.EnclaveName) (*crypt.Keyring, crypt.LogEntry
 	if l.Err != nil {
 		return nil, crypt.LogEntry{}, fmt.Errorf("enclave %s: %w", e, l.Err)
 	}
-	if m.snap.Keys == nil || m.snap.Keys.Rings[e] == nil {
+	if m.snap.Readable() == nil || m.snap.Readable().Rings[e] == nil {
 		return nil, crypt.LogEntry{}, fmt.Errorf("enclave %s: %w", e, crypt.ErrNotMember)
 	}
-	return m.snap.Keys.Rings[e], l.Head, nil
+	return m.snap.Readable().Rings[e], l.Head, nil
 }
 
 func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error) {
@@ -363,7 +368,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	// Reseal under the new epoch with a snapshot that holds the new keyring.
 	rings := map[model.EnclaveName]*crypt.Keyring{}
-	for k, v := range m.snap.Keys.Rings {
+	for k, v := range m.snap.Readable().Rings {
 		rings[k] = v
 	}
 	rings[e] = newRing
@@ -523,7 +528,7 @@ func (a *app) cmdEnclaveVerify(cmd *cobra.Command, args []string) (result, error
 		r := row{Enclave: e, OK: true}
 		if ok {
 			r.Seq, r.Epoch = l.Head.Seq, l.Head.Epoch
-			r.Member = m.snap.Keys != nil && m.snap.Keys.CanOpen(e)
+			r.Member = m.snap.Readable().CanOpen(e)
 			if l.Err != nil {
 				r.OK, r.Error = false, l.Err.Error()
 				errs = append(errs, fmt.Errorf("enclave %s: %w", e, l.Err))

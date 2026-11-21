@@ -63,7 +63,7 @@
 //	func PartName(source model.SourcePath, keyOrLabel string) string
 //	type Set                            // keyrings this machine holds; implements rules.Sealer
 //	func (s *Set) SealFile(e, path, plaintext) ([]byte, error); func (s *Set) OpenFile(e, path, container) ([]byte, error)
-//	func (s *Set) Strict() *Set; func (s *Set) History() *Set
+//	func (s *Set) Strict() *Set; func (s *Set) History() *Set; func (s *Set) Only(keep func(e) bool) *Set
 //	func IsSealedFile(b []byte) bool; func FileEpoch(b []byte) (model.EnclaveName, model.Epoch, bool); func ParseValueToken(s string) (ValueToken, bool)
 //	type NameScheme interface{ Stored(t model.Target) (string, error) }
 //	type PlainNames struct{}; type HiddenNames struct{}  // HiddenNames is a reserved stub
