@@ -233,6 +233,7 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		var trailers []store.Trailer
 		merged := 0
 		var mergeNote string
+		var deleted []model.Target // targets whose deletion lands
 		for i, ch := range pc.Changes {
 			t := pc.Targets[i]
 			if (!ch.Delete && !pass[t]) || (pc.atomic && atomicHeld) {
@@ -257,6 +258,9 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			if base == cur {
 				changes = append(changes, ch)
 				landed = append(landed, t)
+				if ch.Delete && !pc.isDirect(i) {
+					deleted = append(deleted, t)
+				}
 				continue
 			}
 			if ch.Delete {
@@ -294,6 +298,20 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 		}
 		if len(changes) == 0 {
 			continue
+		}
+		// A committed deletion of a target its own [[file]] entry names
+		// drops that entry in the same commit, so the manifest never names
+		// a missing source. The edit is computed on the tip, after the
+		// earlier scopes' commits, from the deletions that land.
+		if len(deleted) > 0 {
+			mc, err := s.Apply.DropEntries(ctx, tip, deleted)
+			if err != nil {
+				return out, fmt.Errorf("commit %s: %w", pc.Scope, err)
+			}
+			if mc != nil {
+				changes = append(changes, *mc)
+				whole = true
+			}
 		}
 		var msg store.Message
 		if pc.Info.Trigger != "" || pc.Info.Subject != "" {

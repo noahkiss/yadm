@@ -55,6 +55,12 @@
 //   - Sealed content new to this machine opens only under the enclave's
 //     current epoch; content that does not open is held, never fatal. An
 //     explicit mode wider than an enclave file's source mode is held.
+//   - A committed deletion of a target its own literal [[file]] entry names
+//     drops that entry too (DropEntries), so the manifest never names a
+//     missing source; it refuses when another entry still reads the source.
+//   - A full apply drops the holds nothing covers any more (no plan target,
+//     state record, applying glob or owned root), except conflicts, gate holds,
+//     weakened-protection holds and holds without a target.
 //   - Backups of files with enclave plaintext go to
 //     backup/enclave/<enclaves>/ and are deleted when a verified key log no
 //     longer lists this machine.
@@ -91,6 +97,7 @@
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
 //	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
+//	func (e *Engine) DropEntries(ctx, rev model.CommitID, targets []model.Target) (*store.Change, error) // manifest edit for committed deletions; nil when none needed
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error)

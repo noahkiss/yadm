@@ -973,6 +973,7 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 			st.Outputs = snap.Manifest.Outputs()
 		}
 		res.Holds = append(res.Holds, e.acceptRoots(ctx, snap, st, now)...)
+		pruneStaleHolds(st, snap)
 	}
 	if err := e.State.Save(st); err != nil {
 		return res, err

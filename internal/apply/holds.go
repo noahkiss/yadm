@@ -173,3 +173,45 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 func weakenedHold(h model.Hold) bool {
 	return h.Reason == model.HoldSealGuard && strings.Contains(h.Detail, "weakened this file's protection")
 }
+
+// pruneStaleHolds drops the holds whose target nothing covers any more: no
+// target of the plan, no state record, no applying glob entry and no owned
+// root (in the manifest or accepted here). Such a hold names a file no
+// command can commit, apply or settle, for example one whose entry and
+// source a commit from another machine removed. Only the reasons
+// SettleHolds settles go, except the commit gate's: a gate hold may name
+// a file that a track or retag is about to cover. A conflict, a
+// weakened-protection hold and holds without a target stay too. The caller
+// holds a resolved plan.
+func pruneStaleHolds(st *State, snap *Snapshot) {
+	if snap == nil || snap.Plan == nil {
+		return
+	}
+	covered := func(t model.Target) bool {
+		if _, ok := snap.Plan.Targets[t]; ok {
+			return true
+		}
+		if _, ok := st.Targets[t]; ok {
+			return true
+		}
+		if snap.Plan.Root(t) != nil {
+			return true
+		}
+		for _, r := range st.Roots {
+			if t == r.Path || strings.HasPrefix(string(t), string(r.Path)+"/") {
+				return true
+			}
+		}
+		_, ok, err := snap.Plan.GlobNew(t)
+		return ok || err != nil
+	}
+	out := st.Holds[:0]
+	for _, h := range st.Holds {
+		gate := h.Reason == model.HoldCheckFailed || h.Reason == model.HoldTaskUntrusted
+		if h.Target != "" && settleReasons[h.Reason] && !gate && !weakenedHold(h) && !covered(h.Target) {
+			continue
+		}
+		out = append(out, h)
+	}
+	st.Holds = out
+}

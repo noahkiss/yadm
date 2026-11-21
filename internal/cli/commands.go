@@ -57,7 +57,7 @@ func (a *app) register(root *cobra.Command) {
 	ap.Flags().Bool("dry-run", false, "plan only")
 	leaf(root, "capture [path...]", "Capture drifted targets into the source without committing", a.cmdCapture)
 	leaf(root, "diff [path...]", "Show plaintext differences between targets and the source", a.cmdDiff)
-	cm := leaf(root, "commit [path...]", "Capture, gate and commit now, one commit per scope", a.cmdCommit)
+	cm := leaf(root, "commit [path...]", "Capture, gate and commit now, one commit per scope; a named deleted file drops its source and its own entry", a.cmdCommit)
 	cm.Flags().StringP("message", "m", "", "commit subject")
 	cm.Flags().String("why", "", "short intent; used as the subject when -m is not given")
 	cm.Flags().Bool("no-push", false, "commit only; the next sync pushes")

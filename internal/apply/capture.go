@@ -479,6 +479,9 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 	if h == nil {
 		return Result{}, fmt.Errorf("no hold %s", id)
 	}
+	if h.Reason == model.HoldProtected && h.Target != "" {
+		return Result{}, fmt.Errorf("hold %s (%s) is settled by committing it by name: yadm commit %s", id, h.Reason, model.ShellQuote(string(h.Target)))
+	}
 	if !fileHoldReasons[h.Reason] || h.Target == "" {
 		return Result{}, fmt.Errorf("hold %s (%s) is resolved by sync or task allow, not here", id, h.Reason)
 	}
