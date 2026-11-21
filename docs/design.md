@@ -588,7 +588,7 @@ Observed facts:
 
 ```toml
 [tasks.package-bundle]
-on         = [".config/packages/list"]   # a matching target was written
+on         = [".config/packages/list"]   # a matching target was written or taken over
 on_remove  = []                          # a matching target was removed
 first_apply = false                      # run on this machine's first apply
 when       = "os:darwin"
@@ -596,12 +596,13 @@ command    = ["pkg-tool", "bundle", "--file", ".config/packages/list"]
 timeout    = "10m"
 ```
 
-- Triggers: `on` (target written), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`), `on_fact` (a listed input changed on this machine: a collector name for its observed items, or `fact:KEY` for a declared fact) and `on_render = true` (the render context changed: this machine's types, declared and observed facts, or the fleet file).
-- `on_fact` and `on_render` compare fingerprints (hashes, never values) of the inputs with what the task last ran against, kept per task in state. A task with no record runs once. A held task records nothing, so the change still runs it once it is allowed; a failed run records, as a failed path task does not retry. Only a full apply checks inputs, and adopt runs no task. The trigger is named `fact` or `render` in the result.
+- Triggers: `on` (target written, or taken over by adopt or the first apply), `on_remove` (target removed), `first_apply` (the first apply after `init` or `adopt`), `on_fact` (a listed input changed on this machine: a collector name for its observed items, or `fact:KEY` for a declared fact) and `on_render = true` (the render context changed: this machine's types, declared and observed facts, or the fleet file).
+- `on_fact` and `on_render` compare fingerprints (hashes, never values) of the inputs with what the task last ran against, kept per task in state. A task with no record runs once. A held task records nothing, so the change still runs it once it is allowed; a failed run records, as a failed path task does not retry. Only a full apply checks inputs; adopt runs path tasks only, and records the inputs of each task it ran. The trigger is named `fact` or `render` in the result.
 - `outputs` lists target globs the task writes. They are generated (section 8.2). A managed target that matches one fails the resolve. Adding these fields to a definition changes its hash, so it needs a new allow; a definition without them keeps the hash it had.
 - A task runs once per apply, after all writes, with the matched targets in its request.
 - A failed task is recorded in state and the status ref, reported through notify, and never stops other tasks or the sync.
 - **Units** are a built-in task: apply reloads a launchd agent (`launchctl bootout` and `bootstrap`) or a systemd user unit (`daemon-reload`, then restart) only when its bytes changed. A reload needs no allow entry: the unit file is managed content, and the service manager runs it at the next login whether or not apply reloads it. With `reload = "never"` a unit is never reloaded. On `auto`, the launchd reloader also skips a job whose plist sets `KeepAlive`, the job that runs the reload (`$XPC_SERVICE_NAME`), and a plist it cannot read as XML. A skip is recorded in the task result detail, not as a failure.
+- **Takeover.** Adopt, and apply while the first apply is open, take over a target with no state record whose bytes already match. Nothing is written, but an `on` task that matches it runs once, as if the target had changed. The target is then in state, so a later identical apply fires nothing. A task not allowed is held as usual, and a later allow does not replay the takeover. A first-apply task that already ran at this commit for another trigger does not run again for `first_apply`.
 - A held task keeps the first apply open only when it is a `first_apply` task. A first-apply task that already succeeded does not run again while another one waits to be allowed. Once a held definition is allowed, the next apply drops its hold.
 
 ### 12.2 No package manager in core
@@ -759,7 +760,7 @@ Sealing creates each enclave's key log, signed by the importing machine, on top 
 3. For each target: identical bytes are recorded in state without writing (`adopt`); a missing target is written; a differing target is held (`drifted`) for the user to resolve. Nothing is overwritten. A target that is a symlink to a file with the rendered bytes becomes a regular file with those bytes, and a read-only file with the rendered bytes (a 0444 render) takes the entry's mode. A symlink with other content is held.
 4. Install the schedule.
 
-Adopt runs no task: no path task, unit reload or first-apply task. `--allow-tasks` only records the allows; first-apply tasks run on the first apply after adopt. Adopt never changes or removes what a link pointed to, and leaves any other dotfiles tool installed, so the user can roll back.
+Adopt runs path tasks only: each allowed `on` task that matches a target adopt took over (adopted, written or materialized) runs once (section 12.1). It runs no unit reload, `on_remove`, input or first-apply task; first-apply tasks run on the first apply after adopt. `--allow-tasks` records the allows before adopt runs tasks. Adopt never changes or removes what a link pointed to, and leaves any other dotfiles tool installed, so the user can roll back.
 
 ## 16. Threat model
 

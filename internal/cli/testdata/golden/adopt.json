@@ -30,6 +30,17 @@
         "scope": "shared",
         "since": "<since>",
         "target": ".config/tool/extra"
+      },
+      {
+        "detail": "<detail>",
+        "id": "<sha256>",
+        "next": [
+          "yadm task allow bundle"
+        ],
+        "reason": "task_untrusted",
+        "scope": "shared",
+        "since": "<since>",
+        "task": "bundle"
       }
     ],
     "schedule": {
@@ -39,7 +50,7 @@
   },
   "error": {
     "code": "attention",
-    "message": "holds need attention: 1 held"
+    "message": "holds need attention: 2 held"
   },
   "next": [],
   "ok": true,

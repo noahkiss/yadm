@@ -445,6 +445,10 @@ type step struct {
 	forget bool   // drop the target from state
 	keep   bool   // unchanged since the last apply: state stays as it is
 	merged []byte // union of source and target: written instead of d.bytes
+	// taken marks a target that enters state for the first time with its
+	// bytes already in place: nothing is written, yet adopt and a first
+	// apply fire its path tasks as if it had changed.
+	taken bool
 }
 
 func inFilter(paths []model.Target, t model.Target) bool {
@@ -662,6 +666,7 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		default:
 			return hold(fmt.Sprintf("bytes match but mode is %#o, want %#o", liveMode, d.mode))
 		}
+		s.taken = !have
 		return s, nil
 	}
 	switch {
@@ -833,7 +838,8 @@ func (e *Engine) Apply(ctx context.Context, rev model.CommitID, opts ApplyOption
 }
 
 // Adopt takes over an existing $HOME: identical targets are recorded without
-// writing, missing ones are written, differing ones are held.
+// writing, missing ones are written, differing ones are held. Every target
+// it takes over fires its path tasks once, as if it had changed.
 func (e *Engine) Adopt(ctx context.Context, rev model.CommitID, opts AdoptOptions) (Result, error) {
 	if !opts.DryRun && opts.AllowTasks {
 		snap, err := e.snapshot(ctx, rev)
@@ -928,7 +934,7 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 	}
 
 	now := e.Now()
-	var changed, removed []model.Target
+	var changed, removed, taken []model.Target
 	var units []manifest.Unit
 	var execErr error
 	for i, s := range steps {
@@ -955,6 +961,9 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		case s.Kind == ActDelete:
 			removed = append(removed, s.Target)
 		}
+		if s.taken {
+			taken = append(taken, s.Target)
+		}
 	}
 	if execErr == nil && len(paths) == 0 {
 		st.Applied = snap.Commit
@@ -972,19 +981,30 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 		return res, execErr
 	}
 	e.pruneBackups(now, snap.Enclaves)
-	if adopt {
-		// Adopt only takes over what is on disk: no path task, unit reload
-		// or first-apply task runs. First-apply tasks run on the first
-		// apply after it (FirstApplyDone stays false).
-		return res, nil
-	}
-
 	ev := tasks.Event{Commit: snap.Commit, Changed: changed, Removed: removed, Units: units, FirstApply: !st.FirstApplyDone && len(paths) == 0}
-	if len(paths) == 0 && watchesInputs(snap) {
+	if adopt || !st.FirstApplyDone {
+		// A target taken over with its bytes already in place fires its
+		// path tasks once, as if it had changed: the machine never ran
+		// them for those bytes. Later applies find it in state.
+		ev.Changed = append(ev.Changed, taken...)
+	}
+	if adopt {
+		// Adopt runs path tasks only: no unit reload, removal or input
+		// trigger, and no first-apply task. First-apply tasks run on the
+		// first apply after it (FirstApplyDone stays false).
+		ev.Removed, ev.Units, ev.FirstApply = nil, nil, false
+	} else if len(paths) == 0 && watchesInputs(snap) {
 		ev.Inputs, ev.LastInputs = taskInputs(snap), st.TaskInputs
 	}
 	results, holds := e.runTasks(ctx, snap, st, ev)
 	recordTaskInputs(st, snap, ev, results)
+	if adopt && watchesInputs(snap) {
+		// A task adopt ran saw today's inputs: record them, so the first
+		// apply does not run it again for on_fact or on_render.
+		rec := ev
+		rec.Inputs = taskInputs(snap)
+		recordTaskInputs(st, snap, rec, results)
+	}
 	res.Tasks = append(res.Tasks, results...)
 	if len(results) > 0 || len(holds) > 0 || ev.FirstApply {
 		if st.Tasks == nil {
@@ -1233,7 +1253,8 @@ func (e *Engine) runTasks(ctx context.Context, snap *Snapshot, st *State, ev tas
 }
 
 // skipDoneFirstApply drops the first-apply trigger of tasks that already
-// ran successfully for it. A task that also matched written or removed
+// ran successfully for it, or already ran at this commit for another
+// trigger (adopt's path run). A task that also matched written or removed
 // targets keeps running for those.
 func skipDoneFirstApply(sel []tasks.Selected, st *State, ev tasks.Event) []tasks.Selected {
 	changed := map[model.Target]bool{}
@@ -1243,7 +1264,9 @@ func skipDoneFirstApply(sel []tasks.Selected, st *State, ev tasks.Event) []tasks
 	out := sel[:0]
 	for _, s := range sel {
 		prev, ok := st.Tasks[s.Name]
-		if s.Trigger != tasks.TriggerFirstApply || !ok || prev.Trigger != tasks.TriggerFirstApply || prev.ExitCode != 0 || prev.Error != "" {
+		doneFirst := prev.Trigger == tasks.TriggerFirstApply && prev.ExitCode == 0 && prev.Error == ""
+		ranHere := prev.Trigger != tasks.TriggerFirstApply && prev.Commit == ev.Commit
+		if s.Trigger != tasks.TriggerFirstApply || !ok || (!doneFirst && !ranHere) {
 			out = append(out, s)
 			continue
 		}

@@ -177,7 +177,7 @@ var explainSteps = map[string][]string{
 	"adopt": {
 		"verify the identity and that the source resolves for this machine",
 		"materialize directory symlinks into real directories; record identical targets (symlinks and read-only renders become regular files), write missing ones, hold differing ones (drifted)",
-		"run no tasks; --allow-tasks only records allows, and first-apply tasks run on the next apply",
+		"run each allowed path task whose `on` matches a target it took over, once; no unit reload or first-apply task (those run on the next apply)",
 		"install the sync schedule ({{schedule}}) unless --no-schedule",
 	},
 	"retag":   {"change the manifest entry's when and enclave", "move the source between files/ and sealed/<enclave>/, opening and resealing", "commit once on main (protected, manual only)"},
