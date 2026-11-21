@@ -603,6 +603,7 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 			for _, t := range pc.Targets {
 				committed[t] = true
 			}
+			rep.Planned = append(rep.Planned, DryCommit{Scope: pc.Scope, Subject: pc.Message.Subject, Paths: append([]model.Target(nil), pc.Targets...)})
 		}
 		rep.Pending = pending(cp.Paths, committed, st)
 		rep.Holds = reportHolds(st, rep.Pending)

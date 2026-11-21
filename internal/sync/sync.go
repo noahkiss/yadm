@@ -64,8 +64,19 @@ type Report struct {
 	// why: another process held the network lock, or the remote moved
 	// after the fetch and rejected the push.
 	Network string `json:"network,omitempty"`
+	// Planned lists the commits a dry-run Commit would make.
+	Planned []DryCommit `json:"planned,omitempty"`
 
 	deferred bool // the push was left to the next sync
+}
+
+// DryCommit is one commit a dry-run Commit would make: its scope, its
+// subject and the targets (or source paths, for changes that are not
+// targets) it would carry.
+type DryCommit struct {
+	Scope   model.Scope    `json:"scope"`
+	Subject string         `json:"subject"`
+	Paths   []model.Target `json:"paths"`
 }
 
 // note records a network step this run left to the next sync.

@@ -89,7 +89,7 @@
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
 //	const FullEvery, WakeGap
-//	type Report struct{ ... }
+//	type Report struct{ ... }; type DryCommit struct{ Scope; Subject; Paths } // Report.Planned: what a dry-run Commit would commit
 //	type Syncer struct{ Deps }
 //	func (s *Syncer) Run(ctx, opts Options) (Report, error)
 //	func (s *Syncer) Commit(ctx, opts CommitOptions) (Report, error)

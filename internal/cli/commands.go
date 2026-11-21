@@ -706,6 +706,13 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 	}
 	rep = reportData(rep)
 	data := map[string]any{"commits": rep.Committed, "holds": rep.Holds, "pushed": rep.Pushed}
+	if dry {
+		planned := rep.Planned
+		if planned == nil {
+			planned = []sync.DryCommit{}
+		}
+		data["planned"] = planned
+	}
 	var next []string
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()
