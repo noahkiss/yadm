@@ -1133,7 +1133,11 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 			out = s.merged
 		}
 		if s.live.exists && !bytes.Equal(s.live.bytes, out) {
-			if err := e.backup(now, t, union(protOf(s.d.res.Entry), st.Targets[t].prot()), s.live.bytes); err != nil {
+			written := st.Targets[t].Written
+			if s.merged != nil {
+				written = hashOf(s.live.bytes) // the union keeps every live line
+			}
+			if err := e.backup(now, t, union(protOf(s.d.res.Entry), st.Targets[t].prot()), s.live.bytes, written); err != nil {
 				return err
 			}
 		}
@@ -1155,7 +1159,7 @@ func (e *Engine) execute(st *State, s step, now time.Time) error {
 		if err := unchanged(s); err != nil {
 			return err
 		}
-		if err := e.backup(now, t, st.Targets[t].prot(), s.live.bytes); err != nil {
+		if err := e.backup(now, t, st.Targets[t].prot(), s.live.bytes, st.Targets[t].Written); err != nil {
 			return err
 		}
 		if err := os.Remove(s.abs); err != nil && !errors.Is(err, fs.ErrNotExist) {

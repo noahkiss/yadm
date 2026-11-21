@@ -293,7 +293,14 @@ func union(a, b protection) protection {
 // to backup/<time>/<target>, or, when the bytes may hold enclave plaintext
 // (see backupEnclaves), to backup/enclave/<enclaves>/<time>/<target>, so
 // pruneBackups can drop them when this machine leaves an enclave.
-func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) error {
+//
+// Bytes that may hold plaintext of an on-demand enclave are never backed
+// up. written is the hash apply last wrote (or, for a union merge, the
+// live hash, whose lines the merge keeps): bytes equal to it are
+// reproducible from the source, so they are replaced without a backup.
+// Other such bytes are not replaced at all: backup refuses, so no edit is
+// lost silently.
+func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte, written string) error {
 	if e.StateDir == "" {
 		return errors.New("apply: StateDir is not set; refusing to replace a file without a backup")
 	}
@@ -302,10 +309,10 @@ func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) e
 		names := make([]string, len(encs))
 		for i, x := range encs {
 			if slices.Contains(e.OnDemand, x) {
-				// An on-demand enclave's plaintext never goes to a backup.
-				// Apply replaces only bytes it wrote itself (anything else
-				// is drift and held), so the source still holds them.
-				return nil
+				if written != "" && hashOf(b) == written {
+					return nil
+				}
+				return fmt.Errorf("%s: may hold plaintext of %s, which is on demand here and never backed up, and differs from what yadm wrote; move it aside first", t, x)
 			}
 			names[i] = string(x)
 		}

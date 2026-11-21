@@ -354,6 +354,13 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
+	if m.snap.IsOnDemand(e) {
+		// The reseal commit passes the gate, whose checks read plaintext
+		// from a temp file in the state directory: never for an on-demand
+		// enclave. Refuse before writing any entry.
+		return result{next: []string{"yadm enclave on-demand " + model.ShellQuote(string(e)) + " --off"}},
+			fmt.Errorf("%w: %s is on demand on this machine, and its reseal would need the commit gate to read its plaintext here; run remove on a machine that receives %s", ErrRefused, e, e)
+	}
 	who, err := machineID(m, args[0])
 	if err != nil {
 		return result{}, usagef("%v", err)

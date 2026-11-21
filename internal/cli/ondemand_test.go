@@ -107,15 +107,36 @@ func TestOnDemandTransitionSecrecy(t *testing.T) {
 	}
 
 	// Track refuses to seal for an on-demand enclave: it never captures.
+	head := git(t, a.Source, "rev-parse", "main")
 	writeFile(t, filepath.Join(a.Home, ".config/notes/new.md"), canary.String()+"\n")
-	if _, code, _ := yadm(t, "track", ".config/notes/new.md", "--enclave", "personal"); code == ExitOK {
-		t.Fatal("track sealed a new file for an on-demand enclave")
+	if env, code, _ := yadm(t, "track", ".config/notes/new.md", "--enclave", "personal"); code != ExitRefused {
+		t.Fatalf("track for an on-demand enclave: exit %d %+v", code, env.Error)
+	}
+	if now := git(t, a.Source, "rev-parse", "main"); now != head {
+		t.Fatal("track committed for an on-demand enclave")
 	}
 	if err := os.Remove(filepath.Join(a.Home, ".config/notes/new.md")); err != nil {
 		t.Fatal(err)
 	}
 	secrecytest.AssertTreeClean(t, a.Home, canary)
 	secrecytest.AssertRepoClean(t, a.Source, canary)
+
+	// An on-demand member adds members like any member. It refuses a
+	// remove, whose reseal would need the commit gate to read the
+	// enclave's plaintext on this machine, and writes no entry.
+	hb := fx.Identities[fixture.HostB].Member()
+	yadmOK(t, "enclave", "add", "host-b", "--enclave", "personal", "--recipient", hb.Recipient, "--sign-key", hb.SignKey)
+	head = git(t, a.Source, "rev-parse", "main")
+	if env, code, _ := yadm(t, "enclave", "remove", "host-b", "--enclave", "personal", "--confirm"); code != ExitRefused || len(env.Next) == 0 {
+		t.Fatalf("remove on an on-demand member: exit %d %+v", code, env.Error)
+	}
+	if now := git(t, a.Source, "rev-parse", "main"); now != head {
+		t.Fatal("a refused remove committed")
+	}
+	yadmOK(t, "apply")
+	secrecytest.AssertTreeClean(t, a.Home, canary)
+	secrecytest.AssertRepoClean(t, a.Source, canary)
+	secrecytest.AssertRepoClean(t, remote, canary)
 
 	// Clearing the mark delivers the enclave again.
 	yadmOK(t, "enclave", "on-demand", "personal", "--off")

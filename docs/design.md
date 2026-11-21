@@ -372,14 +372,15 @@ A machine can hold an enclave's keys without receiving its files. The fleet this
 - For an on-demand enclave the machine verifies the key log and advances its pin as for any enclave. Apply then leaves its keys out, so the machine treats the enclave as a non-member does:
   - Apply never writes its whole files, sealed values or regions into `$HOME`. A shared file is delivered without them.
   - Capture, `track` and `retag` never seal for it. A sealed value or region in a shared file is restored from the source on capture.
-  - Its plaintext never goes to a backup. Apply replaces only bytes it wrote, so the source still holds them. Older backups of the enclave are deleted.
+  - Its plaintext never goes to a backup. A file whose protection names the enclave (its whole-file enclave, a seal key, or a region marker in its bytes) is replaced without a backup only when it holds the bytes apply last wrote, which the source reproduces. Any other such file is not replaced: apply and `hold resolve --take source` fail and ask the user to move it aside. Older backups of the enclave are deleted.
   - A target of it that an earlier apply delivered leaves `$HOME` as if it had left the plan: deleted when unchanged, held as `drifted` otherwise.
   - The commit gate and in-memory merges never open it.
 - The machine opens it only to print to stdout:
   - `yadm show <path> [--as <machine>]` renders a target as a fleet machine receives it: that machine's plan and condition context, opened with the keys of every enclave it is a member of in the pinned key log. It refuses when that machine is a member of an enclave this machine cannot open. Without `--as` it renders for this machine as if every enclave it is a member of were delivered.
   - `yadm review`, `yadm hold show` and review notes open it as for any member.
+  - Sealed observed facts of the enclave (section 11) open as for any member, in `fleet list`, `fleet show`, `fleet diff`, `eval --as` and `manifest --as`.
   - `yadm diff` compares delivered targets with the source; it skips an on-demand target and points to `yadm show`.
-- Key-log writes (`enclave add`, `remove` with its reseal, `retire`) work as for any member. A reseal runs in memory and writes ciphertext only.
+- `enclave add` and `retire` work as for any member. `enclave remove` is refused: its reseal commit passes the commit gate, whose checks would read the enclave's plaintext from a temp file in the state directory. A member that receives the enclave runs it.
 - The machine publishes its `on_demand` list in its status record (section 11). `yadm check` on any machine lists each enclave's members from the pinned head with a role: `type`, `on demand` or `no type`. A member with neither the type nor an on-demand claim fails the `membership` check. An `on_demand` name that is not an enclave in `fleet.toml` fails the `on_demand` check, since a typo would leave the enclave delivered.
 
 ## 8. Apply, scan, capture and drift
@@ -765,7 +766,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
-| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand` |
+| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
 | `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |

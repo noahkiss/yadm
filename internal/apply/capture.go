@@ -509,7 +509,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 		if !inPlan {
 			// Left the plan: taking the source means removing the target.
 			if lv.exists && lv.info.Mode().IsRegular() {
-				if err := e.backup(now, t, st.Targets[t].prot(), lv.bytes); err != nil {
+				if err := e.backup(now, t, st.Targets[t].prot(), lv.bytes, st.Targets[t].Written); err != nil {
 					return Result{}, err
 				}
 				if err := os.Remove(abs); err != nil {
@@ -565,7 +565,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 				return Result{}, fmt.Errorf("%s: not a regular file; remove it first", t)
 			}
 			mode = lv.info.Mode().Perm()
-			if err := e.backup(now, t, e.backupProt(snap, st, t), lv.bytes); err != nil {
+			if err := e.backup(now, t, e.backupProt(snap, st, t), lv.bytes, st.Targets[t].Written); err != nil {
 				return Result{}, err
 			}
 		} else if r, ok := snap.Plan.Targets[t]; ok {

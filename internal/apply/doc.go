@@ -70,8 +70,9 @@
 //     merges and the gate treat it as a non-member does. A target of it that
 //     an earlier apply delivered leaves $HOME as if it had left the plan.
 //     Its plaintext is never backed up, and older backups of it are
-//     deleted. Snapshot.Readable holds every key, for stdout and key-log
-//     writes only.
+//     deleted: a file its protection covers is replaced only when it holds
+//     the bytes apply last wrote, else backup refuses. Snapshot.Readable
+//     holds every key, for stdout and key-log writes only.
 //
 // Exported API:
 //
