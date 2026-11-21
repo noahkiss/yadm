@@ -421,7 +421,7 @@ Every git call the tool runs against the source clone, `yadm git` included, sets
 
 ### 9.2 Commit gate
 
-Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets, the paths of 0600 temp files holding their plaintext, and the entry each target has once the commit lands (`entries`, section 12.4). The gate fails closed: a non-zero exit, a timeout, `ok: false` or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
+Before any commit, manual or automatic, the gate runs every `[checks.<name>]` whose `paths` match a staged target, through the exec contract (section 12.4). The request lists the staged targets, the paths of 0600 temp files holding their plaintext, and the entry each target has once the commit lands (`entries`, section 12.4). The gate fails closed: a non-zero exit, a timeout, `ok: false`, a planned manifest that does not parse or a check this machine has not allowed holds the matching files with `check_failed`. Other files still commit. Verdicts are per file: when a check fails on several files at once, the gate runs it again on each of them alone (up to 50), and only the files that fail alone stay held.
 
 Source changes that are not targets skip the gate: a key-log entry (signed tool output) and the manifest edit of a retag, a track or a committed deletion. They hold no plaintext, and check `paths` name targets. They still commit under the sync lock, through a private index.
 

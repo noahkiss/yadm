@@ -165,11 +165,8 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 
 	// The commit gate sees the target plaintext of every staged, non-deleted
 	// file, and the entry each one has once the commit lands.
-	pm, err := s.plannedManifest(ctx, headTree, planned)
-	if err != nil {
-		return out, err
-	}
 	var staged []tasks.Staged
+	var sources []model.SourcePath // sources[i]: staged[i]'s source path
 	unreadable := map[model.Target]bool{}
 	direct := map[model.Target]bool{}
 	for _, pc := range planned {
@@ -190,7 +187,8 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 				putHold(st, targetHold(st, now, t, pc.Scope, model.HoldCheckFailed, now, "unreadable for the commit gate: "+err.Error()))
 				continue
 			}
-			staged = append(staged, tasks.Staged{Target: t, Scope: pc.Scope, Plaintext: b, Entry: plannedEntry(pm, t, pc.Changes[i].Path)})
+			staged = append(staged, tasks.Staged{Target: t, Scope: pc.Scope, Plaintext: b})
+			sources = append(sources, pc.Changes[i].Path)
 		}
 	}
 	pass := map[model.Target]bool{}
@@ -202,6 +200,17 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			pass[x.Target] = true
 		}
 	} else if len(staged) > 0 {
+		pm, err := s.plannedManifest(ctx, headTree, planned)
+		if err != nil {
+			// Checks cannot judge entries they cannot read: fail closed.
+			for _, x := range staged {
+				putHold(st, targetHold(st, now, x.Target, x.Scope, model.HoldCheckFailed, now, err.Error()))
+			}
+			staged = nil
+		}
+		for i := range staged {
+			staged[i].Entry = plannedEntry(pm, staged[i].Target, sources[i])
+		}
 		ok, holds, _ := g.Check(ctx, staged, s.request(snap, head))
 		for _, t := range ok {
 			pass[t] = true
@@ -829,7 +838,8 @@ func (s *Syncer) plannedManifest(ctx context.Context, headTree map[model.SourceP
 // plannedEntry returns the entry that gives target t from source src in
 // manifest m, as written: the first [[file]] entry in manifest order that
 // produces (t, src) whether or not its when holds here, else the deepest
-// owned root that contains t, else nil.
+// owned root that contains t when src is the root's own source for t
+// (files/<t>, or sealed/<enclave>/<t> for a root with an enclave), else nil.
 func plannedEntry(m *manifest.Manifest, t model.Target, src model.SourcePath) *extexec.Entry {
 	if m == nil {
 		return nil
@@ -848,6 +858,13 @@ func plannedEntry(m *manifest.Manifest, t model.Target, src model.SourcePath) *e
 		}
 	}
 	if best == nil {
+		return nil
+	}
+	want := "files/" + string(t)
+	if best.Enclave != "" {
+		want = "sealed/" + string(best.Enclave) + "/" + string(t)
+	}
+	if string(src) != want {
 		return nil
 	}
 	return &extexec.Entry{Target: best.Path, Source: src, When: best.When, Enclave: best.Enclave, Root: true}

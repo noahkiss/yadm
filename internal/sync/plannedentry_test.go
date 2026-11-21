@@ -48,6 +48,7 @@ enclave = "client"
 		{".config/globbed/new", "sealed/personal/.config/globbed/new", &extexec.Entry{Target: ".config/globbed/*", Source: "sealed/personal/.config/globbed/new", Enclave: "personal"}},
 		{".config/tool/x", "files/.config/tool/x", &extexec.Entry{Target: ".config/tool", Source: "files/.config/tool/x", When: "type:work", Root: true}},
 		{".config/tool/inner/y", "sealed/client/.config/tool/inner/y", &extexec.Entry{Target: ".config/tool/inner", Source: "sealed/client/.config/tool/inner/y", Enclave: "client", Root: true}},
+		{".config/tool/inner/plain", "files/.config/tool/inner/plain", nil}, // not the root's source: no claim of its enclave
 		{".other", "files/.other", nil},
 	} {
 		got := plannedEntry(m, c.target, c.source)
