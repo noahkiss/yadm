@@ -5,7 +5,9 @@
     "holds": [],
     "removed_on": [
       "<machine-id>"
-    ]
+    ],
+    "source": "sealed/vault/.config/tool/retag-me",
+    "when": "type:vault"
   },
   "error": null,
   "next": [],

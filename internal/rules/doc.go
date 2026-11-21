@@ -72,6 +72,7 @@
 //	func ToTarget(source, live []byte, spec Spec, s Sealer) ([]byte, error)
 //	func ToSource(target, prevSource []byte, spec Spec, s Sealer) ([]byte, []Violation, error)
 //	func Reseal(source []byte, spec Spec, enclave model.EnclaveName, s Sealer) ([]byte, error) // after remove or rotate
+//	func RegionEnclaves(b []byte) ([]model.EnclaveName, error) // enclaves whose regions b marks
 //	func Merge3(format string, volatile []string, base, ours, theirs []byte) (merged []byte, ok bool, err error) // key-level 3-way merge from ours; volatile keys stay ours; ok=false holds
 //	type Structural struct{} // its Merge3 method satisfies sync.Structural
 //	type Violation struct{ Path string; Kind ViolationKind; Detail string }

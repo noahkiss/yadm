@@ -95,7 +95,7 @@
 //	func (e *Engine) Apply(ctx, rev model.CommitID, opts ApplyOptions) (Result, error)
 //	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error) // a new file an applying glob matches captures through that entry (rules, enclave, round trip)
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
-//	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
+//	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Retagged, error) // opts.Source picks a variant (ErrVariants); when keeps non-type terms (cond.Retype)
 //	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
 //	func (e *Engine) DropEntries(ctx, rev model.CommitID, targets []model.Target) (*store.Change, error) // manifest edit for committed deletions; nil when none needed
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)

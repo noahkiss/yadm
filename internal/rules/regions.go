@@ -3,10 +3,28 @@ package rules
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/noahkiss/yadm/internal/model"
 )
+
+// RegionEnclaves returns the enclaves whose sealed regions b marks, sorted
+// and without duplicates. Markers that do not parse fail.
+func RegionEnclaves(b []byte) ([]model.EnclaveName, error) {
+	regs, vio := parseRegions(b)
+	if len(vio) > 0 {
+		return nil, fmt.Errorf("%s: %s", vio[0].Path, vio[0].Detail)
+	}
+	var out []model.EnclaveName
+	for _, r := range regs {
+		if !slices.Contains(out, r.enclave) {
+			out = append(out, r.enclave)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
 
 // Region marker words, after a line-comment prefix.
 const (

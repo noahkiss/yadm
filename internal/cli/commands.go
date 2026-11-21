@@ -74,6 +74,7 @@ func (a *app) register(root *cobra.Command) {
 	lg.Flags().BoolP("patch", "p", false, "show plaintext diffs (not implemented)")
 	rt := exact(leaf(root, "retag <path> <type>[,<type>...]", "Change which types receive a path, resealing as needed", a.cmdRetag), 2)
 	rt.Flags().String("enclave", "", "seal for this enclave; empty stores plaintext")
+	rt.Flags().String("source", "", "pick one of several entries for the path by its source (files/... or sealed/<enclave>/...)")
 	rt.Flags().Bool("dry-run", false, "plan only")
 	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry or owned root covers yet; capture a new file under a glob entry", a.cmdTrack), 1)
 	tr.Flags().String("when", "", "condition for the new entry; empty sends it to every machine")
@@ -899,6 +900,7 @@ func (a *app) cmdLog(cmd *cobra.Command, args []string) (result, error) {
 func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	enclave, _ := cmd.Flags().GetString("enclave")
+	source, _ := cmd.Flags().GetString("source")
 	dry, _ := cmd.Flags().GetBool("dry-run")
 	m, err := openLoaded(ctx)
 	if err != nil {
@@ -917,16 +919,19 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if len(types) == 0 {
 		return result{}, usagef("retag needs at least one type")
 	}
-	var c apply.Capture
+	var c apply.Retagged
 	if err := m.locked(ctx, func() error {
 		var err error
-		c, err = m.eng.Retag(ctx, t, apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), DryRun: dry})
+		c, err = m.eng.Retag(ctx, t, apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), Source: model.SourcePath(source), DryRun: dry})
 		return err
 	}); err != nil {
+		if errors.Is(err, apply.ErrVariants) || errors.Is(err, cond.ErrRetype) {
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
+		}
 		return result{}, err
 	}
-	removed := losers(m.snap, t, types)
-	data := map[string]any{"commit": "", "removed_on": removed, "holds": withHoldNext(c.Holds)}
+	removed := removedOn(m.snap, t, c.Source, c.OldWhen, c.When)
+	data := map[string]any{"commit": "", "removed_on": removed, "holds": withHoldNext(c.Holds), "source": c.NewSource, "when": c.When}
 	if dry || len(c.Changes) == 0 {
 		return result{data: data}, attention(c.Holds)
 	}
@@ -934,14 +939,20 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if enclave != "" {
 		scope = model.Scope(enclave)
 	}
-	// The last change is the target's new source: the gate reads the target.
-	// The manifest edit and the old source's removal commit with it.
-	last := len(c.Changes) - 1
-	target := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
-	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
-		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &target,
-		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: true,
-	})
+	opts := sync.CommitOptions{
+		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &apply.Capture{},
+		Changes: c.Changes, ChangesScope: scope, Atomic: true, Push: true,
+	}
+	if len(c.Paths) > 0 {
+		// The last change is the target's new source: the gate reads the
+		// target. The manifest edit and the old source's removal commit
+		// with it. Without Paths the entry does not apply here, and every
+		// change commits as a source change.
+		last := len(c.Changes) - 1
+		opts.Capture = &apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
+		opts.Changes = c.Changes[:last]
+	}
+	rep, pushErr, err := m.commitThrough(ctx, a.version, opts)
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()
 	}
@@ -1209,34 +1220,39 @@ func (a *app) cmdCollect(cmd *cobra.Command, args []string) (result, error) {
 	return result{data: map[string]any{"observed": obs, "skipped": skipped}, next: next}, nil
 }
 
-// losers lists the fleet machines that receive t now (its entry's `when`
-// holds for them) and have none of the new types. Conditions on observed
-// facts see no observed facts for other machines.
-func losers(snap *apply.Snapshot, t model.Target, types []model.TypeName) []model.MachineID {
-	when := ""
-	for _, e := range snap.Manifest.Entries {
-		if e.Target == t {
-			when = e.When
-		}
-	}
-	expr := cond.Always()
-	if when != "" {
-		x, err := cond.Parse(when, snapVocab(snap))
-		if err != nil {
-			return []model.MachineID{}
-		}
-		expr = x
-	}
+// removedOn lists the fleet machines a retag takes t from: its old `when`
+// holds for them and the new one does not. A retag that tracks a file
+// (no old source) takes it only from the machines an owned root shared it
+// with. Conditions on observed facts see no observed facts for other
+// machines.
+func removedOn(snap *apply.Snapshot, t model.Target, oldSrc model.SourcePath, oldWhen, newWhen string) []model.MachineID {
 	out := []model.MachineID{}
+	if snap == nil || snap.Fleet == nil {
+		return out
+	}
+	if oldSrc == "" {
+		root := (*manifest.Root)(nil)
+		if snap.Plan != nil {
+			root = snap.Plan.Root(t)
+		}
+		if root == nil {
+			return out
+		}
+		oldWhen = root.When
+	}
+	v := snapVocab(snap)
+	before, err := cond.Parse(oldWhen, v)
+	if err != nil {
+		return out
+	}
+	after, err := cond.Parse(newWhen, v)
+	if err != nil {
+		return out
+	}
 	for id, mc := range snap.Fleet.Machines {
 		mc.ID = id
-		keep := false
-		for _, ty := range types {
-			if mc.HasType(ty) {
-				keep = true
-			}
-		}
-		if !keep && expr.Eval(model.Context{Machine: mc}) {
+		c := model.Context{Machine: mc}
+		if before.Eval(c) && !after.Eval(c) {
 			out = append(out, id)
 		}
 	}

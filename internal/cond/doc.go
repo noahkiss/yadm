@@ -44,4 +44,5 @@
 //	func Expand(e Expr) string        // `cond:NAME` inlined
 //	func Names(e Expr) []string       // named conditions e references
 //	func Collectors(e Expr) []string  // collectors e reads through observed:
+//	func Retype(src string, types []string, v Vocabulary) (string, error) // swap the type factor, keep other terms; ErrRetype
 package cond

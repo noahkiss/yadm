@@ -403,7 +403,11 @@ A `merge = "union"` target can change here while a sync brings a new source, for
 
 ### 8.5 Retag
 
-`yadm retag <path> <type>[,<type>...] [--enclave <name>]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. Its changes land together or not at all: when the gate holds the target, the manifest edit and the move are not committed either. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
+`yadm retag <path> <type>[,<type>...] [--enclave <name>] [--source <source>] [--dry-run]` changes which machines get a target in one commit: the manifest entry's `when` and `enclave`, and the move between `files/` and `sealed/<enclave>/` with the content opened and resealed. Only a member of every enclave involved can retag. Machines that lose the target remove it on their next apply if it is unchanged there, and hold it otherwise. Retag is protected: it is a manual commit only. Its changes land together or not at all: when the gate holds the target, the manifest edit and the move are not committed either. On an unmanaged file in `$HOME` that no manifest entry names, retag tracks it: it appends an entry with the types' `when` (and the enclave) and commits the file's bytes as its source. A file a glob entry covers is refused.
+
+- **Variants.** A target with several entries needs `--source` naming the entry's source (`files/…` or `sealed/<enclave>/…`); without it, retag fails with exit 2 and lists the sources. Retag refuses an edit that makes two entries for the target apply on one fleet machine (observed facts count as absent). When the picked entry does not apply on this machine, the live file is not its content, so the gate does not read it and the commit holds only source changes; such an entry can move into an enclave but not out of one.
+- **Conditions.** Retag replaces only the type terms of `when` and keeps every other term: `type:work & os:darwin` retagged to `home` becomes `type:home & os:darwin`, and a `when` with no type term gains one (`os:darwin` becomes `type:home & os:darwin`). It works when the type terms form one top-level factor: a type term or a disjunction of type terms, joined to the rest by `&`. Any other shape (a type term under `!`, inside a `|` with other terms, in two factors, or inside a `cond:` name) is refused with exit 2 and nothing committed: edit the manifest by hand.
+- **Moves.** A move to a source path that already exists, or that another entry or glob would read, is refused. Sealed content opens under the enclave's current epoch only, so a move never reseals content planted under an older key.
 
 ### 8.6 Track
 
@@ -735,7 +739,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
-| `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
+| `retag <path> <types> [--enclave <e>] [--source <s>] [--dry-run]` | Section 8.5; commits through the gate and pushes | `{commit, source, when, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |

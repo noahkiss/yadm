@@ -339,6 +339,7 @@ func New(d Deps) *Engine {
 type RetagOptions struct {
 	Types   []model.TypeName  // the target goes to machines with any of these types
 	Enclave model.EnclaveName // seal for this enclave; empty stores plaintext
+	Source  model.SourcePath  // picks one of several entries for the target by its source
 	DryRun  bool
 }
 
