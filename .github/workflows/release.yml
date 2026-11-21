@@ -13,7 +13,8 @@
 #
 # The signing secrets live in the Actions environment `release`, whose
 # deployment policy admits v* tags only. Only the goreleaser job enters it, and
-# only the import and notarize steps see the secrets.
+# only the import and notarize steps see the secrets. Its variables
+# SIGNING_IDENTITY and SIGNING_TEAM name the identity and its team ID.
 #
 # To cut a release:
 #
@@ -98,12 +99,12 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
-    # Not secrets: the identity the darwin binaries are signed with, and the
-    # identifier each binary must carry. scripts/macos-sign.sh and
-    # .goreleaser.yaml set the identifiers; the checks below assert them.
+    # The signing identity and its team ID come from variables of the release
+    # environment (not secrets; kept out of the source). scripts/macos-sign.sh
+    # and .goreleaser.yaml set the identifiers; the checks below assert them.
     env:
-      SIGNING_IDENTITY: 'Developer ID Application: NKMK Digital Co. (2Z88BYP37C)'
-      SIGNING_TEAM: 2Z88BYP37C
+      SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
+      SIGNING_TEAM: ${{ vars.SIGNING_TEAM }}
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
