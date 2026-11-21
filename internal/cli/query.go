@@ -156,7 +156,7 @@ var explainSteps = map[string][]string{
 	},
 	"capture": {"scan for drift", "capture each drifted target into source changes (round-trip check, seal guard)", "commit nothing"},
 	"diff":    {"scan for drift", "render each target's source in memory and diff it against the live file", "print plaintext only for enclaves this machine opens"},
-	"commit":  {"refuse a named path no entry, applying glob or owned root covers", "scan and capture; a named new file under an applying glob entry captures under that entry", "run the commit gate (allowed checks only)", "commit one commit per scope through a private index", "bypass quiet periods and leases, never the gate or the seal guard", "fetch, replay, apply and push in the same call unless --no-push"},
+	"commit":  {"refuse a named path no entry, applying glob or owned root covers", "scan and capture; a named new file under an applying glob entry captures under that entry", "a named managed file deleted in $HOME commits its deletion: the source goes, and so does its own [[file]] entry", "run the commit gate (allowed checks only)", "commit one commit per scope through a private index", "bypass quiet periods and leases, never the gate or the seal guard", "fetch, replay, apply and push in the same call unless --no-push"},
 	"sync": {
 		"take the lock in the state directory (wait at most 30s)",
 		"with --quick or --auto: stop here unless the remote moved (ls-remote), a target drifted, the last full sync is 15m old, or the machine just woke",

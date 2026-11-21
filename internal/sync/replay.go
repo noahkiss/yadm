@@ -3,9 +3,11 @@ package sync
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/noahkiss/yadm/internal/apply"
+	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/store"
 )
@@ -154,6 +156,12 @@ func (s *Syncer) replayOne(ctx context.Context, r *resolver, c store.Commit, out
 	}
 	if len(c.Paths) <= held && len(resolved) == 0 {
 		return nil // nothing of this commit lands
+	}
+	if held > 0 && slices.Contains(c.Paths, model.SourcePath(manifest.FileName)) {
+		// A manifest edit and the source changes it describes (a track, a
+		// retag, a committed deletion) land together or not at all: a
+		// partial landing could name a source that is not there.
+		return nil
 	}
 	stripped, err := s.Store.CommitPaths(ctx, c.ID, reverts, store.Message{Subject: "replay"})
 	if err != nil {

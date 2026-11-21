@@ -26,6 +26,8 @@
 //     `Yadm-Scope:`. A change captured against a source blob main has since
 //     moved past is merged first, so a commit never reverts what it did not
 //     see. Main moves by compare-and-swap and apply records the targets.
+//     A deletion commits only when named (Commit); its commit also drops
+//     the target's own [[file]] entry (apply.Engine.DropEntries).
 //  3. Run allowed collectors (fleet.CollectWith, with source and commit).
 //  4. Fetch origin main and refs/yadm/* (first, before step 1). The guard's
 //     base is the accepted remote main recorded in AcceptedFile; only an
@@ -43,7 +45,8 @@
 //     and toml (Structural), then the file's merge policy (text, union,
 //     add-only, ours, theirs, generated), then a conflict hold with all three
 //     stage blobs and the commit kept on the local-only held ref. Sealed files
-//     are opened, merged and resealed in memory. Clean paths still land. Each
+//     are opened, merged and resealed in memory. Clean paths still land,
+//     except in a commit that changes manifest.toml: it lands whole or not. Each
 //     resolution is recorded in a `Yadm-Resolved:` trailer. History stays
 //     linear. There is no autostash and no merge commit.
 //  6. Compare-and-swap local main, move the source worktree (a dirty worktree
