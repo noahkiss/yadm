@@ -3,14 +3,35 @@
 # archives and checksums.txt to the tag's GitHub Release, then bumps the
 # Homebrew formula noahkiss/tap/yadm-nkmk through the tap's own bump.yml.
 #
+# The darwin binaries are Developer ID signed and notarized. GoReleaser runs on
+# a macOS runner and signs each darwin binary as it is built
+# (scripts/macos-sign.sh), so the archives and checksums.txt hold the signed
+# files. GoReleaser creates the release as a draft. The job then submits the
+# darwin binaries to Apple's notary service, attaches a .sha256 beside each
+# darwin archive for the tap, and publishes the release only after Apple
+# accepts them. A failed run leaves an unpublished draft that nothing consumes.
+#
+# The signing secrets live in the Actions environment `release`, whose
+# deployment policy admits v* tags only. Only the goreleaser job enters it, and
+# only the import and notarize steps see the secrets. Its variables
+# SIGNING_IDENTITY and SIGNING_TEAM name the identity and its team ID.
+#
 # To cut a release:
 #
 #   git tag -a vX.Y.Z -m vX.Y.Z
 #   git push origin vX.Y.Z
 #
-# To rehearse locally (writes dist/, publishes nothing):
+# To rehearse locally (writes dist/, publishes nothing; darwin binaries stay
+# unsigned unless YADM_SIGN_IDENTITY names an identity in the keychain):
 #
 #   goreleaser release --snapshot --clean
+#
+# To re-run a release that failed before it was published (it left a draft),
+# dispatch the workflow ON the tag. Dispatched from main, the `release`
+# environment refuses the goreleaser job. A published release cannot be rebuilt:
+# GoReleaser refuses to replace an attached asset.
+#
+#   gh workflow run release.yml -R noahkiss/yadm --ref vX.Y.Z -f tag=vX.Y.Z
 #
 # To re-run only the tap bump for a tag that already has its release:
 #
@@ -73,10 +94,18 @@ jobs:
 
   goreleaser:
     needs: [resolve, ci]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: macos-26
+    environment: release
+    timeout-minutes: 45
     permissions:
       contents: write
+    # The signing identity and its team ID come from variables of the release
+    # environment (not secrets; kept out of the source). scripts/macos-sign.sh
+    # and .goreleaser.yaml set the identifiers; the checks below assert them.
+    env:
+      SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
+      SIGNING_TEAM: ${{ vars.SIGNING_TEAM }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,8 +116,44 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # A throwaway keychain, so the identity never lands in the runner's login
+      # keychain and dies with the cleanup step below. Its password is random
+      # and used only inside this step. `set-key-partition-list` lets codesign
+      # use the key without a GUI prompt, which would otherwise hang the job.
+      # `security import` takes the p12 password on argv only; on an ephemeral
+      # runner nobody else can read `ps`.
+      - name: Import the signing identity
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$MACOS_CERT_P12" ] && [ -n "$MACOS_CERT_PASSWORD" ] \
+            || { echo "::error::MACOS_CERT_P12 / MACOS_CERT_PASSWORD are empty. Is the job in the release environment?"; exit 1; }
+
+          kc="${RUNNER_TEMP}/signing.keychain-db"
+          p12="${RUNNER_TEMP}/signing.p12"
+          echo "YADM_SIGN_KEYCHAIN=${kc}" >> "$GITHUB_ENV"
+          kc_pw="$(openssl rand -base64 24)"
+
+          security create-keychain -p "$kc_pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kc_pw" "$kc"
+
+          ( umask 077; printf '%s' "$MACOS_CERT_P12" | base64 --decode > "$p12" )
+          security import "$p12" -k "$kc" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kc_pw" "$kc" >/dev/null
+          # shellcheck disable=SC2046 # one keychain path per word, by design
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+
+          security find-identity -v -p codesigning "$kc" | grep -qF "$SIGNING_IDENTITY" \
+            || { echo "::error::the imported p12 does not hold ${SIGNING_IDENTITY}"; exit 1; }
+
       # GoReleaser fails rather than replace an asset that is already attached,
-      # so a re-run cannot change what the formula's sha256 pins.
+      # so a re-run cannot change what the formula's sha256 pins. It signs each
+      # darwin binary through the build hook, with the identity named here and
+      # the keychain the step above exported.
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
@@ -96,6 +161,111 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YADM_SIGN_IDENTITY: ${{ env.SIGNING_IDENTITY }}
+
+      # Checks the files users receive: every binary inside every darwin
+      # archive carries the team, its fixed identifier and the hardened runtime.
+      # It also stages those binaries for the notary submission. `codesign -dv`
+      # prints no secret; it stays in the log to show the Authority chain.
+      - name: Verify the darwin signatures
+        run: |
+          set -euo pipefail
+          stage="${RUNNER_TEMP}/notarize"
+          mkdir -p "$stage"
+          archives="$(jq -r '.[] | select(.type == "Archive" and .goos == "darwin") | "\(.goarch)\t\(.path)"' dist/artifacts.json)"
+          [ "$(printf '%s\n' "$archives" | grep -c .)" -eq 2 ] \
+            || { echo "::error::expected two darwin archives, found: ${archives}"; exit 1; }
+          while IFS="$(printf '\t')" read -r arch archive; do
+            dir="${stage}/darwin_${arch}"
+            mkdir -p "$dir"
+            tar -xzf "$archive" -C "$dir" yadm yadm-oracle
+            for pair in yadm:com.nkmkdigital.yadm yadm-oracle:com.nkmkdigital.yadm.oracle; do
+              bin="${dir}/${pair%%:*}"
+              id="${pair#*:}"
+              codesign --verify --strict --verbose=2 "$bin"
+              info="$(codesign -dv --verbose=4 "$bin" 2>&1)"
+              printf '%s\n' "$info"
+              printf '%s\n' "$info" | grep -qx "TeamIdentifier=${SIGNING_TEAM}" \
+                || { echo "::error::${archive}: ${bin##*/} lacks TeamIdentifier=${SIGNING_TEAM}"; exit 1; }
+              printf '%s\n' "$info" | grep -qx "Identifier=${id}" \
+                || { echo "::error::${archive}: ${bin##*/} lacks Identifier=${id}"; exit 1; }
+              printf '%s\n' "$info" | grep -q 'flags=.*runtime' \
+                || { echo "::error::${archive}: ${bin##*/} lacks the hardened runtime flag"; exit 1; }
+            done
+          done <<< "$archives"
+          # The runner is arm64, so the signed arm64 binary runs here.
+          got="$("${stage}/darwin_arm64/yadm" version)"
+          [ "$got" = "yadm ${RELEASE_TAG#v}" ] \
+            || { echo "::error::the signed yadm reports '${got}', not 'yadm ${RELEASE_TAG#v}'"; exit 1; }
+          echo "NOTARIZE_STAGE=${stage}" >> "$GITHUB_ENV"
+
+      # The notary service takes a zip, never a bare Mach-O, so the four
+      # binaries go up in one zip that is then thrown away. A bare binary cannot
+      # be stapled; Gatekeeper fetches its ticket online at first run. So
+      # nothing in the archives changes here, and notarizing after GoReleaser
+      # built them is sound: the ticket covers the same signed bytes.
+      - name: Notarize the darwin binaries
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$ASC_KEY_P8" ] && [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] \
+            || { echo "::error::ASC_KEY_P8 / ASC_KEY_ID / ASC_ISSUER_ID are empty. Is the job in the release environment?"; exit 1; }
+
+          key="${RUNNER_TEMP}/AuthKey.p8"
+          zip="${RUNNER_TEMP}/notarize.zip"
+          ( umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key" )
+          auth=(--key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+
+          ditto -c -k --keepParent "$NOTARIZE_STAGE" "$zip"
+          # notarytool exits non-zero for an `Invalid` verdict as well as for a
+          # transport failure; either way the JSON, if any, says which.
+          out="$(xcrun notarytool submit "$zip" "${auth[@]}" --wait --timeout 30m --output-format json)" || true
+          printf '%s\n' "$out"
+          id="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null || true)"
+          status="$(printf '%s' "$out" | jq -r '.status // empty' 2>/dev/null || true)"
+
+          if [ "$status" != 'Accepted' ]; then
+            echo "::error::notarization ${id:-<no submission id>} ended '${status:-<no status>}', not Accepted"
+            [ -z "$id" ] || xcrun notarytool log "$id" "${auth[@]}" || true
+            exit 1
+          fi
+          echo "notarized: submission ${id}"
+          # spctl's verdict is printed, not gated: for a bare binary it depends
+          # on Gatekeeper reaching the ticket online, which a runner does not
+          # promise. codesign's check above is local and is the gate.
+          spctl -a -vv -t install "${NOTARIZE_STAGE}/darwin_arm64/yadm" \
+            || echo "spctl did not accept the arm64 yadm; not gating on it"
+
+      # Runs whatever happened above, so a failed sign or notarize still takes
+      # the keychain and the decoded secrets with it.
+      - name: Clean up the signing keychain
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP}/signing.p12" "${RUNNER_TEMP}/AuthKey.p8" "${RUNNER_TEMP}/notarize.zip"
+          if [ -n "${YADM_SIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain "$YADM_SIGN_KEYCHAIN" || true
+          fi
+
+      # The tap's bump.yml reads each darwin archive's sha256 from the
+      # `<archive>.sha256` beside it. Publishing last keeps the release a draft,
+      # invisible to the tap, until every asset is attached and notarized.
+      - name: Attach the darwin checksums and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sums=()
+          while read -r archive; do
+            ( cd "$(dirname "$archive")" && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256" )
+            cat "${archive}.sha256"
+            sums+=("${archive}.sha256")
+          done < <(jq -r '.[] | select(.type == "Archive" and .goos == "darwin") | .path' dist/artifacts.json)
+          gh release upload "$RELEASE_TAG" "${sums[@]}"
+          gh release edit "$RELEASE_TAG" --draft=false
 
   # Fails unless the tap's verified bump lands. The tap installs the formula on
   # macOS and Linux and runs its test block before it commits.
