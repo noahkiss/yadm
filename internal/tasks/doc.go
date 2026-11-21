@@ -5,7 +5,9 @@
 // A task is declared in the manifest: "when an apply writes (`on`) or removes
 // (`on_remove`) a target matching these globs, or on this machine's first
 // apply (`first_apply`), run this command", scoped by a `when` condition and
-// bounded by a timeout. Results go into the machine's status record.
+// bounded by a timeout. Results go into the machine's status record. A target
+// that adopt or a first apply takes over with its bytes already in place
+// counts as written for `on`: the apply engine adds it to Event.Changed.
 //
 // Two more triggers watch this machine's inputs instead of paths:
 // `on_fact` (a collector's observed items, or "fact:KEY") and `on_render`
@@ -13,7 +15,7 @@
 // apply passes a fingerprint of each input (Event.Inputs) and what each task
 // last ran against (Event.LastInputs, kept in state); a task with no record
 // fires once. A held task records nothing, so the change still fires once it
-// is allowed. Only a full apply checks inputs; adopt runs no task.
+// is allowed. Only a full apply checks inputs; adopt runs path tasks only.
 //
 // A task's `outputs` globs name files it generates. Apply records them, and
 // scan, capture and retag never report, take or track such a file, so it is

@@ -8,7 +8,6 @@ import (
 
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
-	"github.com/noahkiss/yadm/internal/tasks"
 )
 
 func mustSymlink(t *testing.T, old, new string) {
@@ -106,34 +105,6 @@ func TestAdoptMaterializesStockAlternates(t *testing.T) {
 	}
 	if w.read(".config/tool/scripts/run") != "run v2\n" || w.read(".config/tool/scripts##class.home/run") != "run\n" {
 		t.Error("apply wrote through to the old variant directory")
-	}
-}
-
-// TestAdoptRunsNoTasks: adopt writes a missing target but runs no path
-// task and no first-apply task; the first apply after it runs only the
-// first-apply task.
-func TestAdoptRunsNoTasks(t *testing.T) {
-	ctx := context.Background()
-	w := newWorld(t)
-	exec := &countExec{runs: map[string]int{}}
-	allow := tasks.FileAllowList(t.TempDir())
-	w.eng.Tasks = &tasks.Runner{Exec: exec, Allow: allow}
-	c := w.commit(map[model.SourcePath]string{"files/.pkglist": "a\n"}, manifest.Entry{Target: ".pkglist"})
-	w.plans[c].Tasks = map[string]manifest.TaskDef{
-		"bundle":    {On: []string{".pkglist"}, Command: []string{"pkg-tool"}},
-		"bootstrap": {FirstApply: true, Command: []string{"bootstrap-tool"}},
-	}
-	if _, err := w.eng.Adopt(ctx, c, AdoptOptions{AllowTasks: true}); err != nil {
-		t.Fatal(err)
-	}
-	if w.read(".pkglist") != "a\n" || len(exec.runs) != 0 || w.state().FirstApplyDone {
-		t.Fatalf("adopt ran tasks %v or marked first apply done", exec.runs)
-	}
-	if _, err := w.eng.Apply(ctx, c, ApplyOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if exec.runs["bootstrap"] != 1 || exec.runs["bundle"] != 0 || !w.state().FirstApplyDone {
-		t.Fatalf("first apply after adopt: %v", exec.runs)
 	}
 }
 
