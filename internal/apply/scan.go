@@ -212,7 +212,9 @@ func (e *Engine) scanNamedNew(ctx context.Context, st *State, paths []model.Targ
 			}
 		}
 		scope := model.ScopeShared
-		if r, ok, err := plan.GlobNew(t); err == nil && ok {
+		if r, ok, err := plan.GlobNew(t); err != nil {
+			continue
+		} else if ok {
 			scope = r.Entry.Scope()
 		} else if root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t); ok {
 			if root.Enclave != "" {

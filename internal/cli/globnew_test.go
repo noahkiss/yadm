@@ -156,6 +156,10 @@ enclave = "personal"
 target = ".config/apps/*.json"
 format = "json"
 seal = { "token" = "personal" }
+
+[[file]]
+target = ".config/shell/private/**"
+enclave = "personal"
 `)
 	remote := fixtureRemote(t, root, fx)
 	canary := fx.Canaries["personal"]
@@ -180,6 +184,30 @@ seal = { "token" = "personal" }
 	if got := readFile(t, filepath.Join(a.Home, ".config/vault/new")); !strings.Contains(got, canary.String()) {
 		t.Fatalf("member target changed: %q", got)
 	}
+	st := decode[struct {
+		Drift []struct{ Target string }
+		Holds []struct{ Target string }
+	}](t, yadmOK(t, "status").Data)
+	for _, d := range st.Drift {
+		if d.Target == ".config/vault/new" || d.Target == ".config/apps/new.json" {
+			t.Fatalf("drift after the commit: %+v", st)
+		}
+	}
+	for _, h := range st.Holds {
+		if h.Target == ".config/vault/new" || h.Target == ".config/apps/new.json" {
+			t.Fatalf("hold after the commit: %+v", st)
+		}
+	}
+
+	// A file inside the plain owned root .config/shell that the enclave
+	// glob matches is the glob's: an unnamed commit seals it.
+	yadmOK(t, "root", "allow", ".config/shell")
+	writeFile(t, filepath.Join(a.Home, ".config/shell/private/env"), "export K="+canary.String()+"\n")
+	yadmOK(t, "commit")
+	files = git(t, a.Source, "ls-tree", "-r", "--name-only", "main")
+	if !strings.Contains(files, "sealed/personal/.config/shell/private/env") || strings.Contains(files, "files/.config/shell/private/env") {
+		t.Fatalf("a glob file in an owned root was not sealed:\n%s", files)
+	}
 	secrecytest.AssertRepoClean(t, a.Source, canary)
 	secrecytest.AssertRepoClean(t, remote, canary)
 
@@ -189,7 +217,8 @@ seal = { "token" = "personal" }
 	yadmOK(t, "apply")
 	secrecytest.AssertTreeClean(t, b.Home, canary)
 	head := git(t, b.Source, "rev-parse", "main")
-	writeFile(t, filepath.Join(b.Home, ".config/vault/mine"), "mine\n")
+	mine := secrecytest.NewCanary(t, "non-member")
+	writeFile(t, filepath.Join(b.Home, ".config/vault/mine"), "mine "+mine.String()+"\n")
 	env, code, _ := yadm(t, "commit", ".config/vault/mine")
 	if code != ExitAttention {
 		t.Fatalf("non-member commit: exit %d %+v", code, env.Error)
@@ -207,5 +236,6 @@ seal = { "token" = "personal" }
 	if got := git(t, b.Source, "rev-parse", "main"); got != head {
 		t.Fatal("a non-member committed a file under an enclave glob")
 	}
-	secrecytest.AssertRepoClean(t, b.Source, canary)
+	secrecytest.AssertRepoClean(t, b.Source, canary, mine)
+	secrecytest.AssertRepoClean(t, remote, canary, mine)
 }

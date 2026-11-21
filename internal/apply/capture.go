@@ -64,12 +64,18 @@ func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
 			if inBaseline(st, d.Target) && !d.Named {
 				continue
 			}
-			if r, ok, gerr := snap.Plan.GlobNew(d.Target); gerr == nil && ok {
+			// A path two globs claim is never captured: one may carry an
+			// enclave, so the root's plaintext capture is no fallback.
+			r, ok, gerr := snap.Plan.GlobNew(d.Target)
+			switch {
+			case gerr != nil:
+				continue
+			case ok:
 				d.Scope = r.Entry.Scope()
 				ch, h, err = e.captureResolved(ctx, snap, st, d, r, true)
-				break
+			default:
+				ch, h, err = e.captureNew(ctx, snap, st, d)
 			}
-			ch, h, err = e.captureNew(ctx, snap, st, d)
 		default:
 			ch, h, err = e.captureManaged(ctx, snap, st, d)
 		}
