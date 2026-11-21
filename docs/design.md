@@ -482,7 +482,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 |---|---|---|
 | `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, locally; the next timer tick pushes it. Silent when clean; otherwise a decision packet. |
 | `stop` | the agent (or a subagent) ends its turn | Commits the session's recorded paths locally; the next timer tick pushes them. Blocks the stop while a decision this session caused is open, including a conflict the timer met while pushing them. |
-| `session-start` | a session starts | A quick sync, then at most 10 lines: holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
+| `session-start` | a session starts | A quick sync and a repair of a broken schedule (section 13), then at most 10 lines: the repair first, holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
 
 A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the sync lock; if another process holds it, the path stays recorded and `stop` or the timer commits it.
 
@@ -649,6 +649,13 @@ Peers learn of a push on their next timer tick at the latest. To make it immedia
 
 The unit names yadm by an absolute path; a path inside a Homebrew Cellar is mapped to the version-free link in `<prefix>/bin`, so an upgrade does not break it. The unit sets an explicit `PATH`: the binary's directory, the Homebrew prefixes (`/opt/homebrew`, `/usr/local`, `/home/linuxbrew/.linuxbrew`) and the system directories. The caller decides whether a command may change the real service manager; a test binary also needs `YADM_SCHEDULE_LIVE=1`.
 
+On macOS the job's stdout and stderr go to `schedule.log` in the state directory, created with mode 0600. Each `sync --auto` writes one timestamped line there. A run that finds the log larger than 512 KiB first moves it to `schedule.log.1`, replacing the older copy. On Linux the journal keeps the output.
+
+**Health.** A managed Mac can attach a launch constraint to the job that pins the binary. After an upgrade replaces the binary, launchd refuses every run with exit 78 (`EX_CONFIG`) and marks the job `needs LWCR update`, while the job still shows as loaded. The binary never starts, so the log stays empty; the status fields are the evidence. `schedule status` reads `launchctl print` for the job's run count, last exit code and that flag, and on Linux the service's last result and exit status. Each `sync --auto` records its start time in `schedule-run` in the state directory; on macOS that is the schedule's last run.
+
+- `yadm check` fails the `schedule` check when the job is not loaded, when its last exit is 78, or when launchd flags the constraint. Its message names the fix, `yadm schedule install`, which is also in `next`. It warns when the last scheduled run started more than 5 intervals ago.
+- A `yadm sync` run by hand (not `--auto`, not `--dry-run`) and the `session-start` hook reinstall a schedule in that state themselves, after their own sync, and say so in one line. They try at most once an hour, recorded in `schedule-heal` in the state directory, whether or not the install succeeds. A scheduled run never reinstalls its own job, and a schedule that is not installed is left alone.
+
 ## 14. Commands
 
 ### 14.1 Output contract
@@ -711,13 +718,13 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff}]}` |
 | `commit [-m\|--why] [--no-push] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?}` |
-| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10 | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?}` |
+| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave]` | Section 8.5; commits through the gate and pushes | `{commit, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
-| `check` | Self-check | `{checks[{name, ok, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded, last sync age, holds, secrecy config |
+| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
@@ -727,7 +734,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `defer <hold-id> --reason <why>` | Move a decision to the review queue | the deferred record |
 | `lease take` / `release` / `list` | Leases | leases |
 | `task list` / `allow` / `run <name>` | Section 12 | definitions with allowed state, results |
-| `schedule install` / `uninstall` / `status` | Section 13 | `{installed, loaded, last_run, unit_path}` |
+| `schedule install` / `uninstall` / `status` | Section 13 | `{installed, loaded, last_run, unit_path, last_exit?, runs?, needs_constraint_update?, last_result?, log?}`: `last_exit` is the job's last exit status (absent before its first exit), `runs` launchd's start count, `needs_constraint_update` launchd's `needs LWCR update` flag, `last_result` systemd's service result, `log` the launchd job's output file |
 | `import <legacy-repo>` | Section 15 | `{commit, mappings[], machines, problems[]}` |
 | `adopt` | Section 15 | `{commit, actions[], holds[], tasks[]}` |
 | `git <args…>` | Plain git on the source clone, with the secrecy overrides | passthrough; `--json` is not interpreted |

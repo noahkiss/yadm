@@ -1,7 +1,14 @@
 // Package schedule installs, verifies and removes the tool's own sync
 // schedule: a launchd user agent on macOS, a systemd user timer on Linux.
 // `yadm init` and `yadm adopt` install it unless given --no-schedule;
-// `yadm check` verifies it is loaded and when it last ran.
+// `yadm check` verifies it is loaded, runnable and when it last ran.
+//
+// Status also reports how the job's last run ended. On launchd it parses
+// the job's top-level `launchctl print` keys (runs, last exit code, stdout
+// path, properties); a missing line leaves its field empty. Status.Broken
+// names a job that cannot run until it is installed again: last exit 78
+// (EX_CONFIG) or the "needs LWCR update" property, which a managed Mac sets
+// when an upgrade replaced a binary that a launch constraint pins.
 //
 // The schedule runs `yadm sync --auto` every Interval and once at login or
 // wake. A run missed during sleep is not queued again: the next run catches
@@ -14,8 +21,11 @@
 // Exported API:
 //
 //	type Scheduler interface{ Install(ctx, Spec) error; Uninstall(ctx) error; Status(ctx) (Status, error) }
-//	type Spec struct{ Binary string; Interval time.Duration; Label string; Path []string }
-//	type Status struct{ Installed, Loaded bool; LastRun time.Time; UnitPath string }
+//	type Spec struct{ Binary string; Interval time.Duration; Label string; Path []string; Log string }
+//	type Status struct{ Installed, Loaded bool; LastRun time.Time; UnitPath string; LastExit *int; Runs int;
+//		NeedsConstraintUpdate bool; LastResult, Log string }
+//	func (s Status) Broken() string // "" when nothing says the job cannot run
+//	const ExConfig = 78
 //	func ForOS(goos string) (Scheduler, error)                // read-only: Status; Install and Uninstall return ErrNotLive
 //	func ForOSLive(goos string, live bool) (Scheduler, error) // init, adopt and `schedule` pass live = true
 //	func StableBinary(p string) string
@@ -28,5 +38,7 @@
 // Install and Uninstall change the real service manager only with
 // Options.Live; from a test binary they also need YADM_SCHEDULE_LIVE=1.
 // Otherwise they return ErrNotLive before writing any file. Status on launchd
-// leaves LastRun zero; the caller fills it from the sync state.
+// leaves LastRun zero; the caller fills it from its own run record. A Spec
+// with Log sends the launchd job's stdout and stderr there (created 0600 by
+// Install); without one they go to /dev/null.
 package schedule

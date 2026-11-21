@@ -30,10 +30,12 @@
 //	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff
 //	commit                         refuses unmanaged named paths, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
 //	                               (fetch and push under sync.FileNetLock, never under the sync lock)
-//	sync                           sync.Syncer.Run (--auto implies the quick check)
+//	sync                           sync.Syncer.Run (--auto implies the quick check and records the run);
+//	                               without --auto, schedule.Status.Broken + Install, once an hour
 //	review note                    sync.WriteNote under the sync lock, then sync.PushNotes
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
-//	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md)
+//	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md);
+//	                               session-start repairs a broken schedule as sync does
 //	defer                          deferred.json in the state directory; review list shows it
 //	protection allow, root allow   apply.Engine.AllowProtection / AllowRoot, then Apply
 //	log                            store.Log + crypt.Set + textmerge.Diff
@@ -41,8 +43,8 @@
 //	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes)
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
-//	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status,
-//	                               git config (merge.*.driver, filter.*)
+//	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status
+//	                               (Broken, last scheduled run), git config (merge.*.driver, filter.*)
 //	fleet list|show|diff           store.StatusRefs.ReadAll, fleet.OpenAll (members only), fleet.WithVisible,
 //	                               fleet.DiffObserved; a non-member's output holds no sealed facts
 //	enclave create|add|remove|retire|set-recovery

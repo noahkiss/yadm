@@ -47,6 +47,9 @@ const goldenPlist = `<?xml version="1.0" encoding="UTF-8"?>
 </plist>
 `
 
+// goldenPlistLog is goldenPlist with a log file instead of /dev/null.
+var goldenPlistLog = strings.ReplaceAll(goldenPlist, "<string>/dev/null</string>", "<string>/opt/state/schedule.log</string>")
+
 const goldenService = `[Unit]
 Description=yadm sync
 After=network-online.target
@@ -95,6 +98,7 @@ func TestGolden(t *testing.T) {
 		want string
 	}{
 		"plist":     {LaunchdPlist, s, goldenPlist},
+		"plist-log": {LaunchdPlist, Spec{Binary: bin, Log: "/opt/state/schedule.log"}, goldenPlistLog},
 		"service":   {SystemdService, s, goldenService},
 		"timer":     {SystemdTimer, s, goldenTimer},
 		"timer-odd": {SystemdTimer, Spec{Binary: bin, Interval: 7 * time.Minute}, goldenTimerOdd},
@@ -231,6 +235,17 @@ func TestLaunchd(t *testing.T) {
 	if !reflect.DeepEqual(c.argv, want) {
 		t.Errorf("argv:\n%v\nwant\n%v", c.argv, want)
 	}
+	// A log is created private before launchd opens it.
+	logFile := filepath.Join(home, "state", "schedule.log")
+	if err := s.Install(ctx, Spec{Binary: bin, Log: logFile}); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(logFile); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("log file: %v %v", fi, err)
+	}
+	if _, err := LaunchdPlist(Spec{Binary: bin, Log: "relative.log"}); err == nil {
+		t.Error("relative log accepted")
+	}
 	// A failed bootstrap is an error.
 	c.fail = map[string]error{"launchctl bootstrap gui/501 " + plist: errors.New("exit 5")}
 	if err := s.Install(ctx, Spec{Binary: bin}); err == nil {
@@ -244,6 +259,7 @@ func TestSystemd(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "cfg")
 	c := &fakeCmd{out: map[string]string{
 		"systemctl --user show yadm-sync.timer --property=LastTriggerUSec --value": "Thu 2030-01-03 12:00:00 UTC\n",
+		"systemctl --user show yadm-sync.service --property=Result,ExecMainStatus": "Result=exit-code\nExecMainStatus=1\n",
 	}}
 	s, err := New("linux", Options{Home: home, ConfigHome: cfg, Commander: c})
 	if err != nil {
@@ -260,7 +276,8 @@ func TestSystemd(t *testing.T) {
 	}
 	st, _ := s.Status(ctx)
 	if !st.Installed || !st.Loaded || st.UnitPath != filepath.Join(dir, "yadm-sync.timer") ||
-		!st.LastRun.Equal(time.Date(2030, 1, 3, 12, 0, 0, 0, time.UTC)) {
+		!st.LastRun.Equal(time.Date(2030, 1, 3, 12, 0, 0, 0, time.UTC)) ||
+		st.LastResult != "exit-code" || st.LastExit == nil || *st.LastExit != 1 || st.Broken() != "" {
 		t.Errorf("status = %+v", st)
 	}
 	if err := s.Uninstall(ctx); err != nil {
@@ -274,6 +291,7 @@ func TestSystemd(t *testing.T) {
 		{"systemctl", "--user", "enable", "--now", "yadm-sync.timer"},
 		{"systemctl", "--user", "is-active", "--quiet", "yadm-sync.timer"},
 		{"systemctl", "--user", "show", "yadm-sync.timer", "--property=LastTriggerUSec", "--value"},
+		{"systemctl", "--user", "show", "yadm-sync.service", "--property=Result,ExecMainStatus"},
 		{"systemctl", "--user", "disable", "--now", "yadm-sync.timer"},
 		{"systemctl", "--user", "daemon-reload"},
 	}

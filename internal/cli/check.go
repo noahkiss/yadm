@@ -14,13 +14,53 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
 )
 
 type checkItem struct {
 	Name   string `json:"name"`
 	OK     bool   `json:"ok"`
+	Warn   bool   `json:"warn,omitempty"` // passes, but needs a look
 	Detail string `json:"detail"`
+}
+
+// scheduleCheck judges the schedule: it fails when the schedule is not
+// loaded or the service manager reports it broken, and warns when the last
+// scheduled run is older than ScheduleStaleAfter. lastRun is when `sync
+// --auto` last started; the service manager's own time wins when it has
+// one. fix says whether `yadm schedule install` repairs it.
+func scheduleCheck(st schedule.Status, lastRun, now time.Time) (checkItem, bool) {
+	it := checkItem{Name: "schedule"}
+	if !st.LastRun.IsZero() {
+		lastRun = st.LastRun
+	}
+	state := fmt.Sprintf("installed=%v loaded=%v", st.Installed, st.Loaded)
+	if st.LastExit != nil {
+		state += fmt.Sprintf(" last_exit=%d", *st.LastExit)
+	}
+	if st.Runs > 0 {
+		state += fmt.Sprintf(" runs=%d", st.Runs)
+	}
+	switch why := st.Broken(); {
+	case why != "":
+		it.Detail = fmt.Sprintf("the scheduled sync cannot start (%s): launchd refuses the job, usually after an upgrade replaced the binary, and this machine has stopped syncing; fix: yadm schedule install", why)
+		return it, true
+	case !st.Loaded:
+		it.Detail = fmt.Sprintf("%s %s; fix: yadm schedule install", state, st.UnitPath)
+		return it, true
+	}
+	it.OK = true
+	switch age := now.Sub(lastRun); {
+	case lastRun.IsZero():
+		it.Detail = fmt.Sprintf("%s %s; no scheduled run recorded yet", state, st.UnitPath)
+	case age > ScheduleStaleAfter:
+		it.Warn = true
+		it.Detail = fmt.Sprintf("%s %s; the last scheduled run started %s ago, expected every %s", state, st.UnitPath, age.Truncate(time.Second), ScheduleInterval)
+	default:
+		it.Detail = fmt.Sprintf("%s %s; last scheduled run %s ago", state, st.UnitPath, age.Truncate(time.Second))
+	}
+	return it, false
 }
 
 func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
@@ -79,12 +119,17 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		}
 	}
 
+	var next []string
 	if s, err := hooks.scheduler(); err != nil {
 		add("schedule", false, "%v", err)
 	} else if st, err := s.Status(ctx); err != nil {
 		add("schedule", false, "%v", err)
 	} else {
-		add("schedule", st.Loaded, "installed=%v loaded=%v %s", st.Installed, st.Loaded, st.UnitPath)
+		item, fix := scheduleCheck(st, lastScheduledRun(m.paths.State), hooks.now())
+		checks = append(checks, item)
+		if fix {
+			next = append(next, "yadm schedule install")
+		}
 	}
 
 	if s := m.selfStatus(ctx); s == nil || s.LastSync.IsZero() {
@@ -124,13 +169,16 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 	var b strings.Builder
 	for _, c := range checks {
 		mark := "ok  "
-		if !c.OK {
+		switch {
+		case !c.OK:
 			mark = "FAIL"
 			failed++
+		case c.Warn:
+			mark = "WARN"
 		}
 		fmt.Fprintf(&b, "%s %-15s %s\n", mark, c.Name, c.Detail)
 	}
-	res := result{data: map[string]any{"checks": checks}, text: b.String()}
+	res := result{data: map[string]any{"checks": checks}, text: b.String(), next: next}
 	if failed > 0 {
 		return res, fmt.Errorf("%d of %d checks failed", failed, len(checks))
 	}
