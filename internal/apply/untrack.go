@@ -45,7 +45,7 @@ type Untracked struct {
 // source head. The target file stays where it is. A target with several
 // entries needs opts.Source (ErrVariants). Only a member of every enclave
 // the entry seals for may remove it (crypt.ErrNotMember). It refuses
-// (ErrRefused) a path no literal entry names, such as one a glob entry or
+// (ErrBadRequest) a path no literal entry names, such as one a glob entry or
 // an owned root covers.
 func (e *Engine) Untrack(ctx context.Context, t model.Target, opts UntrackOptions) (Untracked, error) {
 	name := string(t)
@@ -53,7 +53,7 @@ func (e *Engine) Untrack(ctx context.Context, t model.Target, opts UntrackOption
 		name = string(opts.Source)
 	}
 	fail := func(format string, a ...any) (Untracked, error) {
-		return Untracked{}, fmt.Errorf("untrack %s: %w: %s", name, ErrRefused, fmt.Sprintf(format, a...))
+		return Untracked{}, fmt.Errorf("untrack %s: %w: %s", name, ErrBadRequest, fmt.Sprintf(format, a...))
 	}
 	head, err := e.Store.Head(ctx)
 	if err != nil {
@@ -171,10 +171,10 @@ func (e *Engine) Untrack(ctx context.Context, t model.Target, opts UntrackOption
 }
 
 // Forget stops managing t on this machine and leaves the file as it is:
-// its state record and every hold on it go, and a file inside an owned
-// root accepted here is recorded as ignored, so the root never reports it
-// as new. The caller saves the state.
-func Forget(st *State, t model.Target, now time.Time) {
+// its state record and every hold on it go. A file that is on disk
+// (onDisk) inside an owned root accepted here is recorded as ignored, so
+// the root never reports it as new. The caller saves the state.
+func Forget(st *State, t model.Target, now time.Time, onDisk bool) {
 	delete(st.Targets, t)
 	delete(st.Seen, t)
 	delete(st.Baseline, t)
@@ -185,7 +185,7 @@ func Forget(st *State, t model.Target, now time.Time) {
 		}
 	}
 	st.Holds = out
-	if _, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t); ok {
+	if _, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t); ok && onDisk {
 		if st.Ignored == nil {
 			st.Ignored = map[model.Target]time.Time{}
 		}

@@ -32,7 +32,7 @@ func (a *app) cmdSourceMv(cmd *cobra.Command, args []string) (result, error) {
 		mv, err = m.eng.MoveSource(ctx, from, to)
 		return err
 	}); err != nil {
-		if errors.Is(err, apply.ErrRefused) {
+		if errors.Is(err, apply.ErrBadRequest) {
 			return result{}, usagef("%v", err)
 		}
 		return lockedResult(err), err
@@ -81,7 +81,7 @@ func (a *app) cmdUntrack(cmd *cobra.Command, args []string) (result, error) {
 		u, err = m.eng.Untrack(ctx, t, opts)
 		return err
 	}); err != nil {
-		if errors.Is(err, apply.ErrRefused) || errors.Is(err, apply.ErrVariants) {
+		if errors.Is(err, apply.ErrBadRequest) || errors.Is(err, apply.ErrVariants) {
 			return result{}, usagef("%v", err)
 		}
 		return lockedResult(err), err

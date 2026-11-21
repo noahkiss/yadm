@@ -45,6 +45,8 @@ target = ".config/kit/**"
 		{[]string{"source", "mv", "files/.config/os-linux.sh", "files/.config/os-linux.sh"}, "the same"},
 		{[]string{"source", "mv", "files/../x", "files/y"}, "not a clean path"},
 		{[]string{"source", "mv", "manifest.toml", "files/manifest.toml"}, "not under files/"},
+		{[]string{"source", "mv", "files/.config/os-linux.sh", "files/.config/tool"}, "is a directory"},
+		{[]string{"source", "mv", "files/.config/os-linux.sh", "files/.profile-home/os.sh"}, "cannot be under it"},
 	} {
 		env, code, _ := yadm(t, x.args...)
 		if code != ExitUsage || env.Error == nil || !strings.Contains(env.Error.Message, x.msg) {
@@ -173,12 +175,28 @@ func TestSourceMoveSecrecy(t *testing.T) {
 		}
 	}
 
+	// Back on the first clone: a sealed move to the default path drops the
+	// source line, and a template moves without drift.
+	useMachine(t, root, string(fixture.HostA))
+	yadmOK(t, "source", "mv", "sealed/personal/.config/notes/moved.md", "sealed/personal/"+private)
+	if man := git(t, remote, "show", "main:manifest.toml"); strings.Contains(man, "moved.md") || !strings.Contains(man, "target = \".config/notes/private.md\"\nenclave = \"personal\"\n") {
+		t.Fatalf("manifest after the move back:\n%s", man)
+	}
+	yadmOK(t, "source", "mv", "files/.gitconfig.tmpl", "files/.gitconfig.tpl")
+	yadmOK(t, "apply")
+	if got := readFile(t, filepath.Join(a.Home, private)); got != want[private] {
+		t.Fatalf("%s after the move back: %q", private, got)
+	}
+	assertCleanOn(t, private, ".gitconfig")
+	secrecytest.AssertTreeClean(t, a.State, canaries...)
+	secrecytest.AssertTreeClean(t, a2.State, canaries...)
+
 	// The non-member cannot move any of them.
 	useMachine(t, root, string(fixture.HostB))
 	yadmOK(t, "sync")
 	assertCleanOn(t, sshCfg, settings)
 	for _, mv := range [][2]string{
-		{"sealed/personal/.config/notes/moved.md", "sealed/personal/.config/notes/x.md"},
+		{"sealed/personal/" + private, "sealed/personal/.config/notes/x.md"},
 		{"files/.ssh/config.shared", "files/.ssh/config.x"},
 		{"files/.config/editor/settings.jsonc", "files/.config/editor/settings.x"},
 	} {

@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/noahkiss/yadm/internal/fixture"
 )
 
 // variantFleet has two work machines on different systems and one home
@@ -183,5 +185,54 @@ func assertClean(t *testing.T) {
 	}](t, yadmOK(t, "status").Data)
 	if len(st.Drift) != 0 || len(st.Holds) != 0 {
 		t.Fatalf("status: %+v", st)
+	}
+}
+
+// TestRetagVariantIntoEnclave: on host-a (darwin), the linux variant of a
+// fixture target does not apply. Retag moves it into the personal enclave
+// without the gate: its ciphertext lands under sealed/personal/, the plain
+// source goes, host-a's own variant stays clean, and the linux machine
+// loses it. Moving a variant that does not apply here out of an enclave is
+// refused: the gate would need its plaintext here.
+func TestRetagVariantIntoEnclave(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	fx := fixture.Build(t)
+	remote := fixtureRemote(t, root, fx)
+	const osh = ".config/shell/os.sh"
+	a := fixtureMachine(t, root, remote, fx, fixture.HostA, true)
+	yadmOK(t, "apply")
+	before := readFile(t, filepath.Join(a.Home, osh))
+
+	env, code, _ := yadm(t, "retag", osh, "personal", "--source", "files/.config/shell/os-linux.sh", "--enclave", "personal")
+	if code != ExitOK {
+		t.Fatalf("retag: exit %d %+v", code, env.Error)
+	}
+	d := decode[retagData](t, env.Data)
+	if d.Commit == "" || d.Source != "sealed/personal/.config/shell/os-linux.sh" || d.When != "type:personal & os:linux" || strings.Join(d.RemovedOn, ",") != string(fixture.HostC) {
+		t.Fatalf("retag data: %+v", d)
+	}
+	tree := git(t, remote, "ls-tree", "-r", "--name-only", "main")
+	if strings.Contains(tree, "files/.config/shell/os-linux.sh") || !strings.Contains(tree, "sealed/personal/.config/shell/os-linux.sh") {
+		t.Fatalf("tree after retag:\n%s", tree)
+	}
+	if blob := git(t, remote, "show", "main:sealed/personal/.config/shell/os-linux.sh"); !strings.HasPrefix(blob, "yadm-sealed") {
+		t.Fatalf("the moved variant is not sealed: %q", blob)
+	}
+	if files := git(t, remote, "show", "--name-only", "--format=", "main"); files != "files/.config/shell/os-linux.sh\nmanifest.toml\nsealed/personal/.config/shell/os-linux.sh" {
+		t.Fatalf("retag commit files: %q", files)
+	}
+	assertCleanOn(t, osh)
+	if got := readFile(t, filepath.Join(a.Home, osh)); got != before {
+		t.Fatalf("host-a's variant changed: %q", got)
+	}
+
+	head := git(t, a.Source, "rev-parse", "main")
+	env, code, _ = yadm(t, "retag", osh, "work", "--source", "sealed/personal/.config/shell/os-linux.sh")
+	if code == ExitOK || env.Error == nil || !strings.Contains(env.Error.Message, "does not apply on this machine") {
+		t.Fatalf("unseal a variant that does not apply here: exit %d %+v", code, env.Error)
+	}
+	if git(t, a.Source, "rev-parse", "main") != head {
+		t.Fatal("a refused retag committed")
 	}
 }

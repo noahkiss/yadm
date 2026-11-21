@@ -17,9 +17,9 @@ import (
 	"github.com/noahkiss/yadm/internal/store"
 )
 
-// ErrRefused reports a source move or an untrack the manifest does not
+// ErrBadRequest reports a source move or an untrack the manifest does not
 // allow as asked: the caller must change the request, not retry.
-var ErrRefused = errors.New("refused")
+var ErrBadRequest = errors.New("not allowed as asked")
 
 // SourceMove is the source change that renames a source within its scope.
 type SourceMove struct {
@@ -41,12 +41,12 @@ type SourceMove struct {
 // same way (both bind the source path), all in memory. Only a member of
 // every enclave involved can move it (crypt.ErrNotMember).
 //
-// It refuses (ErrRefused) a change of scope, which is retag's job, a from
+// It refuses (ErrBadRequest) a change of scope, which is retag's job, a from
 // that no literal entry reads, a from a glob entry reads, and a to that
 // exists or that another entry or glob would read.
 func (e *Engine) MoveSource(ctx context.Context, from, to model.SourcePath) (SourceMove, error) {
 	fail := func(format string, a ...any) (SourceMove, error) {
-		return SourceMove{}, fmt.Errorf("source mv %s %s: %w: %s", from, to, ErrRefused, fmt.Sprintf(format, a...))
+		return SourceMove{}, fmt.Errorf("source mv %s %s: %w: %s", from, to, ErrBadRequest, fmt.Sprintf(format, a...))
 	}
 	for _, p := range []model.SourcePath{from, to} {
 		if s := string(p); s == "" || path.IsAbs(s) || path.Clean(s) != s || strings.HasPrefix(s, "../") || s == ".." {

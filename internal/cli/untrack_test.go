@@ -115,28 +115,28 @@ when = "type:work"
 `
 	remote := seedRemote(t, root, tree)
 	a := kitMachine(t, root, remote, "a", "host-a")
-	const os = ".config/os.sh"
+	const osh = ".config/os.sh"
 
-	if env, code, _ := yadm(t, "untrack", os); code != ExitUsage || !strings.Contains(env.Error.Message, "--source") {
+	if env, code, _ := yadm(t, "untrack", osh); code != ExitUsage || !strings.Contains(env.Error.Message, "--source") {
 		t.Fatalf("untrack without --source: exit %d %+v", code, env.Error)
 	}
-	env := yadmOK(t, "untrack", os, "--source", "files/.config/os-darwin.sh")
+	env := yadmOK(t, "untrack", osh, "--source", "files/.config/os-darwin.sh")
 	if d := decode[untrackData](t, env.Data); d.Commit == "" || d.Source != "files/.config/os-darwin.sh" {
 		t.Fatalf("untrack the darwin variant: %+v", d)
 	}
-	if m := decode[struct{ Managed bool }](t, yadmOK(t, "managed", os).Data); !m.Managed {
+	if m := decode[struct{ Managed bool }](t, yadmOK(t, "managed", osh).Data); !m.Managed {
 		t.Fatal("the linux variant stopped being managed here")
 	}
 	assertClean(t)
 
 	env = yadmOK(t, "untrack", "files/.config/os-linux.sh")
-	if d := decode[untrackData](t, env.Data); d.Commit == "" || d.Target != os {
+	if d := decode[untrackData](t, env.Data); d.Commit == "" || d.Target != osh {
 		t.Fatalf("untrack by source: %+v", d)
 	}
-	if got := readFile(t, filepath.Join(a.Home, os)); got != "linux\n" {
+	if got := readFile(t, filepath.Join(a.Home, osh)); got != "linux\n" {
 		t.Fatalf("the file did not stay: %q", got)
 	}
-	if m := decode[struct{ Managed bool }](t, yadmOK(t, "managed", os).Data); m.Managed {
+	if m := decode[struct{ Managed bool }](t, yadmOK(t, "managed", osh).Data); m.Managed {
 		t.Fatal("the untracked file is still managed")
 	}
 	assertClean(t)
@@ -155,14 +155,18 @@ when = "type:work"
 	assertClean(t)
 }
 
-// TestUntrackSealedSecrecy: a member untracks a whole sealed file: the
-// entry and the ciphertext go, the member keeps its file unmanaged, and no
-// plaintext reaches a repository or the non-member. A non-member cannot
-// untrack an enclave's entry (exit 6).
+// TestUntrackSealedSecrecy: a member untracks a whole sealed file that sits
+// in a plain owned root: the entry and the ciphertext go, the member keeps
+// its file unmanaged and ignored, so neither the timer nor an unnamed
+// commit captures its plaintext into the plain root, and no plaintext
+// reaches a repository, the state directory or the non-member. A
+// non-member cannot untrack an enclave's entry (exit 6).
 func TestUntrackSealedSecrecy(t *testing.T) {
 	hermetic(t)
 	root := t.TempDir()
 	fx := fixture.Build(t)
+	man := filepath.Join(fx.Root, "manifest.toml")
+	writeFile(t, man, readFile(t, man)+"\n[[root]]\npath = \".config/notes\"\n")
 	remote := fixtureRemote(t, root, fx)
 	canaries := fx.AllCanaries()
 	const private = ".config/notes/private.md"
@@ -181,6 +185,7 @@ func TestUntrackSealedSecrecy(t *testing.T) {
 
 	a := fixtureMachine(t, root, remote, fx, fixture.HostA, true)
 	yadmOK(t, "apply")
+	yadmOK(t, "root", "allow", ".config/notes")
 	want := readFile(t, filepath.Join(a.Home, private))
 	env, code, out := yadm(t, "untrack", private)
 	if code != ExitOK {
@@ -201,6 +206,15 @@ func TestUntrackSealedSecrecy(t *testing.T) {
 	if tree := git(t, remote, "ls-tree", "-r", "--name-only", "main"); strings.Contains(tree, "sealed/personal/"+private) {
 		t.Fatalf("the sealed source stayed:\n%s", tree)
 	}
+	// The plain root around the file never captures it.
+	after := git(t, a.Source, "rev-parse", "main")
+	yadmOK(t, "sync", "--auto", "--full")
+	yadmOK(t, "commit")
+	if got := git(t, a.Source, "rev-parse", "main"); got != after {
+		t.Fatalf("the untracked file was committed again:\n%s", git(t, a.Source, "show", "--stat", "main"))
+	}
+	assertCleanOn(t, private)
+	secrecytest.AssertTreeClean(t, a.State, canaries...)
 
 	useMachine(t, root, string(fixture.HostB))
 	yadmOK(t, "sync")

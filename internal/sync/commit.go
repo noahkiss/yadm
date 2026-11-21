@@ -396,7 +396,8 @@ func (s *Syncer) commit(ctx context.Context, rep *Report, snap *apply.Snapshot, 
 			return out, err
 		}
 		for _, t := range forget {
-			apply.Forget(st, t, now)
+			_, err := os.Lstat(filepath.Join(s.Apply.Home, filepath.FromSlash(string(t))))
+			apply.Forget(st, t, now, err == nil)
 		}
 		if err := s.Apply.State.Save(st); err != nil {
 			return out, err

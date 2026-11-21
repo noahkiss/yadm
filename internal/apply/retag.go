@@ -255,6 +255,14 @@ func destinationFree(snap *Snapshot, dst model.SourcePath, skip ...int) error {
 	if _, ok := snap.Tree[dst]; ok {
 		return fmt.Errorf("%s already exists in the source tree", dst)
 	}
+	for p := range snap.Tree {
+		switch {
+		case strings.HasPrefix(string(p), string(dst)+"/"):
+			return fmt.Errorf("%s is a directory in the source tree", dst)
+		case strings.HasPrefix(string(dst), string(p)+"/"):
+			return fmt.Errorf("%s is a file in the source tree, so %s cannot be under it", p, dst)
+		}
+	}
 	tree := append(slices.Collect(maps.Keys(snap.Tree)), dst)
 	sort.Slice(tree, func(i, j int) bool { return tree[i] < tree[j] })
 	for i, en := range snap.Manifest.Entries {
