@@ -24,11 +24,16 @@ const (
 )
 
 // secrecyArgs go before every git subcommand. Hooks of the clone never run,
-// no textconv cache is written, and no fsmonitor daemon is started.
+// no textconv cache is written, and no fsmonitor daemon is started. The
+// user's global excludes file (core.excludesFile, or its XDG default) is
+// replaced by an empty one: the manifest defines what the source holds,
+// not personal ignore rules. A .gitignore in the source and
+// $GIT_DIR/info/exclude still apply.
 var secrecyArgs = []string{
 	"-c", "diff.cachetextconv=false",
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
+	"-c", "core.excludesFile=/dev/null",
 	"-c", "advice.detachedHead=false",
 }
 

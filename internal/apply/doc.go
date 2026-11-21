@@ -84,10 +84,10 @@
 //	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write
 //	func (s *Snapshot) CanOpen(e model.EnclaveName) bool
 //	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed
-//	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error)
+//	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error) // a named path also reports a new file under an applying glob or in an accepted root
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)
 //	func (e *Engine) Apply(ctx, rev model.CommitID, opts ApplyOptions) (Result, error)
-//	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error)
+//	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error) // a new file an applying glob matches captures through that entry (rules, enclave, round trip)
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Capture, error)
 //	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember

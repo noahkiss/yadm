@@ -57,6 +57,7 @@
 //	type CollisionError struct{ Collisions []Collision }
 //	func (r Resolved) FileMode(sourceExecutable bool) fs.FileMode
 //	func (p *Plan) Why(t model.Target) (Explanation, error)
+//	func (p *Plan) GlobNew(t model.Target) (Resolved, bool, error) // a new file an applying glob would produce once its source exists
 //	func (p *Plan) Protected(t model.Target) bool
 //	func (p *Plan) Root(t model.Target) *Root
 //	func Expand(e Entry, tree []model.SourcePath) []Resolved // every (target, source) pair of an entry

@@ -59,7 +59,23 @@ func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
 		case DriftUnreadable:
 			continue
 		case DriftNew:
-			ch, h, err = e.captureNew(ctx, snap, st, d)
+			// A glob entry that matches the file decides its source, enclave
+			// and rules; an owned root takes only what no entry names.
+			if inBaseline(st, d.Target) && !d.Named {
+				continue
+			}
+			// A path two globs claim is never captured: one may carry an
+			// enclave, so the root's plaintext capture is no fallback.
+			r, ok, gerr := snap.Plan.GlobNew(d.Target)
+			switch {
+			case gerr != nil:
+				continue
+			case ok:
+				d.Scope = r.Entry.Scope()
+				ch, h, err = e.captureResolved(ctx, snap, st, d, r, true)
+			default:
+				ch, h, err = e.captureNew(ctx, snap, st, d)
+			}
 		default:
 			ch, h, err = e.captureManaged(ctx, snap, st, d)
 		}
@@ -88,15 +104,25 @@ func (e *Engine) Capture(ctx context.Context, drift []Drift) (Capture, error) {
 // captureManaged captures one managed target. It returns a change, a hold,
 // or neither (nothing to commit; state updated).
 func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, d Drift) (*store.Change, *model.Hold, error) {
-	now := e.Now()
-	t := d.Target
-	ts, have := st.Targets[t]
-	r, inPlan := snap.Plan.Targets[t]
+	r, inPlan := snap.Plan.Targets[d.Target]
 	if !inPlan {
 		return nil, nil, nil // left the plan: apply deletes or holds it
 	}
+	return e.captureResolved(ctx, snap, st, d, r, false)
+}
+
+// captureResolved captures target d.Target through its resolved entry r:
+// the entry's rules, its enclave and the round-trip check. With fresh set,
+// r's source is not in the tree yet (a new file under a glob entry): there
+// is no previous source, and the live bytes become a new source file.
+func (e *Engine) captureResolved(ctx context.Context, snap *Snapshot, st *State, d Drift, r manifest.Resolved, fresh bool) (*store.Change, *model.Hold, error) {
+	now := e.Now()
+	t := d.Target
+	ts, have := st.Targets[t]
 	scope := r.Entry.Scope()
-	if !have {
+	if fresh {
+		ts, have = TargetState{Source: r.Source, Scope: scope, ChangedAt: d.Since}, false
+	} else if !have {
 		// Never written here (an adopt or apply hold): capture against the
 		// source at the snapshot.
 		ts = TargetState{Source: r.Source, Scope: scope, SourceBlob: snap.Tree[r.Source].Blob}
@@ -115,10 +141,13 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
 		return hold(model.HoldSealGuard, "not a member of "+string(enc)+"; cannot seal")
 	}
-	switch d.Kind {
-	case DriftDeleted:
+	switch {
+	case fresh && r.Entry.Template:
+		return hold(model.HoldUncapturable, "new file under a template glob entry; add its template source by hand")
+	case fresh:
+	case d.Kind == DriftDeleted:
 		return &store.Change{Path: r.Source, Delete: true}, nil, nil
-	case DriftMode:
+	case d.Kind == DriftMode:
 		return hold(model.HoldUncapturable, "mode changed; set mode in the manifest entry")
 	}
 
@@ -131,6 +160,9 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 		return hold(model.HoldUncapturable, "target unreadable: "+err.Error())
 	}
 	if !lv.exists {
+		if fresh {
+			return nil, nil, nil
+		}
 		return &store.Change{Path: r.Source, Delete: true}, nil, nil
 	}
 	if !lv.info.Mode().IsRegular() {
@@ -138,13 +170,15 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 	}
 	target := lv.bytes
 
-	prevRaw, err := e.prevSource(ctx, snap, ts, r.Source)
-	if err != nil {
-		return nil, nil, err
+	var prevRaw []byte
+	if !fresh {
+		if prevRaw, err = e.prevSource(ctx, snap, ts, r.Source); err != nil {
+			return nil, nil, err
+		}
 	}
 	enc := r.Entry.Enclave
 	prevPlain := prevRaw
-	if enc != "" {
+	if enc != "" && !fresh {
 		// The previous source is only compared against, never delivered.
 		if prevPlain, err = snap.history().cr().OpenFile(enc, r.Source, prevRaw); err != nil {
 			return hold(model.HoldUncapturable, "cannot open the stored source: "+err.Error())
@@ -244,6 +278,13 @@ func (e *Engine) captureManaged(ctx context.Context, snap *Snapshot, st *State, 
 			*h = proposePatch(*h, r, enc, model.PatchOfTemplate, prevPlain, newPlain)
 		}
 		return nil, h, herr
+	}
+	if fresh {
+		mode := uint32(gitModeFile)
+		if lv.info.Mode().Perm()&0o111 != 0 {
+			mode = gitModeExec
+		}
+		return &store.Change{Path: r.Source, Blob: newRaw, Mode: mode}, nil, nil
 	}
 	if bytes.Equal(newRaw, prevRaw) {
 		// Nothing to commit: the drift is only in parts the source does not own.

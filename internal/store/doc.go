@@ -11,6 +11,10 @@
 //   - passes `-c diff.cachetextconv=false -c core.hooksPath=/dev/null`
 //     (hooks of the clone never run under the tool) and sets no textconv or
 //     merge driver: the tool decrypts in memory, never inside git;
+//   - passes `-c core.excludesFile=/dev/null`: the user's global ignore
+//     rules never hide a file in the clone, since the manifest defines what
+//     the source holds (a .gitignore in the source and info/exclude still
+//     apply);
 //   - sets GIT_TERMINAL_PROMPT=0 and never prompts.
 //
 // Merges use `git merge-tree --write-tree` and return every conflicted path

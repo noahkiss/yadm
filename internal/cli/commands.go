@@ -75,7 +75,7 @@ func (a *app) register(root *cobra.Command) {
 	rt := exact(leaf(root, "retag <path> <type>[,<type>...]", "Change which types receive a path, resealing as needed", a.cmdRetag), 2)
 	rt.Flags().String("enclave", "", "seal for this enclave; empty stores plaintext")
 	rt.Flags().Bool("dry-run", false, "plan only")
-	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry, glob or owned root covers yet", a.cmdTrack), 1)
+	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry or owned root covers yet; capture a new file under a glob entry", a.cmdTrack), 1)
 	tr.Flags().String("when", "", "condition for the new entry; empty sends it to every machine")
 	tr.Flags().String("enclave", "", "seal for this enclave (this machine must be a member); empty stores plaintext")
 	tr.Flags().Bool("no-push", false, "commit only; the next sync pushes")
@@ -677,6 +677,13 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	_, _ = m.load(ctx) // the syncer reports a source that does not load
+	if m.snap != nil && m.snap.Plan != nil {
+		for _, t := range paths {
+			if _, _, err := m.snap.Plan.GlobNew(t); err != nil {
+				return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, fmt.Errorf("%w: nothing committed: %v", ErrRefused, err)
+			}
+		}
+	}
 	if bad := unmanaged(m.snap, paths); len(bad) > 0 {
 		next := make([]string, 0, len(bad))
 		for _, t := range bad {
@@ -701,7 +708,8 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 }
 
 // unmanaged returns the named paths a commit would skip: no target planned
-// here and no owned root covers the path or anything under it. A nil plan
+// here, no applying glob entry matches the path (a new file under the glob)
+// and no owned root covers the path or anything under it. A nil plan
 // returns nothing; the syncer reports a source that does not load.
 func unmanaged(snap *apply.Snapshot, paths []model.Target) []model.Target {
 	if snap == nil || snap.Plan == nil {
@@ -710,6 +718,9 @@ func unmanaged(snap *apply.Snapshot, paths []model.Target) []model.Target {
 	var out []model.Target
 	for _, p := range paths {
 		if managedOrRooted(snap, p) {
+			continue
+		}
+		if _, ok, _ := snap.Plan.GlobNew(p); ok {
 			continue
 		}
 		prefix := string(p) + "/"
@@ -967,6 +978,15 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	if when == "" && enclave == "" && m.snap != nil {
+		r, ok, err := m.snap.Plan.GlobNew(t)
+		if err != nil {
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("track %s: %v", t, err)
+		}
+		if ok {
+			return a.trackUnderGlob(ctx, m, t, r, noPush)
+		}
+	}
 	var c apply.Capture
 	if err := m.locked(ctx, func() error {
 		var err error
@@ -1015,6 +1035,43 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 		return result{data: data}, err
 	}
 	return result{data: data, text: "committed " + short(id)}, attention(holds)
+}
+
+// trackUnderGlob captures a new file that an applying glob entry already
+// covers: no manifest edit, only the file's source under that entry (sealed
+// when the entry has an enclave), committed through the gate as a named
+// commit and pushed.
+func (a *app) trackUnderGlob(ctx context.Context, m *machineEnv, t model.Target, r manifest.Resolved, noPush bool) (result, error) {
+	info, err := os.Lstat(filepath.Join(m.home, filepath.FromSlash(string(t))))
+	switch {
+	case err == nil && info.IsDir():
+		return result{}, usagef("track %s: %v: it is a directory; share a directory with a [[root]] in the manifest", t, apply.ErrNotFile)
+	case err != nil || !info.Mode().IsRegular():
+		return result{}, usagef("track %s: %v: glob entry #%d %q covers it, but it is not a regular file in $HOME", t, apply.ErrNotFile, r.Index, r.Entry.Target)
+	}
+	scope := r.Entry.Scope()
+	data := map[string]any{"target": t, "source": r.Source, "scope": scope, "commit": "", "pushed": false, "holds": []model.Hold{}, "glob": r.Entry.Target}
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Paths: []model.Target{t}, Push: !noPush})
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	if err != nil {
+		return result{data: data}, err
+	}
+	data["pushed"] = rep.Pushed
+	var holds []model.Hold
+	for _, h := range rep.Holds {
+		if h.Target == t {
+			holds = append(holds, h)
+		}
+	}
+	data["holds"] = withHoldNext(holds)
+	id, err := m.landed(ctx, rep, r.Source)
+	data["commit"] = id
+	if err != nil {
+		return result{data: data}, err
+	}
+	return result{data: data, text: fmt.Sprintf("covered by glob entry #%d %q; captured in %s", r.Index, r.Entry.Target, short(id))}, attention(holds)
 }
 
 func (a *app) cmdProtectionAllow(cmd *cobra.Command, args []string) (result, error) {

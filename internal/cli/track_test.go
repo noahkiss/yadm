@@ -18,7 +18,8 @@ source = "files/.zshenv"
 
 // TestTrack: track adds an entry and the file's source in one commit,
 // pushes it, and another machine receives it on its next sync. It refuses
-// a path an entry, a glob or an owned root covers (naming which), a path
+// a path an entry or an owned root covers, a new entry under a glob that
+// covers the path (naming which), a path
 // outside $HOME, a directory, and an unknown condition, and commits
 // nothing then.
 func TestTrack(t *testing.T) {
@@ -76,7 +77,7 @@ func TestTrack(t *testing.T) {
 	}{
 		{[]string{"track", ".zshrc"}, ExitUsage, "a manifest entry names it"},
 		{[]string{"track", ".config/tool/new"}, ExitUsage, `owned root ".config/tool" covers it`},
-		{[]string{"track", ".config/globbed/two"}, ExitUsage, `glob entry ".config/globbed/*" covers it`},
+		{[]string{"track", ".config/globbed/two", "--when", "type:work"}, ExitUsage, `glob entry ".config/globbed/*" covers it`},
 		{[]string{"track", "/elsewhere/file"}, ExitUsage, "not under $HOME"},
 		{[]string{"track", ".config/dir"}, ExitUsage, "directory"},
 		{[]string{"track", ".zshenv"}, ExitUsage, `entry ".alias" already uses files/.zshenv`},

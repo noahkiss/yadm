@@ -599,3 +599,74 @@ func TestFixtureVocabularyEnclavesOptional(t *testing.T) {
 		t.Errorf("nil Enclaves must skip the check: %v", err)
 	}
 }
+
+// TestGlobNew: a path an applying glob matches, with no source yet, resolves
+// through that entry, its source under the entry's directory (sealed/ for an
+// enclave, an explicit source directory when set). A planned path, a glob
+// whose `when` is false, a generated path and no match give nothing; two
+// matching globs, or a source another entry would also read, fail.
+func TestGlobNew(t *testing.T) {
+	src := `schema = 1
+[[file]]
+target = ".local/bin/**"
+[[file]]
+target = ".config/vault/*"
+enclave = "personal"
+[[file]]
+target = ".config/app/*.conf"
+source = "files/app-confs"
+[[file]]
+target = ".config/work/**"
+when = "type:work"
+[[file]]
+target = ".dup/a/*"
+[[file]]
+target = ".dup/*/x"
+[[file]]
+target = ".shared/**"
+source = "files/pool"
+[[file]]
+target = ".mirror/**"
+source = "files/pool"
+[[file]]
+target = ".cache/**"
+[tasks.gen]
+command = ["true"]
+outputs = [".cache/gen/**"]
+`
+	m, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := []model.SourcePath{"files/.local/bin/old"}
+	v := cond.Vocabulary{Types: map[string]bool{"work": true, "personal": true}}
+	p, err := m.Resolve(model.Context{}, tree, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		t     model.Target
+		src   model.SourcePath
+		index int
+	}{
+		{".local/bin/new", "files/.local/bin/new", 0},
+		{".local/bin/sub/deep", "files/.local/bin/sub/deep", 0},
+		{".config/vault/key", "sealed/personal/.config/vault/key", 1},
+		{".config/app/a.conf", "files/app-confs/a.conf", 2},
+	} {
+		r, ok, err := p.GlobNew(c.t)
+		if err != nil || !ok || r.Source != c.src || r.Index != c.index || r.Target != c.t {
+			t.Errorf("GlobNew(%s) = %+v %v %v", c.t, r, ok, err)
+		}
+	}
+	for _, none := range []model.Target{".local/bin/old", ".config/work/x", ".config/app/a.txt", ".unrelated", ".cache/gen/out"} {
+		if r, ok, err := p.GlobNew(none); ok || err != nil {
+			t.Errorf("GlobNew(%s) = %+v %v %v, want nothing", none, r, ok, err)
+		}
+	}
+	for _, bad := range []model.Target{".dup/a/x", ".shared/f"} {
+		if _, ok, err := p.GlobNew(bad); ok || err == nil {
+			t.Errorf("GlobNew(%s) = %v %v, want an error", bad, ok, err)
+		}
+	}
+}

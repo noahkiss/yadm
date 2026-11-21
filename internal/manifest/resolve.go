@@ -410,13 +410,70 @@ func (p *Plan) Why(t model.Target) (Explanation, error) {
 		case glob && !produces:
 			src, prefix := defaultSource(e)
 			rest := strings.TrimPrefix(strings.TrimPrefix(string(t), prefix), "/")
-			rej.Reason = fmt.Sprintf("the glob matches, but the source tree has no %s/%s", src, rest)
+			rej.Reason = fmt.Sprintf("the glob matches, but the source tree has no %s/%s; yadm commit %s adds it", src, rest, model.ShellQuote(string(t)))
 		default:
 			continue
 		}
 		x.Rejected = append(x.Rejected, rej)
 	}
 	return x, nil
+}
+
+// GlobNew returns the target an applying glob entry would produce for t
+// once the source tree holds t's file: t matches the glob, but its source
+// is not in the tree yet. The Resolved carries the entry, its index and
+// the source path (the entry's source directory plus the rest of t), so a
+// capture seals and applies rules exactly as for a file the glob already
+// produces. ok is false when t is planned already, no applying glob entry
+// matches it, or a task generates it. It fails when adding that source
+// would not make this one entry produce exactly t: two applying globs match
+// t, or another applying entry would produce something from that source.
+func (p *Plan) GlobNew(t model.Target) (Resolved, bool, error) {
+	if p == nil || p.m == nil || validRel(string(t)) != nil || IsGlob(string(t)) {
+		return Resolved{}, false, nil
+	}
+	if _, ok := p.Targets[t]; ok || p.m.Generated(t) {
+		return Resolved{}, false, nil
+	}
+	var r Resolved
+	found := false
+	for i, e := range p.m.Entries {
+		if i >= len(p.apply) || !p.apply[i] || !IsGlob(string(e.Target)) || !Match(string(e.Target), string(t)) {
+			continue
+		}
+		if found {
+			return Resolved{}, false, fmt.Errorf("%s: %s: glob entries #%d %q and #%d %q both match it; a source for it would collide", FileName, t, r.Index, r.Entry.Target, i, e.Target)
+		}
+		src, prefix := defaultSource(e)
+		rest := string(t)
+		if prefix != "" {
+			var ok bool
+			if rest, ok = strings.CutPrefix(rest, prefix+"/"); !ok || rest == "" {
+				continue
+			}
+		}
+		r = Resolved{Target: t, Source: model.SourcePath(string(src) + "/" + rest), Entry: e, Index: i}
+		found = true
+	}
+	if !found {
+		return Resolved{}, false, nil
+	}
+	// The new source must give this entry's target and nothing else.
+	tree := []model.SourcePath{r.Source}
+	for i, e := range p.m.Entries {
+		if i >= len(p.apply) || !p.apply[i] {
+			continue
+		}
+		for _, c := range candidates(e, tree) {
+			if !IsGlob(string(e.Target)) && c.source != r.Source {
+				continue
+			}
+			if i != r.Index || c.target != t {
+				return Resolved{}, false, fmt.Errorf("%s: %s: source %s would also give entry #%d %q target %s", FileName, t, r.Source, i, e.Target, c.target)
+			}
+		}
+	}
+	return r, true, nil
 }
 
 // expanded returns entry i's `when` with named conditions inlined, or ""
