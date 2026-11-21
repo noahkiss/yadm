@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -292,7 +293,14 @@ func union(a, b protection) protection {
 // to backup/<time>/<target>, or, when the bytes may hold enclave plaintext
 // (see backupEnclaves), to backup/enclave/<enclaves>/<time>/<target>, so
 // pruneBackups can drop them when this machine leaves an enclave.
-func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) error {
+//
+// Bytes that may hold plaintext of an on-demand enclave are never backed
+// up. written is the hash apply last wrote (or, for a union merge, the
+// live hash, whose lines the merge keeps): bytes equal to it are
+// reproducible from the source, so they are replaced without a backup.
+// Other such bytes are not replaced at all: backup refuses, so no edit is
+// lost silently.
+func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte, written string) error {
 	if e.StateDir == "" {
 		return errors.New("apply: StateDir is not set; refusing to replace a file without a backup")
 	}
@@ -300,6 +308,12 @@ func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) e
 	if encs := backupEnclaves(p, b); len(encs) > 0 {
 		names := make([]string, len(encs))
 		for i, x := range encs {
+			if slices.Contains(e.OnDemand, x) {
+				if written != "" && hashOf(b) == written {
+					return nil
+				}
+				return fmt.Errorf("%s: may hold plaintext of %s, which is on demand here and never backed up, and differs from what yadm wrote; move it aside first", t, x)
+			}
 			names[i] = string(x)
 		}
 		dir = filepath.Join(dir, enclaveBackupDir, strings.Join(names, "+"))
@@ -313,9 +327,10 @@ func (e *Engine) backup(now time.Time, t model.Target, p protection, b []byte) e
 
 // pruneBackups removes backup sets older than BackupRetention, and every
 // backup that holds plaintext of an enclave whose verified key log no
-// longer lists this machine. A refused log prunes nothing, so a pusher
-// cannot wipe backups with one bad entry.
-func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.EnclaveLoad) {
+// longer lists this machine or that this machine reads on demand only
+// (onDemand). A refused log prunes nothing, so a pusher cannot wipe backups
+// with one bad entry.
+func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.EnclaveLoad, onDemand map[model.EnclaveName]bool) {
 	if e.StateDir == "" {
 		return
 	}
@@ -329,6 +344,9 @@ func (e *Engine) pruneBackups(now time.Time, loads map[model.EnclaveName]crypt.E
 		gone := false
 		for _, name := range strings.Split(g.Name(), "+") {
 			if l, ok := loads[model.EnclaveName(name)]; ok && l.Err == nil && !l.Member {
+				gone = true
+			}
+			if onDemand[model.EnclaveName(name)] {
 				gone = true
 			}
 		}

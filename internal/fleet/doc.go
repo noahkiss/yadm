@@ -30,7 +30,7 @@
 //	func (f *File) Lookup(nameOrNickOrID string) (model.Machine, error)
 //	func (f *File) Vocabulary() cond.Vocabulary
 //	func (f *File) Enclaves() []model.EnclaveName
-//	type Identity struct{ Machine model.MachineID; Remote string; Notify, Busy []string }
+//	type Identity struct{ Machine model.MachineID; Remote string; Notify, Busy []string; OnDemand []model.EnclaveName }; func (Identity) IsOnDemand(e) bool
 //	func LoadIdentity(path string) (Identity, error)
 //	func SaveIdentity(path string, id Identity) error
 //	func NewMachineID() (model.MachineID, error)

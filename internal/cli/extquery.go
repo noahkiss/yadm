@@ -99,7 +99,7 @@ func statuses(ctx context.Context, m *machineEnv) map[model.MachineID]model.Stat
 	if err != nil {
 		return nil
 	}
-	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Keys)
+	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Readable())
 	return visible
 }
 

@@ -203,6 +203,10 @@ type Status struct {
 	Tasks      []TaskResult            `json:"tasks,omitempty"`     // last result per task
 	Alerts     []Alert                 `json:"alerts,omitempty"`    // recent sync alerts, newest last
 	KeyHeads   map[EnclaveName]KeyHead `json:"key_heads,omitempty"` // the key-log head this machine has pinned, per enclave
+	// OnDemand lists the enclaves this machine says it reads on demand
+	// only. It is self-reported: `yadm check` uses it to explain a key-log
+	// member without the enclave's type, never as proof.
+	OnDemand []EnclaveName `json:"on_demand,omitempty"`
 }
 
 // KeyHead names one verified key-log entry: its sequence number and the hex

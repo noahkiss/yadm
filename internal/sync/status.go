@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -36,6 +37,10 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 			last = &x
 		}
 	}
+	onDemand := slices.Sorted(slices.Values(s.Apply.OnDemand))
+	if last != nil && !slices.Equal(last.OnDemand, onDemand) {
+		changed = true // peers' check reads it; do not wait for the hourly record
+	}
 	if !fleet.PublishDue(last, changed, now) {
 		return nil
 	}
@@ -63,8 +68,8 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	}
 	if tip != "" {
 		if snap, err := s.load(ctx, tip); err == nil {
-			if snap.Keys != nil {
-				for e, r := range snap.Keys.Rings {
+			if keys := snap.Readable(); keys != nil {
+				for e, r := range keys.Rings {
 					if r == nil {
 						continue
 					}
@@ -107,6 +112,9 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 			}
 			rec.KeyHeads[e] = model.KeyHead{Seq: p.Seq, Hash: p.Hash}
 		}
+	}
+	if len(onDemand) > 0 {
+		rec.OnDemand = onDemand
 	}
 	return s.Status.Publish(ctx, rec)
 }

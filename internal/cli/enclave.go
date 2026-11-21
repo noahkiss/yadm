@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -37,6 +39,9 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	jn.Args = cobra.ExactArgs(1)
 	jn.Flags().String("expect", "", "required: fingerprint of the key-log entry that added this machine, received out of band")
 	leaf(en, "verify", "Verify every key log against the local pins", a.cmdEnclaveVerify)
+	od := leaf(en, "on-demand <enclave>", "Read an enclave on demand only on this machine: never apply, capture or back it up", a.cmdEnclaveOnDemand)
+	od.Args = cobra.ExactArgs(1)
+	od.Flags().Bool("off", false, "clear the mark: deliver the enclave again where types and membership say so")
 	rt := leaf(en, "retire", "Stop opening ciphertext of older epochs for delivery (after a remove's reseal)", a.cmdEnclaveRetire)
 	rt.Flags().String("enclave", "", "enclave to retire old epochs of (default: the only enclave this machine opens)")
 	sr := leaf(en, "set-recovery", "Name a new recovery identity, signed by the current one", a.cmdEnclaveSetRecovery)
@@ -94,6 +99,7 @@ type enclaveInfo struct {
 	Fingerprint string            `json:"fingerprint,omitempty"`
 	Members     []model.MachineID `json:"members"`
 	Member      bool              `json:"member"`
+	OnDemand    bool              `json:"on_demand,omitempty"` // this machine reads it on demand only
 	Pinned      *crypt.Pin        `json:"pinned"`
 	Error       string            `json:"error,omitempty"`
 }
@@ -110,9 +116,10 @@ func (a *app) cmdEnclaveList(cmd *cobra.Command, args []string) (result, error) 
 	for _, e := range m.snap.Fleet.Enclaves() {
 		info := enclaveInfo{Enclave: e, Members: []model.MachineID{}}
 		info.Pinned, _ = pins.Get(e)
+		info.OnDemand = m.snap.IsOnDemand(e)
 		if l, ok := m.snap.Enclaves[e]; ok {
 			info.Seq, info.Epoch = l.Head.Seq, l.Head.Epoch
-			info.Member = m.snap.Keys != nil && m.snap.Keys.CanOpen(e)
+			info.Member = m.snap.Readable().CanOpen(e)
 			for _, mb := range l.Head.Members {
 				info.Members = append(info.Members, mb.Machine)
 			}
@@ -124,7 +131,7 @@ func (a *app) cmdEnclaveList(cmd *cobra.Command, args []string) (result, error) 
 			}
 		}
 		out = append(out, info)
-		fmt.Fprintf(&b, "%-12s seq %d epoch %d member=%v members=%v %s\n", e, info.Seq, info.Epoch, info.Member, info.Members, info.Error)
+		fmt.Fprintf(&b, "%-12s seq %d epoch %d member=%v on_demand=%v members=%v %s\n", e, info.Seq, info.Epoch, info.Member, info.OnDemand, info.Members, info.Error)
 	}
 	return result{data: map[string]any{"enclaves": out}, text: b.String()}, nil
 }
@@ -148,7 +155,7 @@ func pickEnclave(cmd *cobra.Command, m *machineEnv) (model.EnclaveName, error) {
 	}
 	var opened []model.EnclaveName
 	for _, e := range m.snap.Fleet.Enclaves() {
-		if m.snap.Keys != nil && m.snap.Keys.CanOpen(e) {
+		if m.snap.Readable().CanOpen(e) {
 			opened = append(opened, e)
 		}
 	}
@@ -225,7 +232,10 @@ func (m *machineEnv) writeEntry(ctx context.Context, version string, e crypt.Log
 		Changes:      []store.Change{{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}},
 		ChangesScope: model.Scope(e.Enclave),
 		Capture:      reseal,
-		Push:         true,
+		// A reseal lands whole with its entry, or nothing lands: an entry
+		// that starts an epoch must never commit without the reseal.
+		Atomic: reseal != nil,
+		Push:   true,
 	}
 	if reseal == nil {
 		opts.Capture = &apply.Capture{}
@@ -330,10 +340,10 @@ func ringFor(m *machineEnv, e model.EnclaveName) (*crypt.Keyring, crypt.LogEntry
 	if l.Err != nil {
 		return nil, crypt.LogEntry{}, fmt.Errorf("enclave %s: %w", e, l.Err)
 	}
-	if m.snap.Keys == nil || m.snap.Keys.Rings[e] == nil {
+	if m.snap.Readable() == nil || m.snap.Readable().Rings[e] == nil {
 		return nil, crypt.LogEntry{}, fmt.Errorf("enclave %s: %w", e, crypt.ErrNotMember)
 	}
-	return m.snap.Keys.Rings[e], l.Head, nil
+	return m.snap.Readable().Rings[e], l.Head, nil
 }
 
 func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error) {
@@ -349,6 +359,13 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
+	if m.snap.IsOnDemand(e) {
+		// The reseal commit passes the gate, whose checks read plaintext
+		// from a temp file in the state directory: never for an on-demand
+		// enclave. Refuse before writing any entry.
+		return result{next: []string{"yadm enclave on-demand " + model.ShellQuote(string(e)) + " --off"}},
+			fmt.Errorf("%w: %s is on demand on this machine, and its reseal would need the commit gate to read its plaintext here; run remove on a machine that receives %s", ErrRefused, e, e)
+	}
 	who, err := machineID(m, args[0])
 	if err != nil {
 		return result{}, usagef("%v", err)
@@ -363,7 +380,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	// Reseal under the new epoch with a snapshot that holds the new keyring.
 	rings := map[model.EnclaveName]*crypt.Keyring{}
-	for k, v := range m.snap.Keys.Rings {
+	for k, v := range m.snap.Readable().Rings {
 		rings[k] = v
 	}
 	rings[e] = newRing
@@ -376,8 +393,15 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, &c, fmt.Sprintf("enclave %s: remove %s", e, who))
 	d.Resealed = c.Paths
+	if d.Commit == "" {
+		// Nothing landed: no entry, no pin, no epoch change.
+		return result{data: d, next: heldNext(d.Holds)}, removeHeld(e, who, c.Paths, d.Holds, err)
+	}
+	if err == nil {
+		err = m.resealLanded(ctx, d.Commit, c)
+	}
 	retired := false
-	if err == nil && d.Commit != "" {
+	if err == nil {
 		// The reseal landed: retire the old epochs now, so a forgery pushed
 		// under an old key is never opened for delivery again.
 		var re crypt.LogEntry
@@ -396,6 +420,54 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 		"rotate every real secret stored in enclave "+string(e)+": "+string(who)+" keeps all keys up to epoch "+fmt.Sprint(head.Epoch),
 	)
 	return result{data: d, next: next}, err
+}
+
+// removeHeld is the error of a remove whose atomic commit did not land: the
+// gate or a conflict held part of the reseal, so neither the entry nor the
+// reseal was committed.
+func removeHeld(e model.EnclaveName, who model.MachineID, resealed []model.Target, holds []model.Hold, cause error) error {
+	var held []string
+	for _, h := range holds {
+		if slices.Contains(resealed, h.Target) && !slices.Contains(held, string(h.Target)) {
+			held = append(held, string(h.Target))
+		}
+	}
+	sort.Strings(held)
+	if len(held) == 0 {
+		return fmt.Errorf("remove %s from %s did not commit; the key log, pins and epoch are unchanged: %v", who, e, cause)
+	}
+	return fmt.Errorf("remove %s from %s did not commit: the commit gate held the reseal of %s; the key log, pins and epoch are unchanged; settle the holds, then run remove again", who, e, strings.Join(held, ", "))
+}
+
+// heldNext collects the suggested commands of holds, without repeats.
+func heldNext(holds []model.Hold) []string {
+	var out []string
+	for _, h := range holds {
+		for _, n := range h.Next {
+			if !slices.Contains(out, n) {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+// resealLanded checks that commit holds every resealed source as the
+// reseal wrote it. The atomic commit makes a partial reseal unlikely; a
+// conflict resolved against a fetched source is the one way left, and then
+// the old epochs must stay open until a member reseals again.
+func (m *machineEnv) resealLanded(ctx context.Context, commit model.CommitID, c apply.Capture) error {
+	var missing []string
+	for i, ch := range c.Changes {
+		b, err := m.repo.ReadPath(ctx, commit, ch.Path)
+		if err != nil || !bytes.Equal(b, ch.Blob) {
+			missing = append(missing, string(c.Paths[i]))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the remove entry committed, but the reseal of %s did not land as written; old epochs are not retired: a member reseals them, then runs yadm enclave retire", strings.Join(missing, ", "))
 }
 
 func (a *app) cmdEnclaveRetire(cmd *cobra.Command, args []string) (result, error) {
@@ -523,7 +595,7 @@ func (a *app) cmdEnclaveVerify(cmd *cobra.Command, args []string) (result, error
 		r := row{Enclave: e, OK: true}
 		if ok {
 			r.Seq, r.Epoch = l.Head.Seq, l.Head.Epoch
-			r.Member = m.snap.Keys != nil && m.snap.Keys.CanOpen(e)
+			r.Member = m.snap.Readable().CanOpen(e)
 			if l.Err != nil {
 				r.OK, r.Error = false, l.Err.Error()
 				errs = append(errs, fmt.Errorf("enclave %s: %w", e, l.Err))

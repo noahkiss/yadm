@@ -92,7 +92,7 @@ func openSummary(m *machineEnv, row *fleet.Summary) {
 	if row.Status == nil {
 		return
 	}
-	opened, problems := fleet.OpenAll(m.snap.Fleet, *row.Status, m.snap.Keys)
+	opened, problems := fleet.OpenAll(m.snap.Fleet, *row.Status, m.snap.Readable())
 	row.SealedObserved = opened
 	for _, p := range problems {
 		row.SealedErrors = append(row.SealedErrors, p.Error())
@@ -114,7 +114,7 @@ func (a *app) cmdFleetDiff(cmd *cobra.Command, args []string) (result, error) {
 	}
 	// A member compares the sealed collectors it can open; a non-member sees
 	// the plain facts only, as published.
-	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Keys)
+	visible, _ := fleet.WithVisible(m.snap.Fleet, all, m.snap.Readable())
 	d, err := fleet.DiffObserved(visible, args[0])
 	if err != nil {
 		return result{}, err
@@ -160,7 +160,7 @@ func (a *app) cmdReviewList(cmd *cobra.Command, args []string) (result, error) {
 	}
 	items := []sync.ReviewItem{}
 	for _, s := range scopes {
-		it, err := sync.Unreviewed(ctx, m.repo, m.snap.Keys, s)
+		it, err := sync.Unreviewed(ctx, m.repo, m.snap.Readable(), s)
 		if err != nil {
 			return result{}, err
 		}
@@ -304,12 +304,12 @@ func (a *app) cmdHoldShow(cmd *cobra.Command, args []string) (result, error) {
 			return s
 		}
 		if crypt.IsSealedFile(b) {
-			if snap == nil || enc == "" || snap.Crypto == nil || !snap.CanOpen(enc) {
+			if snap == nil || enc == "" || !snap.CanRead(enc) {
 				s.Sealed = true
 				return s
 			}
 			// Hold sides are old content: read them with every epoch's key.
-			if b, err = apply.SetCrypto(snap.Keys.History()).OpenFile(enc, holdSource(snap, h, enc), b); err != nil {
+			if b, err = apply.SetCrypto(snap.Readable().History()).OpenFile(enc, holdSource(snap, h, enc), b); err != nil {
 				s.Sealed = true
 				return s
 			}
@@ -848,7 +848,7 @@ func (a *app) cmdScheduleStatus(cmd *cobra.Command, args []string) (result, erro
 func (m *machineEnv) notes(ctx context.Context) map[model.CommitID]sync.Note {
 	var keys *crypt.Set
 	if snap, err := m.load(ctx); err == nil {
-		keys = snap.Keys
+		keys = snap.Readable()
 	}
 	n, err := sync.ReadNotes(ctx, m.repo, keys)
 	if err != nil {

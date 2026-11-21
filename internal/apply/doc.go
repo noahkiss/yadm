@@ -69,6 +69,15 @@
 //   - Backups of files with enclave plaintext go to
 //     backup/enclave/<enclaves>/ and are deleted when a verified key log no
 //     longer lists this machine.
+//   - An enclave in Deps.OnDemand is read on demand only. Load verifies its
+//     key log and advances its pin as for any enclave, then leaves its keys
+//     out of Snapshot.Keys and Crypto, so apply, capture, track, retag,
+//     merges and the gate treat it as a non-member does. A target of it that
+//     an earlier apply delivered leaves $HOME as if it had left the plan.
+//     Its plaintext is never backed up, and older backups of it are
+//     deleted: a file its protection covers is replaced only when it holds
+//     the bytes apply last wrote, else backup refuses. Snapshot.Readable
+//     holds every key, for stdout and key-log writes only.
 //
 // Exported API:
 //
@@ -77,8 +86,8 @@
 //	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; Want; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
 //	func FileStateDB(stateDir string) StateDB
-//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
-//	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; Enclaves; Render; Crypto; Tree }
+//	type Deps struct{ Store; Self; Identity; Pins; State; Home; User; StateDir; Tasks; Now; Allow; OnDemand; LoadSnapshot; Rules; Text; StatTimeout; ScanBudget }
+//	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; ReadKeys; OnDemand; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
 //	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
 //	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode is not drift, unless it drops the owner's execute bit
@@ -93,7 +102,8 @@
 //	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
 //	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
 //	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write
-//	func (s *Snapshot) CanOpen(e model.EnclaveName) bool
+//	func (s *Snapshot) CanOpen(e model.EnclaveName) bool // delivery: false for an on-demand enclave
+//	func (s *Snapshot) CanRead(e) bool; func (s *Snapshot) Readable() *crypt.Set; func (s *Snapshot) IsOnDemand(e) bool // stdout and key-log writes only
 //	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed
 //	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error) // a named path also reports a new file under an applying glob or in an accepted root
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)

@@ -307,6 +307,20 @@ type Identity struct {
 	Remote  string          `toml:"remote,omitempty"`
 	Notify  []string        `toml:"notify,omitempty"` // extexec argv for alerts; empty means log only
 	Busy    []string        `toml:"busy,omitempty"`   // extexec argv; exit 0 with items means "a session is busy with these paths"
+	// OnDemand names enclaves this machine reads on demand only: it never
+	// applies, captures or backs up their plaintext, and opens them only to
+	// print to stdout (docs/design.md 7.6).
+	OnDemand []model.EnclaveName `toml:"on_demand,omitempty"`
+}
+
+// IsOnDemand reports whether this machine reads enclave e on demand only.
+func (id Identity) IsOnDemand(e model.EnclaveName) bool {
+	for _, x := range id.OnDemand {
+		if x == e {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadIdentity reads the identity file. Unknown keys are errors, and the
@@ -331,6 +345,11 @@ func LoadIdentity(path string) (Identity, error) {
 func (id Identity) validate() error {
 	if !namePattern.MatchString(string(id.Machine)) {
 		return fmt.Errorf("machine %q: invalid or missing id", id.Machine)
+	}
+	for _, e := range id.OnDemand {
+		if !namePattern.MatchString(string(e)) {
+			return fmt.Errorf("on_demand: invalid enclave name %q", e)
+		}
 	}
 	for _, argv := range [][]string{id.Notify, id.Busy} {
 		if len(argv) > 0 && argv[0] == "" {
