@@ -8,7 +8,7 @@
 |---|---|---|
 | `post-edit` | After a tool that writes or edits a file | Records the path for the session. Commits it locally if it is managed or in an owned root; the next timer tick pushes it. Hooks never touch the network. |
 | `stop` | When the agent or a subagent ends its turn | Commits the session's recorded paths locally. Blocks while a decision this session caused is open, including a conflict the timer met while pushing them. When another process holds the sync lock for more than 3 s, it returns and the timer commits the paths. No process holds the sync lock while it waits on the network. |
-| `session-start` | When a session starts or resumes | Quick sync, then a summary of at most 10 lines. The sync skips its network steps when another process holds the network lock. |
+| `session-start` | When a session starts or resumes | Quick sync, then a summary of at most 10 lines. The sync skips its network steps when another process holds the network lock. A schedule the service manager stopped running is reinstalled, at most once an hour, and the summary says so first. |
 
 ## Input
 

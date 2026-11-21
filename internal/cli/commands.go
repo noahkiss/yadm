@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,7 +21,6 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
-	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 	"github.com/noahkiss/yadm/internal/textmerge"
@@ -335,10 +335,6 @@ func installSchedule(ctx context.Context, skip bool) scheduleOutcome {
 // starts with the quick check, so a tick where nothing moved costs one stat
 // pass and one `git ls-remote`.
 const ScheduleInterval = time.Minute
-
-func scheduleSpec() schedule.Spec {
-	return schedule.Spec{Binary: schedule.StableBinary(hooks.binary()), Interval: ScheduleInterval, Label: schedule.DefaultLabel}
-}
 
 // lockedResult suggests a retry when err is the lock timeout.
 func lockedResult(err error) result {
@@ -752,17 +748,43 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	full, _ := cmd.Flags().GetBool("full")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	dry, _ := cmd.Flags().GetBool("dry-run")
+	stamp := func() {
+		if auto && !a.json {
+			// The schedule log gets a time for every failure.
+			fmt.Fprint(a.stderr, hooks.now().UTC().Format(time.RFC3339)+" ")
+		}
+	}
+	if auto {
+		if p, err := DefaultPaths(); err == nil {
+			markScheduledRun(p.State)
+		}
+	}
 	m, err := open(ctx)
 	if err != nil {
+		stamp()
 		return notInit(err), err
 	}
 	_, _ = m.load(ctx)
 	rep, err := m.syncer(a.version).Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries, Quick: (quick || auto) && !full})
-	if err != nil {
-		if errors.Is(err, sync.ErrLocked) {
-			return result{next: []string{"yadm sync"}}, err
+	// A sync run by hand repairs a schedule launchd stopped running; the
+	// scheduled run never does.
+	healed := ""
+	if !auto && !dry {
+		healed = healSchedule(ctx, m.paths.State)
+		if healed != "" && !a.json {
+			fmt.Fprintln(a.stderr, healed)
 		}
-		return result{}, err
+	}
+	if err != nil {
+		stamp()
+		var data any
+		if healed != "" {
+			data = map[string]string{"schedule_healed": healed}
+		}
+		if errors.Is(err, sync.ErrLocked) {
+			return result{data: data, next: []string{"yadm sync"}}, err
+		}
+		return result{data: data}, err
 	}
 	rep = reportData(rep)
 	var next []string
@@ -772,7 +794,20 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 	if rep.Network != "" {
 		next = append(next, "yadm sync") // the timer does it on its next tick
 	}
-	return result{data: rep, next: next}, attention(rep.Holds)
+	res := result{data: syncData{Report: rep, ScheduleHealed: healed}, next: next}
+	if auto && !a.json {
+		// One timestamped line per scheduled run keeps the log readable.
+		b, _ := json.Marshal(rep)
+		res.text = hooks.now().UTC().Format(time.RFC3339) + " " + string(b)
+	}
+	return res, attention(rep.Holds)
+}
+
+// syncData is sync's envelope data: the report, and the line a sync run by
+// hand printed when it reinstalled a broken schedule.
+type syncData struct {
+	sync.Report
+	ScheduleHealed string `json:"schedule_healed,omitempty"`
 }
 
 type logCommit struct {

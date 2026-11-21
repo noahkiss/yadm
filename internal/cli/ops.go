@@ -825,6 +825,11 @@ func (a *app) cmdScheduleStatus(cmd *cobra.Command, args []string) (result, erro
 		return result{}, err
 	}
 	if st.LastRun.IsZero() {
+		if p, err := DefaultPaths(); err == nil {
+			st.LastRun = lastScheduledRun(p.State)
+		}
+	}
+	if st.LastRun.IsZero() {
 		if m, err := open(ctx); err == nil {
 			if self := m.selfStatus(ctx); self != nil {
 				st.LastRun = self.LastSync
@@ -832,7 +837,7 @@ func (a *app) cmdScheduleStatus(cmd *cobra.Command, args []string) (result, erro
 		}
 	}
 	var next []string
-	if !st.Installed {
+	if !st.Installed || st.Broken() != "" {
 		next = []string{"yadm schedule install"}
 	}
 	return result{data: st, next: next}, nil

@@ -545,6 +545,11 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	case !rep.Skipped && rep.Applied != "":
 		lines = append(lines, fmt.Sprintf("yadm: synced to %s (%s)", short(rep.Applied), rep.Reason))
 	}
+	// After the sync: a reinstall starts a run that takes the sync lock.
+	// First, so the line cap never drops it.
+	if s := healSchedule(ctx, m.paths.State); s != "" {
+		lines = append([]string{s}, lines...)
+	}
 	m.snap = nil
 	snap, _ := m.load(ctx)
 	hs, _ := m.eng.Holds(ctx)

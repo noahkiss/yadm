@@ -45,14 +45,52 @@ type Spec struct {
 	// Path is the PATH the job runs with. Empty means the binary's
 	// directory followed by SystemPath.
 	Path []string
+	// Log is the absolute file launchd appends the job's stdout and stderr
+	// to. Empty means /dev/null. systemd sends both to the journal.
+	Log string
 }
 
-// Status is what Status reports.
+// Status is what Status reports. The fields after UnitPath come from the
+// service manager and stay empty when it does not report them.
 type Status struct {
 	Installed bool      `json:"installed"`
 	Loaded    bool      `json:"loaded"`
 	LastRun   time.Time `json:"last_run,omitempty"`
 	UnitPath  string    `json:"unit_path,omitempty"`
+	// LastExit is the job's last exit status; nil when it has not exited
+	// since it was loaded.
+	LastExit *int `json:"last_exit,omitempty"`
+	// Runs counts the job's starts since it was loaded (launchd).
+	Runs int `json:"runs,omitempty"`
+	// NeedsConstraintUpdate is launchd's "needs LWCR update" property: the
+	// launch constraint pins a binary that an upgrade replaced, so every
+	// run ends at once with EX_CONFIG.
+	NeedsConstraintUpdate bool `json:"needs_constraint_update,omitempty"`
+	// LastResult is the service's last result (systemd), such as
+	// "success" or "exit-code".
+	LastResult string `json:"last_result,omitempty"`
+	// Log is where the job's output goes (launchd), unless /dev/null.
+	Log string `json:"log,omitempty"`
+}
+
+// ExConfig is EX_CONFIG. launchd ends a run with it when it refuses to
+// start the job; yadm itself never exits with it.
+const ExConfig = 78
+
+// Broken says why the installed schedule cannot run until it is installed
+// again, or "" when nothing says so. A fresh install clears both causes.
+func (s Status) Broken() string {
+	if !s.Installed {
+		return ""
+	}
+	var why []string
+	if s.LastExit != nil && *s.LastExit == ExConfig {
+		why = append(why, "last exit 78: EX_CONFIG")
+	}
+	if s.NeedsConstraintUpdate {
+		why = append(why, "launchd flags a launch constraint that needs an update")
+	}
+	return strings.Join(why, "; ")
 }
 
 // Scheduler manages the platform's user-level scheduler.
@@ -198,6 +236,9 @@ func normalize(s Spec) (Spec, error) {
 	if !labelPattern.MatchString(s.Label) {
 		return s, fmt.Errorf("schedule: label %q: invalid", s.Label)
 	}
+	if s.Log != "" && (!filepath.IsAbs(s.Log) || strings.ContainsAny(s.Log, "\n\r\x00")) {
+		return s, fmt.Errorf("schedule: log %q must be an absolute path without control characters", s.Log)
+	}
 	if len(s.Path) == 0 {
 		s.Path = append([]string{filepath.Dir(s.Binary)}, SystemPath...)
 	}
@@ -224,11 +265,16 @@ var syncArgs = []string{"sync", "--auto"}
 
 // LaunchdPlist returns the launchd agent for a spec. It runs at load (login)
 // and every Interval. launchd coalesces intervals missed during sleep into
-// one run at wake, so a missed run is not queued twice.
+// one run at wake, so a missed run is not queued twice. The job's stdout
+// and stderr go to Spec.Log, or /dev/null without one.
 func LaunchdPlist(s Spec) ([]byte, error) {
 	s, err := normalize(s)
 	if err != nil {
 		return nil, err
+	}
+	logPath := s.Log
+	if logPath == "" {
+		logPath = os.DevNull
 	}
 	var b bytes.Buffer
 	esc := func(v string) string {
@@ -263,9 +309,9 @@ func LaunchdPlist(s Spec) ([]byte, error) {
 	<key>LowPriorityIO</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/dev/null</string>
+	<string>` + esc(logPath) + `</string>
 	<key>StandardErrorPath</key>
-	<string>/dev/null</string>
+	<string>` + esc(logPath) + `</string>
 </dict>
 </plist>
 `)
@@ -397,6 +443,17 @@ func (l *launchd) Install(ctx context.Context, s Spec) error {
 	if err := writeAtomic(p, b); err != nil {
 		return err
 	}
+	if s.Log != "" {
+		// The log names targets: create it private before launchd does.
+		if err := os.MkdirAll(filepath.Dir(s.Log), 0o700); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(s.Log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		f.Close()
+	}
 	// A loaded old copy must go first; an error means it was not loaded.
 	_, _ = l.run(ctx, "launchctl", "bootout", l.domain(), p)
 	if out, err := l.run(ctx, "launchctl", "bootstrap", l.domain(), p); err != nil {
@@ -417,15 +474,61 @@ func (l *launchd) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-// Status reads the plist and asks launchd whether the agent is loaded.
-// LastRun stays zero: launchd keeps no run time; the caller fills it from
-// the sync state.
+// Status reads the plist and asks launchd whether the agent is loaded and
+// how its last run ended. LastRun stays zero: launchd keeps no run time;
+// the caller fills it.
 func (l *launchd) Status(ctx context.Context) (Status, error) {
 	p := l.plistPath(l.o.Label)
 	st := Status{UnitPath: p, Installed: exists(p)}
-	_, err := l.run(ctx, "launchctl", "print", l.domain()+"/"+l.o.Label)
+	out, err := l.run(ctx, "launchctl", "print", l.domain()+"/"+l.o.Label)
 	st.Loaded = err == nil
+	if st.Loaded {
+		parseLaunchctlPrint(out, &st)
+	}
 	return st, nil
+}
+
+// parseLaunchctlPrint reads the job's own top-level keys from `launchctl
+// print <domain>/<label>`: "runs", "last exit code", "stdout path" and
+// "properties". A missing or unreadable line leaves its field empty; keys
+// inside nested blocks are ignored.
+func parseLaunchctlPrint(out []byte, st *Status) {
+	depth := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "}") {
+			depth--
+			continue
+		}
+		opens := strings.HasSuffix(line, "{")
+		if k, v, ok := strings.Cut(line, " = "); ok && depth == 1 && !opens {
+			switch strings.TrimSpace(k) {
+			case "runs":
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+					st.Runs = n
+				}
+			case "last exit code":
+				// "78: EX_CONFIG", "0" or "(never exited)".
+				num, _, _ := strings.Cut(v, ":")
+				if n, err := strconv.Atoi(strings.TrimSpace(num)); err == nil {
+					st.LastExit = &n
+				}
+			case "stdout path":
+				if v = strings.TrimSpace(v); v != os.DevNull {
+					st.Log = v
+				}
+			case "properties":
+				for _, p := range strings.Split(v, "|") {
+					if strings.TrimSpace(p) == "needs LWCR update" {
+						st.NeedsConstraintUpdate = true
+					}
+				}
+			}
+		}
+		if opens {
+			depth++
+		}
+	}
 }
 
 // systemd manages <label>.service and <label>.timer in $XDG_CONFIG_HOME/systemd/user.
@@ -485,8 +588,8 @@ func (s *systemd) Uninstall(ctx context.Context) error {
 	return nil
 }
 
-// Status reads the unit files and asks systemd whether the timer is active
-// and when it last fired.
+// Status reads the unit files and asks systemd whether the timer is active,
+// when it last fired and, once it has, how the service's last run ended.
 func (s *systemd) Status(ctx context.Context) (Status, error) {
 	ps, pt := s.paths(s.o.Label)
 	st := Status{UnitPath: pt, Installed: exists(ps) && exists(pt)}
@@ -495,7 +598,31 @@ func (s *systemd) Status(ctx context.Context) (Status, error) {
 	if out, err := s.run(ctx, "systemctl", "--user", "show", s.o.Label+".timer", "--property=LastTriggerUSec", "--value"); err == nil {
 		st.LastRun = parseSystemdTime(strings.TrimSpace(string(out)))
 	}
+	if !st.LastRun.IsZero() {
+		if out, err := s.run(ctx, "systemctl", "--user", "show", s.o.Label+".service", "--property=Result,ExecMainStatus"); err == nil {
+			parseSystemdShow(out, &st)
+		}
+	}
 	return st, nil
+}
+
+// parseSystemdShow reads the "Result=" and "ExecMainStatus=" lines of
+// `systemctl show`.
+func parseSystemdShow(out []byte, st *Status) {
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "Result":
+			st.LastResult = v
+		case "ExecMainStatus":
+			if n, err := strconv.Atoi(v); err == nil {
+				st.LastExit = &n
+			}
+		}
+	}
 }
 
 // parseSystemdTime parses systemctl's "Thu 2030-01-03 12:00:00 UTC". Anything
