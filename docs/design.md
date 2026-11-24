@@ -363,7 +363,9 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 - **A vouching key log.** The flags may be left out when another enclave's key log vouches for the keys. All of these must hold:
   - This machine has pinned that log, and its verified head lists the machine.
   - The entry that introduced the machine's current key pair is signed by this machine, or by a current member of the enclave being added to. This is the last entry where the machine appears, or appears with other keys. The signer counts by its signing key: the key that verified the entry must be the one the target enclave's head lists for it. A machine id alone counts for nothing, since the other log's members could list that id under a key they hold.
-  - Every vouching log that qualifies lists the same keys. On a disagreement, `add` asks for the flags.
+  - Every pinned log whose verified head lists the machine lists the same keys, whoever signed it. On a disagreement, `add` asks for the flags.
+  - The target enclave's own log never listed the machine. A removed machine comes back only through the flags.
+  - The user names the machine by its id, never by a fleet name. The id alone selects the keys, and any writer can edit `fleet.toml`.
 
 Why the signer rule: a signer that is already a member of the target enclave holds its keys. A false key from it gives it no access it lacks. A member of only the other enclave gets no such pass, or it could plant a key in its own enclave's log and so reach a second enclave.
 
@@ -373,7 +375,7 @@ What never vouches:
 - An unpinned log may be a writer's forgery (section 7.2).
 - A machine's own `create` and a `recover` entry name no trusted signer.
 
-When the flags disagree with a vouching log, the flags win and the output says so. The output's `keys_from` names the source: `flags`, or the vouching enclave and its head's seq.
+When the flags disagree with any pinned log, the flags win and the output says so. The output's `keys_from` names the source: `flags`, or the vouching enclave and its head's seq.
 
 ### 7.4 Where plaintext may exist
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,7 +189,7 @@ func TestEnclaveAddVouchedKeys(t *testing.T) {
 	yadmOK(t, "enclave", "join", "client", "--expect", added.Fingerprint)
 	hb := fx.Identities[fixture.HostB].Member()
 	yadmOK(t, "enclave", "add", "host-b", "--enclave", "personal", "--recipient", hb.Recipient, "--sign-key", hb.SignKey)
-	env = yadmOK(t, "enclave", "add", "host-b", "--enclave", "client")
+	env = yadmOK(t, "enclave", "add", string(fixture.HostB), "--enclave", "client")
 	d := decode[entryData](t, env.Data)
 	if !strings.HasPrefix(d.KeysFrom, "personal seq ") {
 		t.Fatalf("keys_from: %q", d.KeysFrom)
@@ -340,5 +341,107 @@ func TestEnclaveAddSignerByKey(t *testing.T) {
 	cl := keyLogAt(t, a.Source, "client")
 	if _, err := crypt.Open(cl[len(cl)-1], stranger); err == nil {
 		t.Fatal("the stranger opens client")
+	}
+}
+
+// vouchSetup: host-c adds host-a to client; host-a joins client on demand.
+// host-a then pins both personal (member) and client.
+func vouchSetup(t *testing.T) (root, remote string, fx *fixture.Fixture, a machineDirs) {
+	t.Helper()
+	hermetic(t)
+	root = t.TempDir()
+	fx = fixture.Build(t)
+	remote = fixtureRemote(t, root, fx)
+	passBin(t)
+	fixtureMachine(t, root, remote, fx, fixture.HostC, true)
+	ha := fx.Identities[fixture.HostA].Member()
+	fp := decode[entryData](t, yadmOK(t, "enclave", "add", "host-a", "--enclave", "client", "--recipient", ha.Recipient, "--sign-key", ha.SignKey).Data).Fingerprint
+	yadmRawPush(t)
+	a = fixtureMachine(t, root, remote, fx, fixture.HostA, true)
+	yadmOK(t, "enclave", "on-demand", "client")
+	yadmOK(t, "enclave", "join", "client", "--expect", fp)
+	return root, remote, fx, a
+}
+
+// TestEnclaveAddVouchedNameBinding: without key flags, a fleet name selects
+// the keys, and fleet.toml is writable by any writer. host-a honestly adds
+// another machine (m-zzzzzz) to personal. A writer then points the fleet
+// name host-b at m-zzzzzz. "add host-b" without flags must not wrap client
+// to m-zzzzzz: it asks for the machine id or the flags.
+func TestEnclaveAddVouchedNameBinding(t *testing.T) {
+	_, _, fx, a := vouchSetup(t)
+	canary := fx.Canaries["client"]
+	x, err := crypt.GenerateIdentity("m-zzzzzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xm := x.Member()
+	yadmOK(t, "enclave", "add", "m-zzzzzz", "--enclave", "personal", "--recipient", xm.Recipient, "--sign-key", xm.SignKey)
+
+	fl := readFile(t, filepath.Join(a.Source, "fleet.toml"))
+	fl = strings.Replace(fl, `name = "host-b"`, `name = "host-b-old"`, 1)
+	fl = strings.Replace(fl, `nicknames = ["desk-b"]`, `nicknames = []`, 1)
+	fl += "\n[machines.m-zzzzzz]\nname = \"host-b\"\ntypes = [\"work\"]\nos = \"linux\"\narch = \"amd64\"\n"
+	writeFile(t, filepath.Join(a.Source, "fleet.toml"), fl)
+	git(t, a.Source, "add", "-A")
+	git(t, a.Source, "commit", "-q", "-m", "fleet: rename")
+
+	before := git(t, a.Source, "rev-parse", "main")
+	if env, code, _ := yadm(t, "enclave", "add", "host-b", "--enclave", "client"); code != ExitUsage {
+		t.Fatalf("add by a fleet name without flags: exit %d %+v", code, env.Error)
+	}
+	if now := git(t, a.Source, "rev-parse", "main"); now != before {
+		t.Fatal("a refused add committed")
+	}
+	cl := keyLogAt(t, a.Source, "client")
+	if _, err := crypt.Open(cl[len(cl)-1], x); err == nil {
+		t.Fatal("the renamed machine opens client")
+	}
+	secrecytest.AssertRepoClean(t, a.Source, canary)
+}
+
+// TestEnclaveAddVouchedAfterRemove: a machine that the target enclave's own
+// log once removed is re-added only with the flags, never from a vouching
+// log.
+func TestEnclaveAddVouchedAfterRemove(t *testing.T) {
+	_, _, fx, a := vouchSetup(t)
+	hb := fx.Identities[fixture.HostB].Member()
+	yadmOK(t, "enclave", "add", "host-b", "--enclave", "client", "--recipient", hb.Recipient, "--sign-key", hb.SignKey)
+	env := yadmOK(t, "enclave", "add", string(fixture.HostB), "--enclave", "personal")
+	if d := decode[entryData](t, env.Data); !strings.HasPrefix(d.KeysFrom, "client seq ") {
+		t.Fatalf("keys_from: %q", d.KeysFrom)
+	}
+	passGate(t)
+	yadmOK(t, "enclave", "remove", "host-b", "--enclave", "personal", "--confirm")
+	before := git(t, a.Source, "rev-parse", "main")
+	if env, code, _ := yadm(t, "enclave", "add", string(fixture.HostB), "--enclave", "personal"); code != ExitUsage {
+		t.Fatalf("re-add after remove without flags: exit %d %+v", code, env.Error)
+	}
+	if now := git(t, a.Source, "rev-parse", "main"); now != before {
+		t.Fatal("a refused add committed")
+	}
+	yadmOK(t, "enclave", "add", "host-b", "--enclave", "personal", "--recipient", hb.Recipient, "--sign-key", hb.SignKey)
+}
+
+// TestPickVouched: an add without flags takes the vouching keys only when
+// every verified pinned log that lists the machine agrees, a log with an
+// untrusted signer included, and the target enclave never listed it.
+func TestPickVouched(t *testing.T) {
+	k1 := vouch{member: crypt.Member{Machine: "m-x", Recipient: "age1one", SignKey: "s1"}, from: "personal seq 3"}
+	k2 := vouch{member: crypt.Member{Machine: "m-x", Recipient: "age1two", SignKey: "s2"}, from: "client seq 4"}
+	if v, err := pickVouched("m-x", []vouch{k1}, []vouch{k1}, false); err != nil || v != k1 {
+		t.Fatalf("agreeing: %+v %v", v, err)
+	}
+	for name, c := range map[string]struct {
+		vouched, listed []vouch
+		removed         bool
+	}{
+		"none":         {nil, []vouch{k2}, false},
+		"disagreement": {[]vouch{k1}, []vouch{k1, k2}, false},
+		"removed":      {[]vouch{k1}, []vouch{k1}, true},
+	} {
+		if _, err := pickVouched("m-x", c.vouched, c.listed, c.removed); !errors.Is(err, errUsage) {
+			t.Fatalf("%s: %v", name, err)
+		}
 	}
 }

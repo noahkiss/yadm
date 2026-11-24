@@ -75,7 +75,8 @@ Add a machine to an enclave (host-b joins enclave "personal", host-a is a member
      keys "yadm machine" prints on host-b:
        yadm enclave add host-b --enclave personal --recipient <age1...> --sign-key <key>
      When host-a has pinned another enclave that host-b is in, the flags may
-     be left out ("yadm enclave add --help" says when).
+     be left out, with host-b's machine id in place of its name
+     ("yadm enclave add --help" says when).
        yadm sync
      add prints a join code, such as 7K3M-Q9TD.
   4. Carry the code to host-b yourself: read it off host-a's screen. Never copy
@@ -108,9 +109,15 @@ trusted source: the verified head of another enclave's key log that this
 machine has pinned lists the machine, and the entry that introduced that key
 pair was signed by this machine or by a current member of this enclave, with
 the signing key this enclave's log lists for it. A signer like that already
-holds this enclave's keys, so a false key from it gains it nothing. fleet.toml, status records and logs this machine has not
-pinned are never a source: any writer can edit them. Otherwise add asks for
-the flags. Output "keys from" names the source.`
+holds this enclave's keys, so a false key from it gains it nothing.
+
+Without the flags, name the machine by its id (m-..., from "yadm machine" on
+it), never by a fleet name: the id alone selects the keys, and any writer can
+edit fleet.toml. add still asks for the flags when any pinned log lists other
+keys for the machine, or when this enclave's log listed it before (a removed
+machine comes back only with keys you compared). fleet.toml, status records
+and logs this machine has not pinned are never a source of keys. Output
+"keys from" names the source.`
 
 const enclaveJoinLong = `Run on the new machine, after a member ran "yadm enclave add" for it and this
 machine fetched the entry ("yadm sync"). join verifies the enclave's key log
@@ -486,35 +493,37 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	who, err := machineID(m, args[0])
-	if err != nil {
+	var who model.MachineID
+	if recipient == "" {
+		// The id alone selects the keys, so it must not come from
+		// fleet.toml: a writer could point a name or nickname at another
+		// machine that a pinned log vouches for.
+		if !strings.HasPrefix(args[0], "m-") {
+			return result{next: []string{"on " + args[0] + ": yadm machine (it prints its machine id and keys)"}},
+				usagef("without --recipient and --sign-key, name the machine by its id (m-..., from `yadm machine` on it), not by a fleet name: any writer can edit fleet.toml")
+		}
+		who = model.MachineID(args[0])
+	} else if who, err = machineID(m, args[0]); err != nil {
 		return result{}, usagef("%v", err)
 	}
 	ring, head, err := ringFor(m, e)
 	if err != nil {
 		return result{}, err
 	}
-	vouched, err := m.vouchedKeys(ctx, e, head, who)
+	vouched, listed, removed, err := m.vouchedKeys(ctx, e, head, who)
 	if err != nil {
 		return result{}, err
 	}
 	var warn []string
 	from := "flags"
-	switch {
-	case recipient == "" && len(vouched) == 0:
-		return result{next: []string{"on " + args[0] + ": yadm machine (it prints the recipient and signing key)"}},
-			usagef("no key log this machine has pinned vouches for %s's keys (see `yadm enclave add --help`); pass --recipient and --sign-key", who)
-	case recipient == "":
-		keys := vouched[0].member
-		for _, v := range vouched[1:] {
-			if v.member != keys {
-				return result{next: []string{"on " + args[0] + ": yadm machine"}},
-					usagef("pinned key logs list different keys for %s (%s, %s); compare with `yadm machine` on it and pass --recipient and --sign-key", who, vouched[0].from, v.from)
-			}
+	if recipient == "" {
+		v, err := pickVouched(who, vouched, listed, removed)
+		if err != nil {
+			return result{next: []string{"on " + args[0] + ": yadm machine (it prints the recipient and signing key)"}}, err
 		}
-		recipient, signKey, from = keys.Recipient, keys.SignKey, vouched[0].from
-	default:
-		for _, v := range vouched {
+		recipient, signKey, from = v.member.Recipient, v.member.SignKey, v.from
+	} else {
+		for _, v := range listed {
 			if v.member.Recipient != recipient || v.member.SignKey != signKey {
 				warn = append(warn, fmt.Sprintf("the flags differ from the keys the key log of %s lists for %s; check `yadm machine` on it", v.from, who))
 			}
@@ -545,15 +554,17 @@ type vouch struct {
 	from   string // "<enclave> seq <n>"
 }
 
-// vouchedKeys returns the keys of machine who that this machine may add to
-// enclave e without the human passing them (design section 7.3). A key
-// pair counts only when the verified head of another enclave's key log,
-// which this machine has pinned, lists it, and the entry that introduced
-// that pair was signed by this machine or by a current member of e, under
-// the same signing key that e's head lists for it. Such a signer already
-// holds e's keys, so vouching for a false key gives it no access it lacks. fleet.toml, status records and unpinned logs carry no
-// trusted keys: any writer can edit or forge them.
-func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head crypt.LogEntry, who model.MachineID) ([]vouch, error) {
+// vouchedKeys reads the pinned key logs of every enclave but e for machine
+// who (design section 7.3). vouched holds the key pairs this machine may
+// add to e without the human passing them: the verified head of a pinned
+// log lists them, and the entry that introduced that pair was signed by
+// this machine or by a current member of e, under the same signing key
+// that e's head lists for it. Such a signer already holds e's keys, so
+// vouching for a false key gives it no access it lacks. listed holds every
+// pair a verified pinned log lists for who, trusted signer or not. removed
+// reports that e's own log once listed who. fleet.toml, status records and
+// unpinned logs carry no trusted keys: any writer can edit or forge them.
+func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head crypt.LogEntry, who model.MachineID) (vouched, listed []vouch, removed bool, err error) {
 	// A signer is trusted by its signing key, never by its id alone: a
 	// member of the other log could list a target member's id there under
 	// keys it holds.
@@ -566,38 +577,62 @@ func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head 
 		trusted[crypt.Member{Machine: mb.Machine, SignKey: mb.SignKey}] = true
 	}
 	pins := crypt.FilePins(m.paths.State)
+	pinned := map[model.EnclaveName]*crypt.Pin{}
 	var others []model.EnclaveName
 	for _, x := range m.snap.Fleet.Enclaves() {
 		if x == e {
 			continue
 		}
-		if p, err := pins.Get(x); err != nil {
-			return nil, err
-		} else if p != nil {
+		p, err := pins.Get(x)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if p != nil {
+			pinned[x] = p
 			others = append(others, x)
 		}
 	}
 	sort.Slice(others, func(i, j int) bool { return others[i] < others[j] })
-	if len(others) == 0 {
-		return nil, nil
-	}
-	logs, err := m.keyLogs(ctx, m.snap.Commit, others)
+	logs, err := m.keyLogs(ctx, m.snap.Commit, append([]model.EnclaveName{e}, others...))
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
-	var out []vouch
+	for _, x := range logs[e] {
+		if slices.ContainsFunc(x.Members, func(mb crypt.Member) bool { return mb.Machine == who }) {
+			removed = true
+		}
+	}
 	for _, x := range others {
-		pin, err := pins.Get(x)
-		if err != nil {
-			return nil, err
+		mb, signer, ok, err := crypt.Vouched(logs[x], pinned[x], who)
+		if err != nil || !ok {
+			continue // a refused log vouches for nothing
 		}
-		mb, signer, ok, err := crypt.Vouched(logs[x], pin, who)
-		if err != nil || !ok || !trusted[crypt.Member{Machine: signer.Machine, SignKey: signer.SignKey}] {
-			continue // a refused log or an outside signer vouches for nothing
+		v := vouch{member: mb, from: fmt.Sprintf("%s seq %d", x, len(logs[x]))}
+		listed = append(listed, v)
+		if trusted[crypt.Member{Machine: signer.Machine, SignKey: signer.SignKey}] {
+			vouched = append(vouched, v)
 		}
-		out = append(out, vouch{member: mb, from: fmt.Sprintf("%s seq %d", x, len(logs[x]))})
 	}
-	return out, nil
+	return vouched, listed, removed, nil
+}
+
+// pickVouched chooses the keys an add without flags wraps to. It refuses
+// when no log vouches, when any verified pinned log lists other keys for
+// who than the vouching one, and when the target enclave once listed who:
+// a removed machine comes back only with keys the human compared.
+func pickVouched(who model.MachineID, vouched, listed []vouch, removed bool) (vouch, error) {
+	if removed {
+		return vouch{}, usagef("the key log already listed %s once; to add it again, pass --recipient and --sign-key from `yadm machine` on it", who)
+	}
+	if len(vouched) == 0 {
+		return vouch{}, usagef("no key log this machine has pinned vouches for %s's keys (see `yadm enclave add --help`); pass --recipient and --sign-key", who)
+	}
+	for _, v := range listed {
+		if v.member != vouched[0].member {
+			return vouch{}, usagef("pinned key logs list different keys for %s (%s, %s); compare with `yadm machine` on it and pass --recipient and --sign-key", who, vouched[0].from, v.from)
+		}
+	}
+	return vouched[0], nil
 }
 
 // ringFor returns this machine's keyring and the verified head of an enclave.
