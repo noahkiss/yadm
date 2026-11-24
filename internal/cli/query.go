@@ -31,6 +31,10 @@ type machineData struct {
 	model.Machine
 	Observed map[string]model.ObservedFact `json:"observed"`
 	Enclaves enclaveSummary                `json:"enclaves"`
+	// Recipient and SignKey are this machine's public keys, for a member's
+	// `enclave add`. Absent when the state directory holds no identity.
+	Recipient string `json:"recipient,omitempty"`
+	SignKey   string `json:"sign_key,omitempty"`
 }
 
 func enclavesOf(s *apply.Snapshot) enclaveSummary {
@@ -56,6 +60,32 @@ func enclavesOf(s *apply.Snapshot) enclaveSummary {
 	return out
 }
 
+// lines describes this machine's place in each enclave, one line each, in
+// name order: "<enclave>: member", "member (on demand)", "not a member" or
+// "refused: <why>".
+func (s enclaveSummary) lines() []string {
+	type row struct{ e, what string }
+	var rows []row
+	for _, e := range s.Opened {
+		rows = append(rows, row{string(e), "member"})
+	}
+	for _, e := range s.OnDemand {
+		rows = append(rows, row{string(e), "member (on demand)"})
+	}
+	for _, e := range s.Other {
+		rows = append(rows, row{string(e), "not a member"})
+	}
+	for _, r := range s.Refused {
+		rows = append(rows, row{string(r.Enclave), "refused: " + r.Error})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].e < rows[j].e })
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.e + ": " + r.what
+	}
+	return out
+}
+
 func (a *app) cmdMachine(cmd *cobra.Command, args []string) (result, error) {
 	m, err := openLoaded(cmd.Context())
 	if err != nil {
@@ -66,7 +96,25 @@ func (a *app) cmdMachine(cmd *cobra.Command, args []string) (result, error) {
 	if d.Observed == nil {
 		d.Observed = map[string]model.ObservedFact{}
 	}
-	text := fmt.Sprintf("%s %s types=%s os=%s arch=%s opened=%v", d.ID, d.Name, joinTypes(d.Types), d.OS, d.Arch, d.Enclaves.Opened)
+	if m.id != nil {
+		mem := m.id.Member()
+		d.Recipient, d.SignKey = mem.Recipient, mem.SignKey
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s %s types=%s os=%s arch=%s\n", d.ID, d.Name, joinTypes(d.Types), d.OS, d.Arch)
+	for _, l := range d.Enclaves.lines() {
+		fmt.Fprintf(&b, "enclave %s\n", l)
+	}
+	if d.Recipient != "" {
+		who := d.Name
+		if who == "" {
+			who = string(d.ID)
+		}
+		fmt.Fprintf(&b, "recipient %s\nsign_key  %s\n", d.Recipient, d.SignKey)
+		fmt.Fprintf(&b, "to add this machine, on a member: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s\n",
+			model.ShellQuote(who), model.ShellQuote(d.Recipient), model.ShellQuote(d.SignKey))
+	}
+	text := strings.TrimRight(b.String(), "\n")
 	var next []string
 	for _, r := range d.Enclaves.Refused {
 		next = append(next, "yadm enclave join "+model.ShellQuote(string(r.Enclave))+" --code <code> (or --expect <fingerprint>)")

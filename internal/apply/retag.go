@@ -14,7 +14,6 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/noahkiss/yadm/internal/cond"
-	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
@@ -91,7 +90,7 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 	oldEnc, newEnc := entry.Enclave, opts.Enclave
 	for _, enc := range []model.EnclaveName{oldEnc, newEnc} {
 		if enc != "" && !snap.canOpen(enc) {
-			return Retagged{}, fmt.Errorf("retag %s: %w: %s", t, crypt.ErrNotMember, enc)
+			return Retagged{}, fmt.Errorf("retag %s: %w", t, snap.notOpen(enc))
 		}
 	}
 	here := false
@@ -290,7 +289,7 @@ func (e *Engine) rebind(snap *Snapshot, entry manifest.Entry, raw []byte, oldSrc
 	s := snap.strict()
 	for _, enc := range []model.EnclaveName{oldEnc, newEnc} {
 		if enc != "" && !s.canOpen(enc) {
-			return nil, fmt.Errorf("%w: %s", crypt.ErrNotMember, enc)
+			return nil, snap.notOpen(enc)
 		}
 	}
 	plain := raw
@@ -316,7 +315,7 @@ func (e *Engine) rebind(snap *Snapshot, entry manifest.Entry, raw []byte, oldSrc
 		}
 		for _, enc := range need {
 			if !s.canOpen(enc) {
-				return nil, fmt.Errorf("%w: %s (sealed parts of %s)", crypt.ErrNotMember, enc, oldSrc)
+				return nil, fmt.Errorf("%w (sealed parts of %s)", snap.notOpen(enc), oldSrc)
 			}
 		}
 		from, to := spec, spec
@@ -502,7 +501,7 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 		return Capture{}, fmt.Errorf("%s %s: a task generates it (outputs); it is never tracked", verb, t)
 	}
 	if enc != "" && !snap.canOpen(enc) {
-		return Capture{}, fmt.Errorf("%s %s: %w: %s", verb, t, crypt.ErrNotMember, enc)
+		return Capture{}, fmt.Errorf("%s %s: %w", verb, t, snap.notOpen(enc))
 	}
 	abs, err := e.abs(t)
 	if err != nil {

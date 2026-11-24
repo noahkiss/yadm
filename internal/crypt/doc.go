@@ -49,6 +49,7 @@
 //	type PinStore interface{ Get(e) (*Pin, error); Set(e, Pin) error }; func FilePins(stateDir string) PinStore; func MemPins() PinStore
 //	func Fingerprint(e LogEntry) (string, error); func PinOf(e LogEntry) (Pin, error)
 //	func VerifyLog(entries []LogEntry, pin *Pin) (head LogEntry, err error)
+//	func Vouched(entries []LogEntry, pin *Pin, who model.MachineID) (m, signer Member, ok bool, err error) // enclave add without keys
 //	func Join(entries []LogEntry, expect string, pins PinStore) (head LogEntry, err error) // enclave join --expect
 //	func JoinCode(fingerprint string) (string, error) // XXXX-XXXX: argon2id over the fingerprint, Crockford base32
 //	func ParseJoinCode(s string) (string, error)      // normalize a typed code

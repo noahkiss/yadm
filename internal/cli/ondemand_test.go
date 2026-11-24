@@ -122,7 +122,7 @@ func TestOnDemandTransitionSecrecy(t *testing.T) {
 	// Track refuses to seal for an on-demand enclave: it never captures.
 	head := git(t, a.Source, "rev-parse", "main")
 	writeFile(t, filepath.Join(a.Home, ".config/notes/new.md"), canary.String()+"\n")
-	if env, code, _ := yadm(t, "track", ".config/notes/new.md", "--enclave", "personal"); code != ExitRefused {
+	if env, code, _ := yadm(t, "track", ".config/notes/new.md", "--enclave", "personal"); code != ExitRefused || !strings.Contains(env.Error.Message, "member on demand only") || strings.Contains(env.Error.Message, "not a member") {
 		t.Fatalf("track for an on-demand enclave: exit %d %+v", code, env.Error)
 	}
 	if now := git(t, a.Source, "rev-parse", "main"); now != head {
@@ -223,6 +223,13 @@ func TestOnDemandMemberOfOtherEnclave(t *testing.T) {
 	for _, e := range decode[map[string][]enclaveInfo](t, env.Data)["enclaves"] {
 		if e.Enclave == "client" && (!e.Member || !e.OnDemand) {
 			t.Fatalf("enclave list client: %+v", e)
+		}
+	}
+	// Text output reads the on-demand membership as membership.
+	for _, args := range [][]string{{"machine"}, {"enclave", "list"}} {
+		out, _, code := yadmRaw(t, append([]string{"--json=false"}, args...)...)
+		if code != ExitOK || !strings.Contains(out, "member (on demand)") || strings.Contains(out, "client: not a member") {
+			t.Fatalf("yadm %v text:\n%s", args, out)
 		}
 	}
 	out, _, code := yadmRaw(t, "show", ".config/client-tool/token", "--as", "host-c")

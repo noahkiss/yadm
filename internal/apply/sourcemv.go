@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
@@ -82,7 +81,7 @@ func (e *Engine) MoveSource(ctx context.Context, from, to model.SourcePath) (Sou
 		return fail("%s is not in the source tree", from)
 	}
 	if fromEnc != "" && !snap.canOpen(fromEnc) {
-		return SourceMove{}, fmt.Errorf("source mv %s: %w: %s", from, crypt.ErrNotMember, fromEnc)
+		return SourceMove{}, fmt.Errorf("source mv %s: %w", from, snap.notOpen(fromEnc))
 	}
 	idxs, err := readers(snap, from)
 	if err != nil {
