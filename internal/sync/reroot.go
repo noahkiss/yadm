@@ -571,6 +571,9 @@ func (s *Syncer) prepareReroot(ctx context.Context, req RerootRequest, out *Rero
 		return rec, nil, "", "", fmt.Errorf("%w: --new-head is the remote main already", ErrRerootState)
 	case s.ancestor(ctx, remote, newID):
 		return rec, nil, "", "", fmt.Errorf("%w: --new-head descends from the remote main; that is an ordinary push, not a rewrite: commit and sync instead", ErrRerootState)
+	case s.ancestor(ctx, newID, remote):
+		// Every machine already holds it, so none would take the record.
+		return rec, nil, "", "", fmt.Errorf("%w: --new-head is already in the remote main's history; a re-root needs a rewritten commit (to drop recent commits, revert them instead)", ErrRerootState)
 	}
 	if v, err := s.keyDiff(ctx, remote, newID, true); err != nil {
 		return rec, nil, "", "", err

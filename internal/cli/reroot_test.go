@@ -585,3 +585,27 @@ func TestRerootReplay(t *testing.T) {
 		t.Fatalf("host-c: no history-rewrite hold naming the stale record: %+v", h)
 	}
 }
+
+// TestRerootRewind: a new head already in the remote's history is a
+// rewind, which no machine would take; the initiator refuses it before a
+// pause starts.
+func TestRerootRewind(t *testing.T) {
+	root, remote, _, _, m := rerootFleet(t)
+	a := m[fixture.HostA]
+	on(t, root, fixture.HostA)
+	shared := ".config/shell/aliases.sh"
+	writeFile(t, filepath.Join(a.Home, shared), "# a second commit\n")
+	yadmOK(t, "commit", "-m", "a second commit", shared)
+	yadmOK(t, "sync", "--full")
+	old := trimmed(t, a.Source, "rev-parse", "main")
+	env, code, _ := yadm(t, "reroot", "--new-head", "main~1", "--fold-unreviewed", "--no-wait")
+	if code == ExitOK || !strings.Contains(env.Error.Message, "already in the remote") {
+		t.Fatalf("reroot onto main~1: exit %d %+v", code, env.Error)
+	}
+	if got := trimmed(t, remote, "rev-parse", "main"); got != old {
+		t.Fatalf("remote main rewound to %s", got)
+	}
+	if ps := decode[statusData](t, yadmOK(t, "status").Data).Pause; ps != nil && ps.Own != nil {
+		t.Fatalf("a refused reroot started a pause: %+v", ps)
+	}
+}
