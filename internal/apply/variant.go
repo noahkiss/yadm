@@ -56,7 +56,8 @@ func scopeRest(src model.SourcePath) string {
 // apply on any fleet machine it applies to. It refuses (ErrBadRequest) an
 // unsafe name, an empty when, a target no literal entry names, a when that
 // does not apply here, and a variant name or source that already exists; a
-// non-member of the enclave fails with crypt.ErrNotMember.
+// non-member of the enclave fails with crypt.ErrNotMember, and a variant
+// outside the enclave of an enclave root that covers t with ErrRootRefused.
 func (e *Engine) trackVariant(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, opts TrackOptions) (Capture, error) {
 	name, when, enc := opts.Variant, opts.When, opts.Enclave
 	fail := func(format string, a ...any) (Capture, error) {
@@ -84,6 +85,9 @@ func (e *Engine) trackVariant(ctx context.Context, head model.CommitID, snap *Sn
 		if d, ok := snap.Fleet.Types[model.TypeName(enc)]; !ok || !d.Enclave {
 			return Capture{}, fmt.Errorf("track %s: %q is not an enclave type", t, enc)
 		}
+	}
+	if r, ok := e.enclaveRoot(snap, t); ok && r.Enclave != enc {
+		return Capture{}, fmt.Errorf("track %s --variant %s: %w: enclave root %s (enclave %s) covers it, so its plaintext stays in that enclave; pass --enclave %s", t, name, ErrRootRefused, r.Path, r.Enclave, r.Enclave)
 	}
 	if enc != "" && !snap.canOpen(enc) {
 		return Capture{}, fmt.Errorf("track %s: %w", t, snap.notOpen(enc))

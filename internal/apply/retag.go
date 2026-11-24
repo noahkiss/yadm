@@ -203,6 +203,9 @@ func (e *Engine) retagOn(ctx context.Context, head model.CommitID, snap *Snapsho
 	}
 	entry := snap.Manifest.Entries[idx]
 	oldEnc, newEnc := entry.Enclave, opts.Enclave
+	if r, ok := e.enclaveRoot(snap, t); ok && r.Enclave != newEnc {
+		return Retagged{}, fmt.Errorf("retag %s: %w: enclave root %s (enclave %s) covers it, so its plaintext stays in that enclave; pass --enclave %s", t, ErrRootRefused, r.Path, r.Enclave, r.Enclave)
+	}
 	for _, enc := range []model.EnclaveName{oldEnc, newEnc} {
 		if enc != "" && !snap.canOpen(enc) {
 			return Retagged{}, fmt.Errorf("retag %s: %w", t, snap.notOpen(enc))
