@@ -78,6 +78,15 @@
 // wrapping ErrPushDeferred. After a push that moved main,
 // Deps.Nudge runs so peers can sync now.
 //
+// A fleet pause (package pause) another machine started holds this one:
+// after the fetch, Run evaluates the pause ref against the fleet.toml
+// machines and the pinned key logs at local main, and, when held, only
+// publishes the status record (which carries paused_until) and pushes that
+// ref. Commit refuses with a *pause.HeldError, except a dry run. The quick check also runs in full
+// when the pause ref moved or a pause that held this machine passed its
+// deadline. pushSpecs pushes a pause or resume written here that has not
+// gone out.
+//
 // Fetched commits that touch an enclave and whose Machine trailer names no
 // member of its key log are applied, alerted through the notify hook and
 // kept in the status record.
@@ -122,4 +131,9 @@
 //	func ReadNotes(ctx, st store.Store, keys *crypt.Set) (map[model.CommitID]Note, error)
 //	func PushNotes(ctx, st store.Store, lock Lock, net NetLock) (bool, error)
 //	(ReviewItem gains Note *Note; pushSpecs also pushes the notes ref, merging a diverged one)
+//	Report.Paused, Report.Pause *pause.View
+//	func (s *Syncer) Trust(ctx, rev) pause.Trust; func FleetIDs(*fleet.File) []model.MachineID
+//	func (s *Syncer) EvalPause(ctx) (pause.View, pause.Trust, error)
+//	func (s *Syncer) PublishPause(ctx, recs []pause.Record) (pushed bool, err error) // waits PauseNetWait for the network lock
+//	func (s *Syncer) FetchRefs(ctx) error; func (s *Syncer) NudgePeers(ctx)
 package sync

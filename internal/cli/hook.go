@@ -21,6 +21,7 @@ import (
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 )
@@ -459,8 +460,8 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		Paths: []model.Target{t}, Unattended: true, Trigger: sync.TriggerHook,
 		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: false,
 	}, hooks.hookWait)
-	if errors.Is(err, sync.ErrLocked) {
-		return Verdict{}, nil // a sync is running; the path is recorded for stop
+	if errors.Is(err, sync.ErrLocked) || errors.Is(err, pause.ErrHeld) {
+		return Verdict{}, nil // a sync is running, or a fleet pause holds this machine; the path is recorded for stop and the timer
 	}
 	if err != nil {
 		return Verdict{}, err
@@ -511,6 +512,9 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
 		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil
+	}
+	if errors.Is(err, pause.ErrHeld) {
+		return Verdict{Context: "yadm: " + err.Error() + "; the timer commits this session's edits after the pause"}, nil
 	}
 	if err != nil {
 		return Verdict{}, err
@@ -587,9 +591,6 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	}
 	if n := len(deferred); n > 0 {
 		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) wait in the review queue: yadm review list", n))
-	}
-	if n := m.unreviewedAuto(ctx, snap); n > 0 {
-		lines = append(lines, fmt.Sprintf("yadm: %d auto-commit(s) not reviewed: yadm review list", n))
 	}
 	if s := m.fleetDrift(ctx, snap); s != "" {
 		lines = append(lines, s)
@@ -931,38 +932,6 @@ func indent(s, pre string) string {
 		lines[i] = pre + l
 	}
 	return strings.Join(lines, "\n")
-}
-
-// unreviewedAuto counts tool commits on main past each scope's reviewed ref.
-func (m *machineEnv) unreviewedAuto(ctx context.Context, snap *apply.Snapshot) int {
-	main, err := m.head(ctx)
-	if err != nil || main == "" {
-		return 0
-	}
-	scopes := []model.Scope{model.ScopeShared}
-	if snap != nil && snap.Fleet != nil {
-		for _, e := range snap.Fleet.Enclaves() {
-			scopes = append(scopes, model.Scope(e))
-		}
-	}
-	seen := map[model.CommitID]bool{}
-	for _, sc := range scopes {
-		rng := string(main)
-		// The local reviewed ref only: a fetched one may skip commits.
-		if base, _ := m.repo.ResolveRef(ctx, store.RefReviewed(sc)); base != "" {
-			rng = string(base) + ".." + string(main)
-		}
-		cs, err := m.repo.Log(ctx, rng, nil)
-		if err != nil {
-			continue
-		}
-		for _, c := range cs {
-			if auto := trailerOf(c.Message, store.TrailerAuto); auto != "" && auto != sync.TriggerManual && trailerOf(c.Message, store.TrailerScope) == string(sc) {
-				seen[c.ID] = true
-			}
-		}
-	}
-	return len(seen)
 }
 
 func trailerOf(msg store.Message, key string) string {

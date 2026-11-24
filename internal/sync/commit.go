@@ -451,6 +451,16 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err != nil {
 		return rep, err
 	}
+	// Another machine's fleet pause refuses every write here; a dry run
+	// only reports it.
+	pv, err := s.evalPause(ctx, head, !opts.DryRun)
+	if err != nil {
+		return rep, err
+	}
+	rep.Pause = &pv
+	if err := s.heldError(pv); err != nil && !opts.DryRun {
+		return rep, err
+	}
 	if opts.Resolve && opts.Capture == nil {
 		// Resolve against the current main, not a stale local head: when
 		// several machines resolve in turn, each settles over the last.

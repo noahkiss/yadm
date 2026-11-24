@@ -11,13 +11,15 @@ import (
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
 )
 
 // Quick-check tuning. A quick sync (Options.Quick) runs a full sync only when
-// it is due: the remote main or a reviewed ref moved, a target drifted, the last full sync is older
-// than FullEvery, or the last check is older than WakeGap (the machine slept
-// or the timer stopped).
+// it is due: the remote main, a reviewed ref or the pause ref moved, a target drifted, the last full sync is older
+// than FullEvery, the last check is older than WakeGap (the machine slept
+// or the timer stopped), or a pause that held this machine has passed its
+// deadline.
 const (
 	FullEvery = 15 * time.Minute
 	WakeGap   = 3 * time.Minute
@@ -115,6 +117,9 @@ func (s *Syncer) quickDue(ctx context.Context, rep *Report) (string, error) {
 	case now.Sub(q.LastFull) >= FullEvery:
 		return "periodic", nil
 	}
+	if u := pause.HeldUntil(s.Apply.StateDir); !u.IsZero() && !now.Before(u) {
+		return "pause ended", nil // resume by this machine's own clock
+	}
 	release, err := s.Lock.Acquire(ctx)
 	if err != nil {
 		return "", err
@@ -166,13 +171,14 @@ func (s *Syncer) quickDue(ctx context.Context, rep *Report) (string, error) {
 }
 
 // sameHeads compares two ls-remote views on the refs that change what a
-// machine applies or reviews: main and the reviewed refs. Status refs move
-// on every peer's sync; the periodic full sync fetches them.
+// machine applies, reviews or holds: main, the reviewed refs and the pause
+// ref. Status refs move on every peer's sync; the periodic full sync
+// fetches them.
 func sameHeads(a, b map[string]model.CommitID, _ model.MachineID) bool {
 	pick := func(m map[string]model.CommitID) map[string]model.CommitID {
 		out := map[string]model.CommitID{}
 		for k, v := range m {
-			if k == store.RefMain || strings.HasPrefix(k, "refs/yadm/reviewed/") {
+			if k == store.RefMain || k == pause.Ref || strings.HasPrefix(k, "refs/yadm/reviewed/") {
 				out[k] = v
 			}
 		}

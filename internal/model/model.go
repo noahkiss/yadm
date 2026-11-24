@@ -207,6 +207,21 @@ type Status struct {
 	// only. It is self-reported: `yadm check` uses it to explain a key-log
 	// member without the enclave's type, never as proof.
 	OnDemand []EnclaveName `json:"on_demand,omitempty"`
+	// PausedUntil and PauseID confirm a fleet pause this machine honours:
+	// it resumes by its own clock at PausedUntil. PauseIgnored lists pause
+	// records it did not accept, with why. All three are self-reported.
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
+	PauseID     string     `json:"pause_id,omitempty"`
+	// PauseVerified says a member of a key log this machine pinned signed
+	// the pause in PauseID.
+	PauseVerified bool           `json:"pause_verified,omitempty"`
+	PauseIgnored  []PauseIgnored `json:"pause_ignored,omitempty"`
+}
+
+// PauseIgnored is one pause record a machine did not accept.
+type PauseIgnored struct {
+	ID  string `json:"id"`
+	Why string `json:"why"`
 }
 
 // KeyHead names one verified key-log entry: its sequence number and the hex
