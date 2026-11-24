@@ -345,9 +345,10 @@ Why 40 bits is enough with the KDF:
 
 | Step | Who | What happens |
 |---|---|---|
-| Create | Any machine of the type | `yadm enclave create <type>` writes entry 1, signed by the creator, wrapped to the creator and the recovery recipient. The recovery identity is generated offline and stored by the user outside the repository. |
-| Join request | New machine | `yadm init` prints its recipient, signing key and machine id. |
-| Add | A current member | `yadm enclave add <machine>` appends an `add` entry wrapped to the new member, and prints its join code and fingerprint. |
+| Recovery keys | Any machine, no membership needed | `yadm enclave new-recovery <dir>` generates a recovery identity into a new directory (mode 0700, files 0600) outside the source, state and config directories. It refuses an existing directory, so it never overwrites one. It prints the public half and the `enclave create <type> --recovery-recipient … --recovery-sign-key …` line for the creator. The user stores the files offline and deletes the directory. `create --new-recovery <dir>` does the same on the creator. |
+| Create | Any machine of the type | `yadm enclave create <type>` writes entry 1, signed by the creator, wrapped to the creator and the recovery recipient. Only the recovery identity's public half reaches the creator. |
+| Join request | New machine | `yadm init` and `yadm machine` print its recipient, signing key and machine id. |
+| Add | A current member | `yadm enclave add <machine>` appends an `add` entry wrapped to the new member, and prints its join code and fingerprint. The new member's keys come from `--recipient` and `--sign-key`, or from a vouching key log (below). |
 | Pin | New machine | `yadm enclave join <enclave> --code <code>` (or `--expect <fingerprint>`) pins that entry. The code travels out of band. A machine that reads the enclave on demand runs `yadm enclave on-demand <enclave>` first (section 7.6). |
 | Remove | A current member | `yadm enclave remove <machine> --confirm` appends a `remove` entry with a new epoch, wrapped to the rest, and reseals every sealed file, value and region of the enclave in one commit, templates and glob entries included. The entry and the reseal land together or not at all: when the commit gate holds any resealed file, remove commits nothing, names the held targets, and leaves the key log, pins and epoch unchanged. Remove retires the old epochs only after it finds every resealed file in its commit as written. The removed machine keeps every key up to the old epoch and every commit it already fetched. The output lists what else the user must do: revoke the machine's repository access, rotate real secrets stored in the enclave, and retire the old epoch once the reseal has landed. |
 | Retire | A current member | `retire` entry that sets `min_epoch` to the current epoch, after the reseal commit has landed. From then on no member opens ciphertext of an older epoch for delivery. Until then, sealed content that is new to a machine (a source blob it has not applied before) opens only under the current epoch, and anything older is held with `seal_guard`. A removed member therefore cannot plant content under the keys it kept. |
@@ -355,6 +356,24 @@ Why 40 bits is enough with the KDF:
 | Set recovery | Recovery identity | `set-recovery` entry signed by the current recovery key that names a new recovery identity. It is how a leaked recovery key is replaced. |
 
 Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto-commit.
+
+**Keys for `enclave add`.** Wrapping the enclave keys to a false recipient hands the enclave to whoever holds its secret. So `add` takes the new member's keys from one of two sources:
+
+- **The flags.** The user reads `--recipient` and `--sign-key` off the new machine's `yadm machine` (or `yadm init`) and compares them on both screens.
+- **A vouching key log.** The flags may be left out when another enclave's key log vouches for the keys. All of these must hold:
+  - This machine has pinned that log, and its verified head lists the machine.
+  - The entry that introduced the machine's current key pair is signed by this machine, or by a current member of the enclave being added to. This is the last entry where the machine appears, or appears with other keys.
+  - Every vouching log that qualifies lists the same keys. On a disagreement, `add` asks for the flags.
+
+Why the signer rule: a signer that is already a member of the target enclave holds its keys. A false key from it gives it no access it lacks. A member of only the other enclave gets no such pass, or it could plant a key in its own enclave's log and so reach a second enclave.
+
+What never vouches:
+
+- `fleet.toml` and status records carry no keys, and any writer can edit them.
+- An unpinned log may be a writer's forgery (section 7.2).
+- A machine's own `create` and a `recover` entry name no trusted signer.
+
+When the flags disagree with a vouching log, the flags win and the output says so. The output's `keys_from` names the source: `flags`, or the vouching enclave and its head's seq.
 
 ### 7.4 Where plaintext may exist
 
@@ -805,7 +824,8 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
-| `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
+| `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `add` carries `keys_from`; `remove` is refused for an on-demand enclave (section 7.6) |
+| `enclave new-recovery <dir> [--enclave <type>]` | Section 7.3: a recovery identity for a creator elsewhere; needs no init | `{dir, recipient, sign_key, create}` |
 | `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |

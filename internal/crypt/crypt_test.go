@@ -886,3 +886,45 @@ func TestSetSealFile(t *testing.T) {
 		t.Fatalf("nil set open: %v", err)
 	}
 }
+
+// TestVouched: a pinned log names the signer of the entry that introduced a
+// machine's key pair; an unpinned log, a log off the pin and an absent
+// machine vouch for nothing; a remove and re-add with new keys moves the
+// introducer to the re-adding signer.
+func TestVouched(t *testing.T) {
+	w := newWorld(t)
+	pin := mustPin(t, w.head())
+	m, signer, ok, err := Vouched(w.log, pin, hostC)
+	if err != nil || !ok || signer != hostB || m != w.c.Member() {
+		t.Fatalf("hostC: %+v %s %v %v", m, signer, ok, err)
+	}
+	if _, signer, ok, _ := Vouched(w.log, pin, hostA); !ok || signer != hostA {
+		t.Fatalf("hostA, the creator, is vouched for by itself: %s %v", signer, ok)
+	}
+	if _, _, ok, err := Vouched(w.log, pin, evil); ok || err != nil {
+		t.Fatalf("absent machine: %v %v", ok, err)
+	}
+	if _, _, _, err := Vouched(w.log, nil, hostC); !errors.Is(err, ErrNotPinned) {
+		t.Fatalf("unpinned: %v", err)
+	}
+	other := newWorld(t)
+	if _, _, _, err := Vouched(other.log, pin, hostC); err == nil {
+		t.Fatal("a log off the pin vouched")
+	}
+
+	// C is removed and re-added under new keys by A.
+	e4, k4, err := w.ring.Remove(w.head(), hostC, w.a, pinnedAt(t, w.head()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2 := ident(t, hostC)
+	e5, err := k4.Add(e4, c2.Member(), w.a, pinnedAt(t, e4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := append(append([]LogEntry{}, w.log...), e4, e5)
+	m, signer, ok, err = Vouched(log, mustPin(t, e5), hostC)
+	if err != nil || !ok || signer != hostA || m != c2.Member() {
+		t.Fatalf("re-added hostC: %+v %s %v %v", m, signer, ok, err)
+	}
+}

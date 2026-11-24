@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -31,8 +33,8 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	ad.Args = cobra.ExactArgs(1)
 	ad.Long = enclaveAddLong
 	ad.Flags().String("enclave", "", "enclave to add the machine to (default: the only enclave this machine opens)")
-	ad.Flags().String("recipient", "", "the new machine's age recipient, from its \"yadm init\"")
-	ad.Flags().String("sign-key", "", "the new machine's signing key, from its \"yadm init\"")
+	ad.Flags().String("recipient", "", "the new machine's age recipient, from \"yadm machine\" on it (optional when a pinned key log vouches for it)")
+	ad.Flags().String("sign-key", "", "the new machine's signing key, from \"yadm machine\" on it (optional when a pinned key log vouches for it)")
 	rm := leaf(en, "remove <machine>", "Remove a member and start a new epoch", a.cmdEnclaveRemove)
 	rm.Args = cobra.ExactArgs(1)
 	rm.Flags().String("enclave", "", "enclave to remove the machine from (default: the only enclave this machine opens)")
@@ -48,6 +50,10 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	od.Flags().Bool("off", false, "clear the mark: deliver the enclave again where types and membership say so")
 	rt := leaf(en, "retire", "Stop opening ciphertext of older epochs for delivery (after a remove's reseal)", a.cmdEnclaveRetire)
 	rt.Flags().String("enclave", "", "enclave to retire old epochs of (default: the only enclave this machine opens)")
+	nr := leaf(en, "new-recovery <dir>", "Generate a recovery identity into a new directory; print its public keys for enclave create", a.cmdEnclaveNewRecovery)
+	nr.Args = cobra.ExactArgs(1)
+	nr.Long = newRecoveryLong
+	nr.Flags().String("enclave", "", "the enclave type, to fill in the printed create command")
 	sr := leaf(en, "set-recovery", "Name a new recovery identity, signed by the current one", a.cmdEnclaveSetRecovery)
 	sr.Flags().String("enclave", "", "enclave whose recovery identity changes")
 	sr.Flags().String("recovery-dir", "", "required: directory holding the current recovery identity")
@@ -65,8 +71,11 @@ Add a machine to an enclave (host-b joins enclave "personal", host-a is a member
      add it there and commit, as init's output says.
   2. On host-b, only if it should read the enclave on demand (never write its
      files into $HOME): run "yadm enclave on-demand personal" now, before join.
-  3. On host-a (a member), with host-b's fleet name or its machine id:
+  3. On host-a (a member), with host-b's fleet name or its machine id, and the
+     keys "yadm machine" prints on host-b:
        yadm enclave add host-b --enclave personal --recipient <age1...> --sign-key <key>
+     When host-a has pinned another enclave that host-b is in, the flags may
+     be left out ("yadm enclave add --help" says when).
        yadm sync
      add prints a join code, such as 7K3M-Q9TD.
   4. Carry the code to host-b yourself: read it off host-a's screen. Never copy
@@ -91,7 +100,17 @@ Pass the code to the new machine out of band: read it off this screen. The
 repository is the channel the code protects against. Computing the code takes
 about a second on purpose.
 
-The new machine's --recipient and --sign-key come from its "yadm init".`
+The new machine's keys: "yadm machine" (or "yadm init") on it prints its
+--recipient and --sign-key. Compare them on both screens before you pass them.
+
+add may leave both flags out when this machine already holds the keys from a
+trusted source: the verified head of another enclave's key log that this
+machine has pinned lists the machine, and the entry that introduced that key
+pair was signed by this machine or by a current member of this enclave. A
+signer like that already holds this enclave's keys, so a false key from it
+gains it nothing. fleet.toml, status records and logs this machine has not
+pinned are never a source: any writer can edit them. Otherwise add asks for
+the flags. Output "keys from" names the source.`
 
 const enclaveJoinLong = `Run on the new machine, after a member ran "yadm enclave add" for it and this
 machine fetched the entry ("yadm sync"). join verifies the enclave's key log
@@ -126,30 +145,109 @@ func recoveryMember(cmd *cobra.Command, forbidden ...string) (crypt.Member, stri
 	case dir != "" && (rr != "" || rs != ""):
 		return crypt.Member{}, "", usagef("give --new-recovery or --recovery-recipient with --recovery-sign-key, not both")
 	case dir != "":
-		abs, err := filepath.Abs(dir)
-		if err != nil {
-			return crypt.Member{}, "", err
-		}
-		for _, f := range forbidden {
-			if f == "" {
-				continue
-			}
-			if rel, err := filepath.Rel(f, abs); err == nil && !strings.HasPrefix(rel, "..") {
-				return crypt.Member{}, "", usagef("--new-recovery must be outside %s", f)
-			}
-		}
-		id, err := crypt.GenerateIdentity(crypt.RecoveryMachine)
-		if err != nil {
-			return crypt.Member{}, "", err
-		}
-		if err := id.Save(abs); err != nil {
-			return crypt.Member{}, "", err
-		}
-		return id.Member(), abs, nil
+		mem, abs, err := newRecovery(dir, "--new-recovery", forbidden...)
+		return mem, abs, err
 	case rr == "" || rs == "":
 		return crypt.Member{}, "", usagef("the recovery identity is required: --recovery-recipient and --recovery-sign-key, or --new-recovery <dir>")
 	}
 	return crypt.Member{Machine: crypt.RecoveryMachine, Recipient: rr, SignKey: rs}, "", nil
+}
+
+// newRecovery generates a recovery identity into dir, a new directory with
+// mode 0700 outside every forbidden directory, and returns its public half.
+// It refuses an existing dir, so it never overwrites a recovery identity.
+func newRecovery(dir, what string, forbidden ...string) (crypt.Member, string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return crypt.Member{}, "", err
+	}
+	// Check the path as given and as it resolves: a symlinked parent must
+	// not lead into the source or state directory either.
+	check := []string{abs}
+	if real, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		check = append(check, filepath.Join(real, filepath.Base(abs)))
+	}
+	for _, f := range forbidden {
+		if f == "" {
+			continue
+		}
+		roots := []string{f}
+		if real, err := filepath.EvalSymlinks(f); err == nil {
+			roots = append(roots, real)
+		}
+		for _, c := range check {
+			for _, f := range roots {
+				if rel, err := filepath.Rel(f, c); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					return crypt.Member{}, "", usagef("%s must be outside %s", what, f)
+				}
+			}
+		}
+	}
+	if err := os.Mkdir(abs, 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return crypt.Member{}, "", usagef("%s %s already exists; give a new directory, so no recovery identity is overwritten", what, abs)
+		}
+		return crypt.Member{}, "", err
+	}
+	id, err := crypt.GenerateIdentity(crypt.RecoveryMachine)
+	if err == nil {
+		err = id.Save(abs)
+	}
+	if err != nil {
+		os.RemoveAll(abs)
+		return crypt.Member{}, "", err
+	}
+	return id.Member(), abs, nil
+}
+
+const newRecoveryLong = `Generate an enclave's recovery identity on this machine, for an enclave that
+another machine creates. Run it on a machine you trust with the secret, not on
+the creator. It needs no enclave membership and no "yadm init".
+
+The directory must not exist yet, and must be outside yadm's source, state
+and config directories. new-recovery creates it with mode 0700 and writes two
+secret files with mode 0600:
+
+  identity.age.key   the age identity every key-log entry wraps the keys to
+  identity.sign.key  the Ed25519 key that signs "recover" and "set-recovery"
+
+It prints the public half and the command to run on the creating machine:
+
+  yadm enclave create <type> --recovery-recipient <age1...> --recovery-sign-key <key>
+
+Store both files in a password manager or other offline place, then delete
+the directory from disk. Only the public values travel to the creator. To use
+the identity later ("set-recovery --recovery-dir"), restore the two files into
+a directory with mode 0700.`
+
+func (a *app) cmdEnclaveNewRecovery(cmd *cobra.Command, args []string) (result, error) {
+	p, err := DefaultPaths()
+	if err != nil {
+		return result{}, err
+	}
+	home, _ := os.UserHomeDir()
+	forbidden := []string{p.Source, p.State, p.Config}
+	if home != "" {
+		forbidden = append(forbidden, filepath.Join(home, ".local"))
+	}
+	mem, dir, err := newRecovery(args[0], "the recovery directory", forbidden...)
+	if err != nil {
+		return result{}, err
+	}
+	typ, _ := cmd.Flags().GetString("enclave")
+	if typ == "" {
+		typ = "<type>"
+	} else {
+		typ = model.ShellQuote(typ)
+	}
+	create := fmt.Sprintf("yadm enclave create %s --recovery-recipient %s --recovery-sign-key %s", typ, model.ShellQuote(mem.Recipient), model.ShellQuote(mem.SignKey))
+	d := map[string]any{"dir": dir, "recipient": mem.Recipient, "sign_key": mem.SignKey, "create": create}
+	next := []string{
+		"on the creating machine: " + create,
+		"store " + filepath.Join(dir, crypt.AgeIdentityFile) + " and " + filepath.Join(dir, crypt.SigningKeyFile) + " in a password manager, then delete " + dir,
+	}
+	text := fmt.Sprintf("recovery identity in %s (store it offline, then delete it here)\nrecipient %s\nsign_key  %s\non the creating machine:\n  %s", dir, mem.Recipient, mem.SignKey, create)
+	return result{data: d, next: next, text: text}, nil
 }
 
 type enclaveInfo struct {
@@ -258,6 +356,7 @@ type entryData struct {
 	Members     []model.MachineID `json:"members"`
 	Commit      model.CommitID    `json:"commit"`
 	Recovery    string            `json:"recovery_dir,omitempty"`
+	KeysFrom    string            `json:"keys_from,omitempty"` // add only: "flags", or the pinned key log that vouched for the keys
 	Resealed    []model.Target    `json:"resealed,omitempty"`
 	PushError   string            `json:"push_error,omitempty"` // the commit landed; the next sync pushes it
 	Holds       []model.Hold      `json:"holds,omitempty"`
@@ -377,8 +476,8 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	}
 	recipient, _ := cmd.Flags().GetString("recipient")
 	signKey, _ := cmd.Flags().GetString("sign-key")
-	if recipient == "" || signKey == "" {
-		return result{next: []string{"run `yadm init` on the new machine; it prints both"}}, usagef("--recipient and --sign-key are required")
+	if (recipient == "") != (signKey == "") {
+		return result{}, usagef("give --recipient and --sign-key together, or neither")
 	}
 	e, err := pickEnclave(cmd, m)
 	if err != nil {
@@ -392,22 +491,103 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	vouched, err := m.vouchedKeys(ctx, e, head, who)
+	if err != nil {
+		return result{}, err
+	}
+	var warn []string
+	from := "flags"
+	switch {
+	case recipient == "" && len(vouched) == 0:
+		return result{next: []string{"on " + args[0] + ": yadm machine (it prints the recipient and signing key)"}},
+			usagef("no key log this machine has pinned vouches for %s's keys (see `yadm enclave add --help`); pass --recipient and --sign-key", who)
+	case recipient == "":
+		keys := vouched[0].member
+		for _, v := range vouched[1:] {
+			if v.member != keys {
+				return result{next: []string{"on " + args[0] + ": yadm machine"}},
+					usagef("pinned key logs list different keys for %s (%s, %s); compare with `yadm machine` on it and pass --recipient and --sign-key", who, vouched[0].from, v.from)
+			}
+		}
+		recipient, signKey, from = keys.Recipient, keys.SignKey, vouched[0].from
+	default:
+		for _, v := range vouched {
+			if v.member.Recipient != recipient || v.member.SignKey != signKey {
+				warn = append(warn, fmt.Sprintf("the flags differ from the keys the key log of %s lists for %s; check `yadm machine` on it", v.from, who))
+			}
+		}
+	}
 	entry, err := ring.Add(head, crypt.Member{Machine: who, Recipient: recipient, SignKey: signKey}, m.id, m.pendingPins())
 	if err != nil {
 		return result{}, err
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
+	d.KeysFrom = from
 	if d.Commit == "" {
-		return result{data: d}, err
+		return result{data: d, next: warn}, err
 	}
 	code, cerr := crypt.JoinCode(d.Fingerprint)
 	if cerr != nil {
 		return result{data: d}, errors.Join(err, cerr)
 	}
 	d.JoinCode = code
-	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --code %s", who, model.ShellQuote(string(e)), code)}
-	text := fmt.Sprintf("join code   %s\nfingerprint %s\n", code, d.Fingerprint)
+	next := append(warn, "yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --code %s", who, model.ShellQuote(string(e)), code))
+	text := fmt.Sprintf("join code   %s\nfingerprint %s\nkeys from   %s\n", code, d.Fingerprint, from)
 	return result{data: d, next: next, text: text}, err
+}
+
+// vouch is a key pair of a machine that a pinned key log vouches for.
+type vouch struct {
+	member crypt.Member
+	from   string // "<enclave> seq <n>"
+}
+
+// vouchedKeys returns the keys of machine who that this machine may add to
+// enclave e without the human passing them (design section 7.3). A key
+// pair counts only when the verified head of another enclave's key log,
+// which this machine has pinned, lists it, and the entry that introduced
+// that pair was signed by this machine or by a current member of e. Such a
+// signer already holds e's keys, so vouching for a false key gives it no
+// access it lacks. fleet.toml, status records and unpinned logs carry no
+// trusted keys: any writer can edit or forge them.
+func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head crypt.LogEntry, who model.MachineID) ([]vouch, error) {
+	trusted := map[model.MachineID]bool{m.local.Machine: true}
+	for _, mb := range head.Members {
+		trusted[mb.Machine] = true
+	}
+	pins := crypt.FilePins(m.paths.State)
+	var others []model.EnclaveName
+	for _, x := range m.snap.Fleet.Enclaves() {
+		if x == e {
+			continue
+		}
+		if p, err := pins.Get(x); err != nil {
+			return nil, err
+		} else if p != nil {
+			others = append(others, x)
+		}
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i] < others[j] })
+	if len(others) == 0 {
+		return nil, nil
+	}
+	logs, err := m.keyLogs(ctx, m.snap.Commit, others)
+	if err != nil {
+		return nil, err
+	}
+	var out []vouch
+	for _, x := range others {
+		pin, err := pins.Get(x)
+		if err != nil {
+			return nil, err
+		}
+		mb, signer, ok, err := crypt.Vouched(logs[x], pin, who)
+		if err != nil || !ok || !trusted[signer] {
+			continue // a refused log or an outside signer vouches for nothing
+		}
+		out = append(out, vouch{member: mb, from: fmt.Sprintf("%s seq %d", x, len(logs[x]))})
+	}
+	return out, nil
 }
 
 // ringFor returns this machine's keyring and the verified head of an enclave.

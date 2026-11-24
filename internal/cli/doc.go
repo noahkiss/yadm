@@ -58,7 +58,9 @@
 //	enclave create|add|remove|retire|set-recovery
 //	                               crypt.Create/Add/Remove/Retire/SetRecovery, crypt.MarshalLogEntry, sync.Commit (Changes),
 //	                               crypt.FilePins (pinned after the commit lands); remove also apply.Engine.Reseal,
-//	                               committed with its entry atomically (sync.CommitOptions.Atomic), retired only once it landed
+//	                               committed with its entry atomically (sync.CommitOptions.Atomic), retired only once it landed;
+//	                               add without keys: crypt.Vouched over pinned logs, signer this machine or a member
+//	enclave new-recovery           crypt.GenerateIdentity + Save into a new directory; DefaultPaths only, no init
 //	review list|ok|revert          sync.Unreviewed (Snapshot.Readable), sync.Ack, store.CommitTree
 //	hold list|show|resolve         apply.Engine.Holds, ResolveHold; conflicts through sync.Commit{Resolve}
 //	lease take|release|list        sync.FileLeases

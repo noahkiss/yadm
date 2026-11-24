@@ -572,3 +572,36 @@ func ParseLogPath(p model.SourcePath) (model.EnclaveName, uint64, bool) {
 	}
 	return model.EnclaveName(enc), seq, true
 }
+
+// Vouched returns the public keys of machine who as the verified head of a
+// pinned key log lists them, with the signer of the entry that introduced
+// that key pair: the last entry where who appears, or appears with other
+// keys than in the entry before. It verifies the log against pin, and
+// refuses a nil pin: an unpinned log may be a writer's forgery. ok is false
+// when the head does not list who.
+func Vouched(entries []LogEntry, pin *Pin, who model.MachineID) (m Member, signer model.MachineID, ok bool, err error) {
+	if pin == nil {
+		return Member{}, "", false, fmt.Errorf("%w: an unpinned key log vouches for no key", ErrNotPinned)
+	}
+	head, err := VerifyLog(entries, pin)
+	if err != nil {
+		return Member{}, "", false, err
+	}
+	m, ok = findMember(head.Members, who)
+	if !ok {
+		return Member{}, "", false, nil
+	}
+	var prev *Member
+	for _, e := range entries {
+		cur, in := findMember(e.Members, who)
+		switch {
+		case !in:
+			prev = nil
+		case prev == nil || prev.Recipient != cur.Recipient || prev.SignKey != cur.SignKey:
+			signer = e.Signer
+			c := cur
+			prev = &c
+		}
+	}
+	return m, signer, true, nil
+}
