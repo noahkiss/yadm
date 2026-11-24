@@ -61,7 +61,13 @@ func (a *app) cmdFleetList(cmd *cobra.Command, args []string) (result, error) {
 				paused += " (unverified)"
 			}
 		}
-		fmt.Fprintf(&b, "%-10s %-14s last %s held %d%s%s\n", r.Machine.ID, r.Machine.Name, last, held, stale, paused)
+		rr := ""
+		if r.Status != nil && r.Status.RerootHeld != "" {
+			rr = " reroot held (" + r.Status.RerootHeld + ")"
+		} else if r.Status != nil && r.Status.Reroot != "" {
+			rr = " rerooted " + r.Status.Reroot
+		}
+		fmt.Fprintf(&b, "%-10s %-14s last %s held %d%s%s%s\n", r.Machine.ID, r.Machine.Name, last, held, stale, paused, rr)
 	}
 	return result{data: map[string]any{"machines": rows}, text: b.String()}, nil
 }

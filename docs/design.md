@@ -18,7 +18,8 @@ This document specifies how `yadm` works. The Go package docs (`go doc ./interna
 | Path | Content |
 |---|---|
 | `$XDG_DATA_HOME/yadm/source` | The source clone. Default `~/.local/share/yadm/source`. |
-| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `remote-accepted` (the accepted remote `main`, section 10), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, identity keys. Default `~/.local/state/yadm/`. |
+| `$XDG_STATE_HOME/yadm/` | State: `state.json`, private indexes, `lock` (the sync lock), `netlock` (the network lock), `remote-accepted` (the accepted remote `main`, section 10), `quick.json`, `backup/`, `pins/<enclave>`, `allowed.json`, `leases/`, `pause.json`, `reroot.json` (re-roots this machine switched to, section 10.2), identity keys. Default `~/.local/state/yadm/`. |
+| `$XDG_DATA_HOME/yadm/backups` | Bundles of old histories that re-roots replaced (section 10.2), beside the source clone and outside it and the state directory. |
 | `$XDG_STATE_HOME/yadm/identity.age.key` | This machine's age X25519 identity, mode 0600. |
 | `$XDG_STATE_HOME/yadm/identity.sign.key` | This machine's Ed25519 signing key, mode 0600. |
 | `$XDG_CONFIG_HOME/yadm/machine.toml` | Local identity: machine id, remote, notify and busy commands, on-demand enclaves. Untracked. |
@@ -57,6 +58,7 @@ schema = 1
 
 [types.personal]
 enclave = true          # files of this type are sealed for members
+reroot_keep = 3         # back up the old history on a re-root; keep 3 (section 10.2)
 
 [types.work]            # a plain type
 
@@ -309,7 +311,7 @@ Verification, on every load:
 
 When a machine opens its keys, it checks each unwrapped key against `key_commits`.
 
-Key-log files are append-only in history. Sync refuses a fetched commit that changes or deletes an existing `keys/<enclave>/<seq>.toml`. A signed competing entry at an existing seq is how a removed member would fork the log for a machine whose pin has not reached the removal yet. Each machine publishes its pinned head in its status ref, so a member that has not pinned a removal is visible.
+Key-log files are append-only in history. Sync refuses a fetched commit that changes or deletes an existing `keys/<enclave>/<seq>.toml`. A re-root (section 10.2) may replace the commits but keeps every key-log file byte for byte. A signed competing entry at an existing seq is how a removed member would fork the log for a machine whose pin has not reached the removal yet. Each machine publishes its pinned head in its status ref, so a member that has not pinned a removal is visible.
 
 A machine writes an entry only on a head that is exactly its pin. Loading the log verifies the chain from the old pin and advances the pin, so every write descends from everything the machine accepted. A machine with no pin writes only `create`, `recover` or `set-recovery`.
 
@@ -612,13 +614,15 @@ The steps:
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes). `main` moves only over a clean clone, checked while `HEAD` still names the old `main`, so the clone's index never falls behind `HEAD`. A clean clone at a commit yadm reached (a `yadm git commit` on `main`, for example) counts as clean. The hold's advice returns the clone to `HEAD`.
 7. Apply.
 8. Publish this machine's status record (section 11).
-9. Release the sync lock. Under the network lock, push `main`, the status ref, the advanced reviewed refs, the notes ref and a pause or resume record written here that has not gone out, atomically. The refspecs are computed in step 8, under the sync lock. A local commit made between steps 8 and 9 goes out too, since it descends from the replayed `main`. Never force. A rejection means the remote moved after the fetch; it is not an error. The run fetches, replays and pushes again, up to 5 more rounds with backoff, taking the sync lock again for each replay (when another process holds it, the run stops there and notes it); after that the next sync does it. When the network lock is held, the push is skipped and the next sync does it. After a push that moved `main`, run the nudge (section 12.5).
+9. Release the sync lock. Under the network lock, push `main`, the status ref, the advanced reviewed refs, the notes ref and a pause or resume record written here that has not gone out, atomically. The refspecs are computed in step 8, under the sync lock. A local commit made between steps 8 and 9 goes out too, since it descends from the replayed `main`. Never force; the one forced push is `yadm reroot` (section 10.2). A rejection means the remote moved after the fetch; it is not an error. The run fetches, replays and pushes again, up to 5 more rounds with backoff, taking the sync lock again for each replay (when another process holds it, the run stops there and notes it); after that the next sync does it. When the network lock is held, the push is skipped and the next sync does it. After a push that moved `main`, run the nudge (section 12.5).
 
 `sync` reports a skipped or rejected network step in `network`. Only a sync that fetched and whose push went out, or had nothing to push, counts as a full sync for the quick check and clears its backoff, so local `main` stays ahead and the next tick runs in full.
 
 A manual commit, a hold resolve that commits, `retag`, `track` and the enclave commands run the same phases around their commit, in the same call: fetch first, then the commit and steps 3 and 5 to 8 under the sync lock, then step 9. A hook commit leaves the network to the next tick.
 
 A fetched source whose key log rewrites, deletes or forks an entry, or holds an entry that does not parse, is refused before anything is applied: a `key-log` task hold and one alert, local `main` stays, and `main` is not pushed. A malformed entry never fails the sync itself.
+
+A fetched `main` that does not descend from the accepted remote `main` is a history rewrite. Unless a verified re-root record announces it (section 10.2), it is refused the same way, with a `history-rewrite` hold and a `history_rewrite` alert; `yadm check` fails its `reroot` item. Nothing from the remote is applied and `main` is not pushed. The hold clears when the remote returns to a descendant of the accepted `main`.
 
 A fetched manifest that weakens protection is refused the same way, with a `manifest-guard` hold: a target both sources plan loses its enclave, a seal key or regions, or a new or changed owned root covers a path the accepted source protects. The guard compares the last accepted remote with the fetched one, and refuses only what local `main` does not already run. `yadm protection allow <target>` or `yadm root allow <path>` names the refused source while the hold is open; the next sync takes it.
 
@@ -700,6 +704,51 @@ min(signed deadline, created + 4h, first seen here + min(deadline - created, 4h)
 - When two machines pause at the same time, each holds the rest of the fleet, but only the earlier pause (by `created`, then id) holds the other initiator. The later initiator is held like any peer.
 - A pause record never replaces a resume of the same pause on the ref. A write that the remote moved past is carried onto the new remote head by the next sync, unless the remote already holds a resume or a later record of that pause.
 
+### 10.2 Re-root
+
+`yadm reroot` replaces the shared history on purpose: a `git filter-repo` purge of old plaintext, or one squashed commit after the fleet moved its secrets into enclaves. Every machine switches on its next sync; none needs a new clone.
+
+**Flow on the initiator.**
+
+1. Decide which machines back up the old history: set `reroot_keep` on their types in `fleet.toml` and let every machine sync. Without it no machine backs up.
+2. Review the queue (`yadm review list`). The re-root marks the new head reviewed for every scope, so it refuses while commits are unreviewed, unless `--fold-unreviewed` is given.
+3. Pause the fleet (section 10.1). `yadm reroot` starts a pause when this machine runs none.
+4. Sync, so local `main` is the remote `main` and this machine accepted it.
+5. Prepare the rewritten history in the source clone and leave `keys/` untouched: a squash (`yadm git commit-tree -m "new root" "main^{tree}"`) or a `git filter-repo` run on a copy, fetched back as a branch.
+6. `yadm reroot --new-head <commit-or-ref> [--reason R]`. It checks, before any pause starts, that the new head is a rewritten commit (neither in the remote `main`'s history nor descended from it), that every key-log file is byte-identical between the old and the new head, that the new manifest passes the guard of section 10 against the old one, and that this machine is a member of a key log it pinned. It signs a re-root record and pushes, in one atomic push, `main` to the new head with a lease on the old one, every reviewed ref to the new head with a lease on its remote value (also one whose scope `fleet.toml` no longer names, so no ref keeps the old history reachable), and the record. Then it switches this machine through a normal sync and waits for peers (`--wait`, `--no-wait`).
+7. Wait until `yadm fleet list` shows every machine `rerooted <id>`. A held peer switches during the pause; an offline one on its next sync.
+8. `yadm resume`.
+
+**Record.** The re-root ref `refs/yadm/reroot` is a chain of commits whose tree holds one `<id>.json` per re-root, the newest 16 kept:
+
+```json
+{ "schema": 1, "id": "r-1a2b3c4d5e6f", "initiator": "m-a1b2c3", "reason": "purge old history",
+  "created": "2030-01-01T12:00:00Z", "old_head": "<commit>", "new_head": "<commit>",
+  "pause_id": "p-…", "signer": "m-a1b2c3", "sig": "<base64>" }
+```
+
+The signed message is `"yadm v1 statement reroot\n"` and the canonical JSON with `sig` empty. A machine reads at most 64 records of at most 4 KiB, as for the pause ref. Records do not expire: a machine offline for days still finds the one that leads to the remote it fetches.
+
+**Trust.** It mirrors the pause (section 10.1): the signer is the initiator, a machine in `fleet.toml` at this machine's local `main`, signing with the key its key-log entries carry. Unlike a pause, only a verified record counts: the signer must be a member of the head of a key log this machine pinned, and the signature must verify under that member's key. An unsigned record, a signer no pinned log lists, and a forged signature are refused and named in the `history-rewrite` hold.
+
+Why a re-root requires what a pause does not:
+
+- A pause is bounded and undone by the clock. A re-root replaces the history every machine builds on and cannot be undone by waiting.
+- An unverified re-root would let any writer, with no member key, rewind or replace the shared history on every machine. The append-only key-log rule and the accepted-remote base exist to stop exactly that.
+- A machine whose pins list no member cannot verify any record, so it never switches; it keeps refusing the rewritten remote and needs a new `init`. A fleet-wide enclave gives every machine a log to pin.
+
+**Switch on a peer.** When the fetched `main` does not descend from the accepted one, sync takes the newest record that verifies, whose new head the fetched `main` contains, whose new head is not already in the accepted history (a replay changes nothing), whose signed creation time is after the floor (the time this machine joined, recorded by `init`, and the newest re-root it already runs: one it switched to, or a verified record whose new head the accepted history holds), and whose old head, when this machine has that commit, descends from the accepted `main`. The floor refuses an older record a writer replays to a machine that lacks its old head, even when the writer strips newer records from the fetched ref. The initiator refuses to sign while its clock is not after its own floor, since every machine would refuse the record. A machine held by a pause takes only a record its initiator signed. Then:
+
+1. Local commits that are not in the old head (or, without that commit, not in the accepted `main`) block the switch with a `reroot` hold. Nothing is dropped. `yadm reroot carry` keeps them on the local-only ref `refs/yadm/carry/<id>`, replays them onto the new head as step 5 of section 10 replays any local commit (a conflict becomes a hold), switches and pushes.
+2. Every key-log file of the old head must be byte-identical at the new head, with none added, and every entry the accepted `main` had must be there unchanged. Otherwise the switch is held. After the switch, the key logs load against the pins as on every sync.
+3. The manifest guard of section 10 judges the new head against local `main`.
+4. A machine whose types set `reroot_keep` (the largest value among its types, read from the `fleet.toml` it ran before the switch; absent or 0 means none) writes `git bundle create --all` of its source clone to `$XDG_DATA_HOME/yadm/backups/<UTC time>-<old head>.bundle`, mode 0600 in a 0700 directory, and keeps the newest `reroot_keep`. A failed backup holds the switch; a run that stopped after its backup reuses it. The initiator writes its backup before it pushes, so a failed backup there pushes nothing. Pruning never deletes the bundle just written. `yadm backups list` and `yadm backups prune [--keep N]` manage them.
+5. Local `main` moves to the new head over a clean clone (step 6 of section 10). A local reviewed ref that points into the old history takes the fetched one when it is in the new history, and is dropped otherwise. A fetched ref past the new head that skips commits of the scope is not taken: the local ref moves to the new head, so no writer's commit leaves this machine's queue.
+6. `reroot.json` records the switch, and then the new head becomes the accepted remote `main`, last, so a run that stops halfway finds the same record and goes on. The status record carries the switch's id as `reroot`.
+7. The normal guards run on the commits after the new head, and apply follows. While a rewrite is pending, auto-commit waits, so a machine that wakes with local edits does not commit them onto the old history; it captures them again after the switch and commits them on the new one. When the new tree equals the old one (a squash), no target changes; otherwise apply writes the difference as for any fetch.
+
+**What a backup holds.** A bundle is the old history as this machine's clone held it, refs and objects. It holds no enclave plaintext beyond what that history held: sealed files there are ciphertext. If the rewrite purged plaintext that the old history stored, the bundle still holds it; keep `reroot_keep` at 0 on machines that must not keep it, and prune or delete bundles once they are not needed. The old objects also stay in each clone's object store until git's reflog expiry and garbage collection remove them.
+
 ## 11. Status refs and observed facts
 
 Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain of commits whose tree holds one `status.json`. It publishes after a sync that changed something and at least hourly.
@@ -723,11 +772,15 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "paused_until": "2030-01-01T12:30:00Z",
   "pause_id": "p-1a2b3c4d5e6f",
   "pause_verified": true,
-  "pause_ignored": [ { "id": "p-…", "why": "signer is not trusted: m-… is not a machine in fleet.toml" } ]
+  "pause_ignored": [ { "id": "p-…", "why": "signer is not trusted: m-… is not a machine in fleet.toml" } ],
+  "reroot": "r-1a2b3c4d5e6f",
+  "reroot_held": "reroot"
 }
 ```
 
 `paused_until` and `pause_id` confirm a fleet pause the machine honours, `pause_verified` says a pinned key-log member signed it, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
+
+`reroot` is the last re-root the machine switched to, the confirmation `yadm reroot` waits for; `reroot_held` names the hold (`history-rewrite` or `reroot`) that keeps it from taking a rewritten remote (section 10.2). A change to either publishes a record at once.
 
 `on_demand` lists the enclaves the machine reads on demand only (section 7.6). It is self-reported: `yadm check` uses it to explain a key-log member without the enclave's type, and a change to it publishes a record on the next sync.
 
@@ -890,7 +943,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `managed <path>` | Is it managed here | `{target, managed, scope, source}` |
 | `explain <command>` | Steps the command would take here | `{steps[]}` |
 | `init <remote> --machine <m>` | Clone, write `machine.toml`, create identity, install schedule | `{machine, recipient, sign_key, source}` |
-| `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff, fleet pause | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?, pause?{held?, own?, ignored[]?, confirmations?}}` |
+| `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff, fleet pause, re-root | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?, pause?{held?, own?, ignored[]?, confirmations?}, reroot?{last?, held?}}` |
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff, skipped?}]}` |
@@ -899,6 +952,9 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?, paused?, pause?}` |
 | `pause [--for <d>] [--reason <r>] [--wait <d> \| --no-wait]` | Section 10.1: sign and push a fleet pause, or extend this machine's own, then wait for peers to confirm | `{id, initiator, reason?, created, until, requested, clamped?, extended?, pushed, push_error?, confirmed[], waiting[], ignored[]?}` |
 | `resume [pause-id]` | Section 10.1: sign and push a resume | the same, with `resumed`; `{resumed: false}` when no pause holds |
+| `reroot --new-head <commit-or-ref> [--reason <r>] [--fold-unreviewed] [--for <d>] [--wait <d> \| --no-wait]` | Section 10.2: check, start a pause when none runs, sign and push the rewrite, switch here, wait for peers | `{id, old_head, new_head, reason?, pause_id, pause_started?, pushed, backup?, unreviewed?, switched[], waiting[], held[]?}` |
+| `reroot carry` | Section 10.2: replay unpushed commits onto a re-rooted history, switch and push | `{reroot, sync}` |
+| `backups list` / `prune [--keep N]` | Section 10.2: re-root bundles, newest first; prune keeps `reroot_keep` of this machine's types, or 3 | `{dir, keep, bundles[]}` / `{dir, keep, deleted[]}` |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave <e>] [--source <s>] [--dry-run]` | Section 8.5; commits through the gate and pushes | `{commit, source, when, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
@@ -906,7 +962,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `untrack <path> [--source <s>] [--dry-run] [--no-push]` | Section 8.8; commits and pushes; the file stays here | `{target, source, scope, source_kept, commit, pushed, push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
-| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, the fleet pause (failed for an ignored pause record, warned while held, naming whether the pause is verified), holds, one `deferred` warning per expired defer that is not settled (section 9.7), secrecy config. `warn` marks a check that passes but needs a look. |
+| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, the fleet pause (failed for an ignored pause record, warned while held, naming whether the pause is verified), the re-root (failed while a `history-rewrite` or `reroot` hold is open), holds, one `deferred` warning per expired defer that is not settled (section 9.7), secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `add` carries `keys_from`; `remove` is refused for an on-demand enclave (section 7.6) |
 | `enclave new-recovery <dir> [--enclave <type>]` | Section 7.3: a recovery identity for a creator elsewhere; needs no init | `{dir, recipient, sign_key, create}` |
@@ -967,6 +1023,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
 - An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
 - A writer can start or lift a fleet pause by writing an unverified record under the id of any machine in `fleet.toml`, unless `fleet.toml` sets `pause_requires = "member"` (section 10.1). It cannot forge a verified one, and an unverified record never extends a verified pause. A pause holds a machine at most 4 hours in a row, chained pauses included, and every machine resumes by its own clock. `check`, `status` and `fleet list` show an unverified pause. The pause reason is plain text every machine reads. A writer can also hide a pause: it can overwrite or delete a record on the ref before a machine fetches it, and that machine then never holds.
+- A writer can force-push a rewritten `main`. Every machine refuses it unless a re-root record verified by a pinned key-log member announces it (section 10.2), and even then a rewrite that changes a key-log file is held. A member key can therefore replace the history, but not the key logs, and a machine with unpushed commits never loses them. Re-root backups hold the old history, ciphertext included, outside the state directory.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies

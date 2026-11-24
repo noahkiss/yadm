@@ -143,6 +143,7 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 	}
 
 	checks = append(checks, m.pauseCheck(ctx))
+	checks = append(checks, m.rerootCheck())
 
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {

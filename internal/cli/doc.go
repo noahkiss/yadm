@@ -8,7 +8,7 @@
 // unless it is given --interactive. A command that succeeds with holds exits
 // ExitAttention with ok true and error code "attention". Key-log trust failures
 // (crypt.ErrInvalidLog, ErrNotPinned, ErrBadSignature, ErrBrokenChain,
-// ErrNotMember) exit ExitRefused. A write while a fleet pause holds this
+// ErrNotMember) and a refused re-root (sync.ErrRerootRefused) exit ExitRefused. A write while a fleet pause holds this
 // machine (pause.ErrHeld) exits ExitLocked, like a held sync lock.
 //
 // A relative path argument is relative to $HOME; an absolute one must be
@@ -41,6 +41,9 @@
 //	                               pause waits for peers' status refs (store.StatusRefs.ReadAll), polling with hooks.sleep;
 //	                               apply, capture, hold resolve and the allows refuse (pause.HeldError, ExitLocked)
 //	                               while another machine's pause holds this one
+//	reroot [carry], backups        sync.Syncer.RerootCheck, then a pause (as above) when none runs, then
+//	                               sync.Syncer.Reroot; waits for peers' status refs like pause; carry is
+//	                               sync.Syncer.Run with Options.Carry; backups: reroot.List / Prune
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md);
 //	                               session-start repairs a broken schedule as sync does

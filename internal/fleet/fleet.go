@@ -51,6 +51,28 @@ const PauseMember = "member"
 type TypeDef struct {
 	Enclave   bool `toml:"enclave" json:"enclave"`       // files of this type are sealed for members only
 	HidePaths bool `toml:"hide_paths" json:"hide_paths"` // reserved; off by default; see crypt.HiddenNames
+	// RerootKeep is how many backups of the old history a machine of this
+	// type keeps when it accepts a re-root (`yadm reroot`). 0 or absent
+	// takes none.
+	RerootKeep int `toml:"reroot_keep,omitempty" json:"reroot_keep,omitempty"`
+}
+
+// MaxRerootKeep bounds reroot_keep.
+const MaxRerootKeep = 100
+
+// RerootKeep is how many re-root backups machine m keeps: the largest
+// reroot_keep of its types, 0 when none sets one or m is not in the file.
+func (f *File) RerootKeep(m model.MachineID) int {
+	if f == nil {
+		return 0
+	}
+	n := 0
+	for _, t := range f.Machines[m].Types {
+		if k := f.Types[t].RerootKeep; k > n {
+			n = k
+		}
+	}
+	return n
 }
 
 // PublishMode says where a collector's output goes.
@@ -142,9 +164,12 @@ func (f *File) validate() error {
 	if f.PauseRequires != "" && f.PauseRequires != PauseMember {
 		errs = append(errs, fmt.Errorf("pause_requires %q: want %q or nothing", f.PauseRequires, PauseMember))
 	}
-	for t := range f.Types {
+	for t, def := range f.Types {
 		if !namePattern.MatchString(string(t)) {
 			errs = append(errs, fmt.Errorf("type %q: invalid name", t))
+		}
+		if def.RerootKeep < 0 || def.RerootKeep > MaxRerootKeep {
+			errs = append(errs, fmt.Errorf("type %q: reroot_keep %d: want 0 to %d", t, def.RerootKeep, MaxRerootKeep))
 		}
 	}
 	// Ids, names and nicknames share one namespace, so Lookup is never ambiguous.

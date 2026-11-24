@@ -216,6 +216,11 @@ type Status struct {
 	// the pause in PauseID.
 	PauseVerified bool           `json:"pause_verified,omitempty"`
 	PauseIgnored  []PauseIgnored `json:"pause_ignored,omitempty"`
+	// Reroot is the id of the last re-root this machine switched to
+	// (design §10.2): the confirmation `yadm reroot` waits for.
+	// RerootHeld says why this machine does not take a rewritten remote.
+	Reroot     string `json:"reroot,omitempty"`
+	RerootHeld string `json:"reroot_held,omitempty"`
 }
 
 // PauseIgnored is one pause record a machine did not accept.
