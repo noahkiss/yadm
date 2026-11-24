@@ -448,7 +448,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	// 2. Auto-commit by policy, unless the fetched main is a rewrite this
 	// machine has not taken: what it captured commits after the switch.
 	committed := map[model.Target]bool{}
-	if opts.Auto && len(cp.Paths) > 0 && !(!opts.DryRun && s.rewritePending(ctx, f)) {
+	if opts.Auto && len(cp.Paths) > 0 && !(!opts.DryRun && s.rewritePending(ctx)) {
 		st, err := s.Apply.State.Load()
 		if err != nil {
 			return rep, err

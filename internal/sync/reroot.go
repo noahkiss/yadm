@@ -472,19 +472,20 @@ func (s *Syncer) rerootReviewed(ctx context.Context, remote, newHead model.Commi
 // or by an earlier run. Auto-commit waits while it is pending, so a waking
 // machine does not commit onto the old history and then hold the re-root
 // on its own new commit.
-func (s *Syncer) rewritePending(ctx context.Context, f fetched) bool {
+func (s *Syncer) rewritePending(ctx context.Context) bool {
 	// A failed fetch leaves the last fetched main, which may be a rewrite
 	// this machine holds: it still waits.
-	base, err := s.startBase(ctx, f.base)
-	if err != nil || base == "" {
+	// Only a recorded base: this check never seeds one.
+	base, ok := s.acceptedRecord()
+	if !ok || base == "" {
 		return false
 	}
 	remote, err := s.Store.ResolveRef(ctx, store.RemoteMain)
 	if err != nil || remote == "" || remote == base {
 		return false
 	}
-	ok, err := s.Store.IsAncestor(ctx, base, remote)
-	return err == nil && !ok
+	in, err := s.Store.IsAncestor(ctx, base, remote)
+	return err == nil && !in
 }
 
 // RerootRequest is what `yadm reroot` asks of the initiator.
