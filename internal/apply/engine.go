@@ -204,6 +204,35 @@ func (s *Snapshot) CanRead(enc model.EnclaveName) bool {
 	return s.Readable().CanOpen(enc)
 }
 
+// onDemandError is the refusal for an enclave this machine reads on demand
+// only. The machine is a key-log member, so the text says so; it still
+// matches crypt.ErrNotMember, since it never seals or captures here.
+type onDemandError struct{ enc model.EnclaveName }
+
+func (e onDemandError) Error() string {
+	return fmt.Sprintf("%s: this machine is a member on demand only and never seals or captures it; run this on a member that receives %s", e.enc, e.enc)
+}
+
+func (e onDemandError) Unwrap() error { return crypt.ErrNotMember }
+
+// notOpen is the error for an enclave this snapshot cannot open:
+// crypt.ErrNotMember with the enclave's name, or onDemandError for an
+// enclave this machine holds the keys of but reads on demand only.
+func (s *Snapshot) notOpen(enc model.EnclaveName) error {
+	if s != nil && s.IsOnDemand(enc) && s.CanRead(enc) {
+		return onDemandError{enc}
+	}
+	return fmt.Errorf("%w: %s", crypt.ErrNotMember, enc)
+}
+
+// notMemberDetail is the hold detail for a file this machine cannot seal.
+func (s *Snapshot) notMemberDetail(enc model.EnclaveName) string {
+	if s != nil && s.IsOnDemand(enc) && s.CanRead(enc) {
+		return "member of " + string(enc) + " on demand only; never sealed here"
+	}
+	return "not a member of " + string(enc) + "; cannot seal"
+}
+
 // canOpen reports whether this machine may open an enclave in this snapshot.
 func (s *Snapshot) canOpen(enc model.EnclaveName) bool {
 	if l, ok := s.Enclaves[enc]; ok && l.Err != nil {

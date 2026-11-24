@@ -13,6 +13,8 @@
     "name": "host-a",
     "observed": {},
     "os": "<os>",
+    "recipient": "<recipient>",
+    "sign_key": "<sign_key>",
     "types": [
       "work",
       "vault"

@@ -139,7 +139,7 @@ func (e *Engine) captureResolved(ctx context.Context, snap *Snapshot, st *State,
 		return nil, &h, nil
 	}
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
-		return hold(model.HoldSealGuard, "not a member of "+string(enc)+"; cannot seal")
+		return hold(model.HoldSealGuard, snap.notMemberDetail(enc))
 	}
 	switch {
 	case fresh && r.Entry.Template:
@@ -413,7 +413,7 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	}
 	scope := model.Scope(root.Enclave)
 	if !snap.canOpen(root.Enclave) {
-		h := fileHold(st, now, d.Target, scope, model.HoldSealGuard, d.Since, "new file in an enclave root, and this machine is not a member")
+		h := fileHold(st, now, d.Target, scope, model.HoldSealGuard, d.Since, "new file in an enclave root: "+snap.notMemberDetail(root.Enclave))
 		return nil, &h, nil
 	}
 	p := model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target))
@@ -521,7 +521,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 			return Result{Commit: snap.Commit, Actions: []Action{{Target: t, Kind: ActDelete, Scope: h.Scope, Reason: "hold resolved: take source"}}}, e.State.Save(st)
 		}
 		if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
-			return Result{}, fmt.Errorf("%s: not a member of %s", t, enc)
+			return Result{}, fmt.Errorf("%s: %v", t, snap.notOpen(enc))
 		}
 		if lv.exists && !lv.info.Mode().IsRegular() {
 			return Result{}, fmt.Errorf("%s: not a regular file; remove it first", t)

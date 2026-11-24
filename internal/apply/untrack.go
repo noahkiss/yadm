@@ -9,7 +9,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/rules"
@@ -121,7 +120,7 @@ func (e *Engine) Untrack(ctx context.Context, t model.Target, opts UntrackOption
 	}
 	for _, enc := range need {
 		if !snap.canOpen(enc) {
-			return Untracked{}, fmt.Errorf("untrack %s: %w: %s", t, crypt.ErrNotMember, enc)
+			return Untracked{}, fmt.Errorf("untrack %s: %w", t, snap.notOpen(enc))
 		}
 	}
 

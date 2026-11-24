@@ -782,7 +782,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 |---|---|---|
 | `version` | Version and build | `{version, go, os, arch}` |
 | `where` | Directories | `{source, state, config}` |
-| `machine` | This machine | the fleet `Machine` plus `observed` and `enclaves` (opened, refused, other, on_demand) |
+| `machine` | This machine; the text lists each enclave as `member`, `member (on demand)`, `not a member` or `refused` | the fleet `Machine` plus `observed`, `enclaves` (opened, refused, other, on_demand), and `recipient` and `sign_key` when the machine has identity keys |
 | `why <path>` | Manifest explanation | `{target, managed, resolved, rejected[], protected, in_root, when_expanded?}` |
 | `manifest [--as <m> \| --fleet]` | Resolved manifest per machine (section 4) | `{schema, commit, outputs[], machines[{machine, name, types, observed, error?, entries[], roots[], tasks[]}]}` |
 | `eval <cond> [--as <m>]` | Evaluate a condition (section 5.1) | `{schema, machine, name, condition, expanded, names[], result, observed, unavailable[], note?}` |

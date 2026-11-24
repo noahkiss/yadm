@@ -191,7 +191,16 @@ func (a *app) cmdEnclaveList(cmd *cobra.Command, args []string) (result, error) 
 			}
 		}
 		out = append(out, info)
-		fmt.Fprintf(&b, "%-12s seq %d epoch %d member=%v on_demand=%v members=%v %s\n", e, info.Seq, info.Epoch, info.Member, info.OnDemand, info.Members, info.Error)
+		role := "not a member"
+		switch {
+		case info.Error != "":
+			role = "refused"
+		case info.Member && info.OnDemand:
+			role = "member (on demand)"
+		case info.Member:
+			role = "member"
+		}
+		fmt.Fprintf(&b, "%-12s seq %d epoch %d %s; members %v %s\n", e, info.Seq, info.Epoch, role, info.Members, info.Error)
 	}
 	return result{data: map[string]any{"enclaves": out}, text: b.String()}, nil
 }
