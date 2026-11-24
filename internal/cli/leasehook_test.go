@@ -261,3 +261,44 @@ func TestLeaseTTLCapped(t *testing.T) {
 		t.Fatalf("leases: %+v", ls)
 	}
 }
+
+// TestLiveLeaseShown: a forgotten lease holds its paths back for up to a
+// day, so yadm check lists each live lease as a passing item with its
+// holder, paths and expiry, and session-start names it. A released lease
+// is no longer shown.
+func TestLiveLeaseShown(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+	yadmOK(t, "lease", "take", ".config/tool/config", "--holder", "agent-x", "--ttl", "2h")
+
+	leaseItems := func() []checkItem {
+		env, _, _ := yadm(t, "check")
+		var out []checkItem
+		for _, c := range decode[map[string][]checkItem](t, env.Data)["checks"] {
+			if c.Name == "lease" {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	items := leaseItems()
+	if len(items) != 1 || !items[0].OK || items[0].Warn || !strings.Contains(items[0].Detail, "agent-x holds .config/tool/config until ") ||
+		!strings.Contains(items[0].Detail, "yadm lease release agent-x") {
+		t.Fatalf("check lease items: %+v", items)
+	}
+	_, stdout, _ := hookRun(t, payload(payloadSessionStart, "session-t", a.Home, ""), HookSessionStart, "--format", "text")
+	if !strings.Contains(stdout, "1 live lease(s)") || !strings.Contains(stdout, "agent-x holds .config/tool/config until ") {
+		t.Fatalf("session start with a live lease:\n%s", stdout)
+	}
+
+	yadmOK(t, "lease", "release", "agent-x")
+	if items := leaseItems(); len(items) != 0 {
+		t.Fatalf("check lease items after release: %+v", items)
+	}
+	_, stdout, _ = hookRun(t, payload(payloadSessionStart, "session-t", a.Home, ""), HookSessionStart, "--format", "text")
+	if strings.Contains(stdout, "lease") {
+		t.Fatalf("session start after release:\n%s", stdout)
+	}
+}

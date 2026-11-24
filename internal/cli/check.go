@@ -168,6 +168,15 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		}
 	}
 
+	// A live lease passes; it is listed so a forgotten one is seen.
+	if ls, err := leaseLines(m.paths.State, hooks.now()); err != nil {
+		add("lease", false, "leases unreadable: %v", err)
+	} else {
+		for _, l := range ls {
+			add("lease", true, "%s", l)
+		}
+	}
+
 	if err := m.repo.CheckSecrecyConfig(ctx); err != nil {
 		add("secrecy_config", false, "%v", err)
 	} else {
