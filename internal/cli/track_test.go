@@ -151,3 +151,56 @@ command = ["false"]
 		t.Fatal("a gate-held track pushed")
 	}
 }
+
+// TestGateHoldOnRemovedFileSettles: a track the gate refused leaves a
+// check_failed hold on a file nothing manages. While the file exists, sync
+// keeps the hold. Once the file is removed, the next sync drops it: there is
+// nothing left to commit, and no command could settle it.
+func TestGateHoldOnRemovedFileSettles(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	tree := hookTree()
+	tree["manifest.toml"] = hookManifest + `
+[checks.scan]
+paths = [".gated"]
+command = ["false"]
+`
+	remote := seedRemote(t, root, tree)
+	a := useMachine(t, root, "a")
+	yadmOK(t, "init", remote, "--machine", "host-a", "--no-schedule")
+	yadmOK(t, "apply")
+	yadmOK(t, "task", "allow", "scan")
+
+	p := filepath.Join(a.Home, ".gated")
+	writeFile(t, p, "g\n")
+	env, code, _ := yadm(t, "track", ".gated", "--when", "machine:host-a", "--no-push")
+	if code != ExitAttention {
+		t.Fatalf("track held by the gate: exit %d %+v", code, env.Error)
+	}
+	held := func() []string {
+		var out []string
+		hs := decode[struct {
+			Holds []struct{ Target, Reason string }
+		}](t, yadmOK(t, "hold", "list").Data)
+		for _, h := range hs.Holds {
+			if h.Target == ".gated" {
+				out = append(out, h.Reason)
+			}
+		}
+		return out
+	}
+	if got := held(); len(got) != 1 || got[0] != "check_failed" {
+		t.Fatalf("holds after the refused track: %v", got)
+	}
+	yadmOK(t, "sync", "--no-push")
+	if got := held(); len(got) != 1 {
+		t.Fatalf("a sync dropped the gate hold on a file that still exists: %v", got)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	yadmOK(t, "sync", "--no-push")
+	if got := held(); len(got) != 0 {
+		t.Fatalf("holds after the file was removed: %v", got)
+	}
+}
