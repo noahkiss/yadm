@@ -304,8 +304,9 @@ another machine creates. Run it on a machine you trust with the secret, not on
 the creator. It needs no enclave membership and no "yadm init".
 
 The directory must not exist yet. It must be outside yadm's source, state
-and config directories and ~/.local, symlinks resolved, and on an initialized
-machine outside every path the manifest manages, owned roots included. new-recovery creates it with mode 0700 and writes two
+and config directories and ~/.local, symlinks resolved. On an initialized
+machine it must also be outside every path the manifest manages, owned roots
+included. new-recovery creates the directory with mode 0700 and writes two
 secret files with mode 0600:
 
   identity.age.key   the age identity every key-log entry wraps the keys to
