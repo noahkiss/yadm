@@ -609,12 +609,24 @@ func (a *app) cmdLeaseRelease(cmd *cobra.Command, args []string) (result, error)
 	if err != nil {
 		return result{}, err
 	}
-	if err := sync.FileLeases(p.State).Release(args[0], args[1:]...); err != nil {
+	ls := sync.FileLeases(p.State)
+	if err := ls.Release(args[0], args[1:]...); err != nil {
 		return result{}, err
 	}
 	data := map[string]any{"released": args[0]}
 	if len(args) > 1 {
 		data["paths"] = args[1:]
+		// A path must be spelled as it was taken; say what still holds,
+		// so a misspelled release does not pass for a done one.
+		kept := []string{}
+		if all, err := ls.List(); err == nil {
+			for _, x := range all {
+				if x.Holder == args[0] {
+					kept = x.Paths
+				}
+			}
+		}
+		data["kept"] = kept
 	}
 	return result{data: data}, nil
 }

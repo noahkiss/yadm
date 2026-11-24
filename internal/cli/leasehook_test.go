@@ -170,15 +170,24 @@ func TestLeaseRepeatTakeKeepsEarlierPaths(t *testing.T) {
 		t.Fatal("a repeat take dropped the first path's protection")
 	}
 
+	// A misspelled release drops nothing and says what still holds.
+	env := yadmOK(t, "lease", "release", "agent-x", ".config/tool/config/")
+	if k := decode[struct{ Kept []string }](t, env.Data).Kept; len(k) != 2 {
+		t.Fatalf("kept after a misspelled release: %v", k)
+	}
+
 	// Releasing one path leaves the other leased; that one commits.
-	yadmOK(t, "lease", "release", "agent-x", ".config/tool/config")
+	env = yadmOK(t, "lease", "release", "agent-x", ".config/tool/config")
+	if k := decode[struct{ Kept []string }](t, env.Data).Kept; len(k) != 1 || k[0] != ".config/tool/new.conf" {
+		t.Fatalf("kept after a path release: %v", k)
+	}
 	if code, _, _ := hookRun(t, payload(payloadStop, "session-p", a.Home, ""), HookStop); code != HookAllow {
 		t.Fatalf("stop after a path release: exit %d", code)
 	}
 	if msg := git(t, a.Source, "log", "-1", "--format=%B", "main"); !strings.Contains(msg, "update .config/tool/config") {
 		t.Fatalf("the released path did not commit:\n%s", msg)
 	}
-	env := yadmOK(t, "lease", "list")
+	env = yadmOK(t, "lease", "list")
 	if s := mustJSON(t, env.Data); !strings.Contains(s, "new.conf") || strings.Contains(s, "tool/config") {
 		t.Fatalf("lease list after a path release: %s", s)
 	}
