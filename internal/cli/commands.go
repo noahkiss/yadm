@@ -1030,7 +1030,7 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 		return refused(err)
 	}
 	if len(ts) == 1 {
-		return a.retagOne(ctx, m, ts[0], typeArg, ropts, c, enclave, dry)
+		return a.retagOne(ctx, m, ts[0], typeArg, ropts, c, enclave, dry, refused)
 	}
 	var holds []model.Hold
 	each := func(c apply.RetaggedAll) []map[string]any {
@@ -1102,8 +1102,9 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 }
 
 // retagOne is a retag of one path: its envelope names the path's source,
-// when and removed_on at the top level.
-func (a *app) retagOne(ctx context.Context, m *machineEnv, t model.Target, typeArg string, ropts apply.RetagOptions, all apply.RetaggedAll, enclave string, dry bool) (result, error) {
+// when and removed_on at the top level. refused maps a refusal the commit's
+// Build meets to the exit code the first pass gives it.
+func (a *app) retagOne(ctx context.Context, m *machineEnv, t model.Target, typeArg string, ropts apply.RetagOptions, all apply.RetaggedAll, enclave string, dry bool, refused func(error) (result, error)) (result, error) {
 	c := all.Each[0]
 	removed := removedOn(m.snap, t, c.Source, c.OldWhen, c.When)
 	data := map[string]any{"commit": "", "removed_on": removed, "holds": withHoldNext(c.Holds), "source": c.NewSource, "when": c.When}
@@ -1141,8 +1142,8 @@ func (a *app) retagOne(ctx context.Context, m *machineEnv, t model.Target, typeA
 		data["push_error"] = pushErr.Error()
 	}
 	if err != nil {
-		if errors.Is(err, apply.ErrVariants) || errors.Is(err, cond.ErrRetype) {
-			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
+		if res, rerr := refused(err); errors.Is(rerr, errUsage) {
+			return res, rerr
 		}
 		return result{data: data}, err
 	}
@@ -1189,21 +1190,24 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 			return a.trackUnderGlob(ctx, m, t, r, noPush)
 		}
 	}
+	// refused maps a refusal of the track to exit 2, whether the first
+	// pass or the commit's Build met it.
+	refused := func(err error) (result, error) {
+		switch {
+		case errors.Is(err, apply.ErrBadRequest), errors.Is(err, apply.ErrCovered):
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
+		case errors.Is(err, apply.ErrNotFile):
+			return result{}, usagef("%v", err)
+		}
+		return lockedResult(err), err
+	}
 	var c apply.Capture
 	if err := m.locked(ctx, func() error {
 		var err error
 		c, err = m.eng.Track(ctx, t, apply.TrackOptions{When: when, Enclave: model.EnclaveName(enclave), Variant: variant})
 		return err
 	}); err != nil {
-		switch {
-		case errors.Is(err, apply.ErrBadRequest):
-			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
-		case errors.Is(err, apply.ErrCovered):
-			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
-		case errors.Is(err, apply.ErrNotFile):
-			return result{}, usagef("%v", err)
-		}
-		return lockedResult(err), err
+		return refused(err)
 	}
 	scope := model.ScopeShared
 	if enclave != "" {
@@ -1235,6 +1239,9 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 		data["push_error"] = pushErr.Error()
 	}
 	if err != nil {
+		if res, rerr := refused(err); errors.Is(rerr, errUsage) {
+			return res, rerr
+		}
 		return result{data: data}, err
 	}
 	id, err := m.landed(ctx, rep, manifest.FileName)

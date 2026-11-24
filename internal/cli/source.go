@@ -53,6 +53,9 @@ func (a *app) cmdSourceMv(cmd *cobra.Command, args []string) (result, error) {
 			return &apply.Capture{}, mv.Changes, nil
 		},
 	})
+	if errors.Is(err, apply.ErrBadRequest) {
+		return result{data: data}, usagef("%v", err)
+	}
 	return a.landedResult(ctx, m, data, rep, pushErr, err, manifest.FileName)
 }
 
@@ -113,6 +116,9 @@ func (a *app) cmdUntrack(cmd *cobra.Command, args []string) (result, error) {
 		opts2.Forget = []model.Target{u.Target}
 	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, opts2)
+	if errors.Is(err, apply.ErrBadRequest) || errors.Is(err, apply.ErrVariants) {
+		return result{data: data}, usagef("%v", err)
+	}
 	return a.landedResult(ctx, m, data, rep, pushErr, err, manifest.FileName)
 }
 
