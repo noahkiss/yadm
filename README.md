@@ -1,6 +1,6 @@
 <h1 align="center">yadm</h1>
 
-<p align="center">Dotfiles sync for personal, work and client machines, built for agents and humans.</p>
+<p align="center">Yet another dotfiles manager (again!): one setup across personal, work and client machines, built for agents and humans.</p>
 
 <p align="center">
   <a href="#install"><b>Install</b></a> ·
