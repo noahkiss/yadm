@@ -754,20 +754,33 @@ func mergeHolds(a, b []model.Hold) []model.Hold {
 	return out
 }
 
-// leaseLines describes every live lease, one string each: holder, paths and
-// expiry. A forgotten lease holds its paths back until it expires, so
-// yadm check and the session-start hook name each one.
-func leaseLines(stateDir string, now time.Time) ([]string, error) {
+// leaseLine describes one live lease: holder, paths and expiry. Long marks
+// a lease that expires later than LeaseMax from now: taken before the cap,
+// or the clock moved back.
+type leaseLine struct {
+	Text string
+	Long bool
+}
+
+// leaseLines describes every live lease. A forgotten lease holds its paths
+// back until it expires, so yadm check and the session-start hook name
+// each one.
+func leaseLines(stateDir string, now time.Time) ([]leaseLine, error) {
 	ls, err := sync.FileLeases(stateDir).List()
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []leaseLine
 	for _, x := range ls {
 		if !now.Before(x.Expires) {
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s holds %s until %s (yadm lease release %s)", x.Holder, strings.Join(x.Paths, ", "), clockOn(x.Expires, now), model.ShellQuote(x.Holder)))
+		l := leaseLine{Text: fmt.Sprintf("%s holds %s until %s (yadm lease release %s)", x.Holder, strings.Join(x.Paths, ", "), clockOn(x.Expires, now), model.ShellQuote(x.Holder))}
+		if x.Expires.After(now.Add(LeaseMax + time.Minute)) {
+			l.Long = true
+			l.Text += fmt.Sprintf("; it outlasts the %s cap", shortDuration(LeaseMax))
+		}
+		out = append(out, l)
 	}
 	return out, nil
 }
@@ -891,7 +904,11 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) still waiting, %d expired and open again: yadm review list", n-expired, expired))
 	}
 	if ls, _ := leaseLines(m.paths.State, hooks.now()); len(ls) > 0 {
-		lines = append(lines, fmt.Sprintf("yadm: %d live lease(s) keep paths uncommitted: %s", len(ls), strings.Join(ls, "; ")))
+		texts := make([]string, len(ls))
+		for i, l := range ls {
+			texts[i] = l.Text
+		}
+		lines = append(lines, fmt.Sprintf("yadm: %d live lease(s) keep paths uncommitted: %s", len(ls), strings.Join(texts, "; ")))
 	}
 	if s := m.fleetDrift(ctx, snap); s != "" {
 		lines = append(lines, s)

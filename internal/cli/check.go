@@ -168,12 +168,13 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		}
 	}
 
-	// A live lease passes; it is listed so a forgotten one is seen.
+	// A live lease passes; it is listed so a forgotten one is seen. One
+	// that outlasts the cap warns.
 	if ls, err := leaseLines(m.paths.State, hooks.now()); err != nil {
 		add("lease", false, "leases unreadable: %v", err)
 	} else {
 		for _, l := range ls {
-			add("lease", true, "%s", l)
+			checks = append(checks, checkItem{Name: "lease", OK: true, Warn: l.Long, Detail: l.Text})
 		}
 	}
 
