@@ -741,3 +741,34 @@ func TestRerootPendingOffline(t *testing.T) {
 		t.Fatal("host-c's offline edit is not on the new history")
 	}
 }
+
+// TestRerootPausedEdit: a peer held by the pause has an edit in $HOME,
+// not captured yet, to a file the rewrite changes. The switch keeps the
+// edit.
+func TestRerootPausedEdit(t *testing.T) {
+	root, _, _, _, m := rerootFleet(t)
+	a, b := m[fixture.HostA], m[fixture.HostB]
+	shared := ".config/shell/aliases.sh"
+	on(t, root, fixture.HostA)
+	src := strings.TrimSpace(git(t, a.Source, "ls-files", "--", "*aliases.sh"))
+	if src == "" {
+		t.Fatal("no aliases source")
+	}
+	work := filepath.Join(root, "work-purge")
+	git(t, root, "clone", "-q", a.Source, work)
+	git(t, work, "checkout", "-q", "--orphan", "purge")
+	writeFile(t, filepath.Join(work, src), "# rewritten in the purge\n")
+	git(t, work, "-c", "user.name=a", "-c", "user.email=a@example.invalid", "commit", "-q", "-a", "-m", "purged root")
+	git(t, a.Source, "fetch", "-q", work, "purge:refs/heads/purge")
+	yadmOK(t, "reroot", "--new-head", "purge", "--fold-unreviewed", "--no-wait")
+
+	on(t, root, fixture.HostB)
+	writeFile(t, filepath.Join(b.Home, shared), "# host-b's own edit\n")
+	yadm(t, "sync", "--full")
+	if got := trimmed(t, b.Source, "rev-parse", "main"); got != trimmed(t, a.Source, "rev-parse", "purge") {
+		t.Fatalf("host-b did not switch: main %s", got)
+	}
+	if got := readFile(t, filepath.Join(b.Home, shared)); got != "# host-b's own edit\n" {
+		t.Fatalf("the switch overwrote host-b's edit: %q", got)
+	}
+}
