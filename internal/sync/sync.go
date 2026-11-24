@@ -112,11 +112,11 @@ type Lease struct {
 	Expires time.Time `json:"expires"`
 }
 
-// Leases stores leases in the state directory.
+// Leases stores leases in the state directory, one lease per holder.
 type Leases interface {
 	List() ([]Lease, error)
 	Take(Lease) error
-	Release(holder string) error
+	Release(holder string, paths ...string) error // paths: only those; none: the whole lease
 }
 
 // Policy is the auto-commit policy. Run fills the hooks from the manifest

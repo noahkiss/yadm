@@ -581,15 +581,33 @@ func (a *app) cmdLeaseTake(cmd *cobra.Command, args []string) (result, error) {
 	if ttl <= 0 {
 		return result{}, usagef("--ttl must be positive")
 	}
+	// A lease keeps its paths out of every commit but the holder's own, so
+	// a holder that crashed or forgot it must not hold them back for long.
+	capped := ttl > LeaseMax
+	if capped {
+		ttl = LeaseMax
+	}
 	p, err := DefaultPaths()
 	if err != nil {
 		return result{}, err
 	}
+	ls := sync.FileLeases(p.State)
 	l := sync.Lease{Holder: holder, Paths: args, Expires: hooks.now().Add(ttl).UTC()}
-	if err := sync.FileLeases(p.State).Take(l); err != nil {
+	if err := ls.Take(l); err != nil {
 		return result{}, err
 	}
-	return result{data: l}, nil
+	if all, err := ls.List(); err == nil {
+		for _, x := range all {
+			if x.Holder == holder {
+				l = x // the stored lease: a repeat take adds its paths
+			}
+		}
+	}
+	text := fmt.Sprintf("leased to %s until %s: %s\n", holder, clockOn(l.Expires, hooks.now()), strings.Join(l.Paths, ", "))
+	if capped {
+		text = fmt.Sprintf("--ttl is capped at %s. ", shortDuration(LeaseMax)) + text
+	}
+	return result{data: l, text: text}, nil
 }
 
 func (a *app) cmdLeaseRelease(cmd *cobra.Command, args []string) (result, error) {
@@ -597,10 +615,26 @@ func (a *app) cmdLeaseRelease(cmd *cobra.Command, args []string) (result, error)
 	if err != nil {
 		return result{}, err
 	}
-	if err := sync.FileLeases(p.State).Release(args[0]); err != nil {
+	ls := sync.FileLeases(p.State)
+	if err := ls.Release(args[0], args[1:]...); err != nil {
 		return result{}, err
 	}
-	return result{data: map[string]any{"released": args[0]}}, nil
+	data := map[string]any{"released": args[0]}
+	if len(args) > 1 {
+		data["paths"] = args[1:]
+		// A path must be spelled as it was taken; say what still holds,
+		// so a misspelled release does not pass for a done one.
+		kept := []string{}
+		if all, err := ls.List(); err == nil {
+			for _, x := range all {
+				if x.Holder == args[0] {
+					kept = x.Paths
+				}
+			}
+		}
+		data["kept"] = kept
+	}
+	return result{data: data}, nil
 }
 
 func (a *app) cmdLeaseList(cmd *cobra.Command, args []string) (result, error) {

@@ -337,6 +337,24 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 	return out
 }
 
+// ---- leases ----
+
+// LeaseMax caps a lease's TTL. A repeat take by a live holder renews it.
+const LeaseMax = 24 * time.Hour
+
+const leaseHelp = `A lease says an agent is mid-edit on some paths and commits them itself.
+A lease path is a glob or a directory, relative to $HOME. While a live
+lease names a path, the post-edit and stop hooks of every session (the
+holder's own included) and the timer leave it uncommitted and raise no
+decision on it, except a conflict or a secrecy hold. The holder commits
+by name: yadm commit -m <subject> <path...>, which bypasses leases.
+
+A lease lasts --ttl, at most 24h (a longer --ttl is capped). A repeat take
+by the same holder adds its paths and renews the expiry of all of them.
+yadm lease release <holder> ends the lease; with paths it drops only those.
+When a lease ends, pending paths commit as usual: through the next hook
+or the timer.`
+
 // ---- deferred decisions ----
 
 // DeferredFile holds the decisions agents moved to the review queue.
@@ -594,6 +612,20 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	if !managedOrRooted(snap, t) || m.eng.Ignored(t) {
 		return Verdict{}, nil // ignored on purpose: only a named commit tracks it
 	}
+	if ls := liveLeases(m.paths.State, []model.Target{t}); len(ls) > 0 {
+		// Leased: recorded, not committed; the holder, stop or the timer
+		// commits it once the lease ends. A conflict or secrecy hold on
+		// it is still raised.
+		hs, err := m.eng.Holds(ctx)
+		if err != nil {
+			return Verdict{}, err
+		}
+		packets := m.packets(ctx, decisionsFor(leaseProof(hs), []model.Target{t}, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
+		if len(packets) == 0 {
+			return Verdict{}, nil
+		}
+		return Verdict{Decision: DecisionBlock, Reason: renderPackets("this edit needs a decision", packets), Packets: packets}, nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
 	rep, _, err := m.hookCommit(ctx, a.version, sync.CommitOptions{
@@ -645,30 +677,132 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	if ts = kept; len(ts) == 0 {
 		return Verdict{}, nil
 	}
+	// A leased path is neither committed nor a decision here, whoever
+	// holds the lease: its holder commits it, or stop or the timer does
+	// once the lease ends.
+	leasedTo := liveLeases(m.paths.State, ts)
+	note := leaseNote(leasedTo)
+	var free, leased []model.Target
+	for _, t := range ts {
+		if _, ok := leasedTo[t]; ok {
+			leased = append(leased, t)
+		} else {
+			free = append(free, t)
+		}
+	}
+	withNote := func(s string) string {
+		if note == "" || s == "" {
+			return s + note
+		}
+		return s + "\n" + note
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
 	defer cancel()
-	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
-		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: false,
-	}, hooks.hookWait)
-	if errors.Is(err, sync.ErrLocked) {
-		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil
-	}
-	if errors.Is(err, pause.ErrHeld) {
-		return Verdict{Context: "yadm: " + err.Error() + "; the timer commits this session's edits after the pause"}, nil
-	}
-	if err != nil {
-		return Verdict{}, err
+	if len(free) > 0 {
+		_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
+			Paths: free, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: false,
+		}, hooks.hookWait)
+		if errors.Is(err, sync.ErrLocked) {
+			return Verdict{Context: withNote("yadm: a sync holds the lock; the timer commits this session's edits")}, nil
+		}
+		if errors.Is(err, pause.ErrHeld) {
+			return Verdict{Context: withNote("yadm: " + err.Error() + "; the timer commits this session's edits after the pause")}, nil
+		}
+		if err != nil {
+			return Verdict{}, err
+		}
 	}
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {
 		return Verdict{}, err
 	}
-	packets := m.packets(ctx, decisionsFor(hs, ts, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
+	deferred, managed := running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()
+	packets := m.packets(ctx, mergeHolds(decisionsFor(hs, free, deferred, managed), decisionsFor(leaseProof(hs), leased, deferred, managed)))
 	if len(packets) == 0 {
-		return Verdict{}, nil
+		return Verdict{Context: note}, nil
 	}
 	head := fmt.Sprintf("%d decision(s) from this session are open; settle each one, or move it to the review queue with yadm defer", len(packets))
-	return Verdict{Decision: DecisionBlock, Reason: renderPackets(head, packets), Packets: packets}, nil
+	return Verdict{Decision: DecisionBlock, Reason: withNote(renderPackets(head, packets)), Packets: packets}, nil
+}
+
+// leaseProof keeps the holds a lease never holds back: a conflict with an
+// incoming change and the secrecy holds. A lease defers only the commit of
+// its paths and the decisions that commit would raise.
+func leaseProof(hs []model.Hold) []model.Hold {
+	var out []model.Hold
+	for _, h := range hs {
+		switch h.Reason {
+		case model.HoldConflict, model.HoldSealGuard, model.HoldSecretScan, model.HoldRootUntrusted:
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// mergeHolds joins two sorted decision lists, each hold once, by target.
+func mergeHolds(a, b []model.Hold) []model.Hold {
+	seen := map[string]bool{}
+	var out []model.Hold
+	for _, h := range append(append([]model.Hold{}, a...), b...) {
+		if !seen[h.ID] {
+			seen[h.ID] = true
+			out = append(out, h)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Target < out[j].Target })
+	return out
+}
+
+// liveLeases maps each of targets that a live lease names to that lease.
+// Any holder counts: a holder name is a free-form label, and hooks never
+// match it against a session. An expired lease protects nothing.
+func liveLeases(stateDir string, targets []model.Target) map[model.Target]sync.Lease {
+	ls, err := sync.FileLeases(stateDir).List()
+	if err != nil || len(ls) == 0 {
+		return nil
+	}
+	now := hooks.now()
+	out := map[model.Target]sync.Lease{}
+	for _, t := range targets {
+		if x, ok := sync.LeaseOn(ls, t, now); ok {
+			out[t] = x
+		}
+	}
+	return out
+}
+
+// leaseNote is one line per lease: which of the session's paths it holds
+// back, by whom, and until when.
+func leaseNote(leasedTo map[model.Target]sync.Lease) string {
+	if len(leasedTo) == 0 {
+		return ""
+	}
+	type group struct {
+		lease sync.Lease
+		paths []string
+	}
+	by := map[string]*group{}
+	for t, x := range leasedTo {
+		g := by[x.Holder]
+		if g == nil {
+			g = &group{lease: x}
+			by[x.Holder] = g
+		}
+		g.paths = append(g.paths, string(t))
+	}
+	holders := make([]string, 0, len(by))
+	for h := range by {
+		holders = append(holders, h)
+	}
+	sort.Strings(holders)
+	now := hooks.now()
+	var lines []string
+	for _, h := range holders {
+		g := by[h]
+		sort.Strings(g.paths)
+		lines = append(lines, fmt.Sprintf("yadm: not committed, leased by %s until %s: %s", h, clockOn(g.lease.Expires, now), strings.Join(g.paths, ", ")))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, error) {

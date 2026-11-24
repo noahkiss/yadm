@@ -132,7 +132,9 @@
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
 //	type RemoteGuard interface{ Allow(ctx, from, to *apply.Snapshot) (bool, string, error) }
 //	type Lease struct{ Holder string; Paths []string; Expires time.Time }
-//	type Leases interface{ List() ([]Lease, error); Take(Lease) error; Release(holder string) error }
+//	func LeaseOn(leases []Lease, t model.Target, now time.Time) (Lease, bool) // the live lease naming t
+//	(an Unattended Commit skips every path a live stored lease names)
+//	type Leases interface{ List() ([]Lease, error); Take(Lease) error; Release(holder string, paths ...string) error } // Take adds to a live lease of the same holder and refreshes its expiry
 //	func FileLeases(stateDir string) Leases
 //	const LockTimeout
 //	type ReviewItem struct{ Commit store.Commit; Scope model.Scope; Diff string }

@@ -423,7 +423,8 @@ func baseBlob(st *apply.State, applied map[model.SourcePath]store.TreeEntry, t m
 // Commit makes a manual commit: capture, gate, one commit per scope through a
 // fresh private index. It bypasses the quiet period and leases but never the
 // gate or the seal guard. Protected paths need to be named in Paths, unless
-// the commit is Unattended. With Push it runs the phases of a sync around
+// the commit is Unattended. An Unattended commit skips every path a live
+// lease names, whoever holds it. With Push it runs the phases of a sync around
 // the commit: fetch under the network lock first, then the commit, replay,
 // apply and publish under the sync lock, then the push under the network
 // lock, so the commit reaches the remote in this call; without it the next
@@ -521,6 +522,12 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		drift = s.withoutDeferred(drift, func(t model.Target) bool {
 			return !opts.Unattended && named(opts.Paths, t)
 		})
+		// A live lease keeps a hook's hands off its paths.
+		if opts.Unattended {
+			if drift, err = s.withoutLeased(drift); err != nil {
+				return rep, fmt.Errorf("leases: %w", err)
+			}
+		}
 		if cp, err = s.Apply.Capture(ctx, drift); err != nil {
 			return rep, fmt.Errorf("capture: %w", err)
 		}

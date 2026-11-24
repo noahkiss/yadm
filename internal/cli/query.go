@@ -223,8 +223,8 @@ var explainSteps = map[string][]string{
 	},
 	"hook": {
 		"read the harness hook JSON on stdin",
-		"post-edit: record the edited path for the session; commit and push it now if it is managed or in an owned root (lease-free, gate and protection kept)",
-		"stop: commit and push the session's recorded paths; exit 2 while a decision it caused is open (yadm defer settles one for now)",
+		"post-edit: record the edited path for the session; commit it now if it is managed or in an owned root and no live lease names it (gate and protection kept)",
+		"stop: commit the session's recorded paths no live lease names; exit 2 while a decision it caused is open (yadm defer settles one for now); on a leased path, only a conflict or secrecy hold",
 		"session-start: quick sync, then at most 10 lines on holds near the cwd, deferred decisions, unreviewed auto-commits and fleet drift",
 	},
 	"defer": {"find the hold", "record it with the reason in the state directory's review queue", "the hold stays; yadm review list shows it"},
