@@ -56,7 +56,7 @@ func (a *app) registerPause(root *cobra.Command) {
 	pa := a.leaf(root, "pause", "Hold sync fleet-wide for a bounded time during a global change", a.cmdPause)
 	pa.Long = pauseLong
 	pa.Args = cobra.NoArgs
-	pa.Flags().Duration("for", pause.DefaultFor, "how long the pause lasts (at most 4h after it began); on a pause this machine started, extends it")
+	pa.Flags().Duration("for", pause.DefaultFor, "how long the pause lasts (at most 4h after it began); given on a pause this machine started, extends it to now + this")
 	pa.Flags().String("reason", "", "why, shown to every machine the pause holds (plain text: every machine can read it)")
 	pa.Flags().Duration("wait", pauseDefaultWait, "how long to wait for other machines to confirm")
 	pa.Flags().Bool("no-wait", false, "return as soon as the pause is pushed")
@@ -286,17 +286,21 @@ func (a *app) cmdPause(cmd *cobra.Command, args []string) (result, error) {
 		if reason == "" {
 			rec.Reason = own.Reason
 		}
-		if want := now.Add(forD); want.After(rec.Deadline) {
+		// Only an explicit --for extends; a bare `yadm pause` waits again.
+		if want := now.Add(forD); cmd.Flags().Changed("for") && want.After(rec.Deadline) {
 			rec.Deadline = want
 		}
 	} else if rec.ID, err = pause.NewID(); err != nil {
 		return result{}, err
 	}
 	asked := now.Add(forD)
+	if own != nil && !cmd.Flags().Changed("for") {
+		asked = own.Requested
+	}
 	if capAt := rec.Created.Add(pause.MaxSpan); rec.Deadline.After(capAt) {
 		rec.Deadline = capAt
 	}
-	d := pauseData{ID: rec.ID, Initiator: self, Reason: rec.Reason, Created: rec.Created, Extended: extended}
+	d := pauseData{ID: rec.ID, Initiator: self, Reason: rec.Reason, Created: rec.Created, Extended: extended && rec.Deadline.After(own.Requested)}
 	if own == nil || rec.Deadline.After(own.Requested) || rec.Reason != own.Reason {
 		signed, err := pause.Sign(rec, m.id)
 		if err != nil {
@@ -350,7 +354,7 @@ func (a *app) cmdPause(cmd *cobra.Command, args []string) (result, error) {
 	var b strings.Builder
 	left := span(d.Until.Sub(hooks.now()))
 	verb := "paused"
-	if extended {
+	if d.Extended {
 		verb = "extended the pause"
 	}
 	switch {

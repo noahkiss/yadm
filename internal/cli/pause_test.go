@@ -100,11 +100,22 @@ func TestPauseFleet(t *testing.T) {
 	}
 	id := d.ID
 
-	// host-b and host-c see it on their next sync and confirm it.
+	// Waiting with no peer confirmed: progress on stderr, then success.
+	out, errOut, code := yadmRaw(t, "pause", "--wait", "10s")
+	if code != ExitOK || !strings.Contains(errOut, "waiting… 0/2 confirmed (host-b, host-c not yet)") || !strings.Contains(out, "0/2 confirmed") {
+		t.Fatalf("pause wait: exit %d\nstdout %s\nstderr %s", code, out, errOut)
+	}
+
+	// host-b's timer tick sees the pause ref move; host-c syncs by hand.
+	// Both confirm it.
 	for _, p := range []model.MachineID{fixture.HostB, fixture.HostC} {
 		on(t, root, p)
-		s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data)
-		if !s.Paused {
+		args := []string{"sync", "--full"}
+		if p == fixture.HostB {
+			args = []string{"sync", "--auto"}
+		}
+		s := decode[syncOut](t, yadmOK(t, args...).Data)
+		if !s.Paused || (p == fixture.HostB && s.Reason != "remote moved") {
 			t.Fatalf("%s sync not paused: %+v", p, s)
 		}
 		st := selfStatus(t, p)
@@ -205,6 +216,14 @@ func TestPauseFleet(t *testing.T) {
 	if env, code, _ := yadm(t, "commit", shared); code == ExitRefused {
 		t.Fatalf("commit after the deadline refused: %+v", env.Error)
 	}
+	// host-c, with no edit of its own, applies the initiator's change.
+	on(t, root, fixture.HostC)
+	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
+		t.Fatalf("host-c after the deadline: %+v", s)
+	}
+	if got := readFile(t, filepath.Join(m[fixture.HostC].Home, shared)); !strings.Contains(got, "global change") {
+		t.Fatalf("host-c did not apply the change made during the pause: %q", got)
+	}
 
 	for _, repo := range []string{remote, m[fixture.HostB].Source, m[fixture.HostC].Source} {
 		secrecytest.AssertRepoClean(t, repo, fx.AllCanaries()...)
@@ -227,8 +246,8 @@ func TestPauseResumeAndOffline(t *testing.T) {
 		t.Fatalf("resume: %+v", d)
 	}
 	on(t, root, fixture.HostB)
-	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
-		t.Fatalf("host-b still paused after resume: %+v", s)
+	if s := decode[syncOut](t, yadmOK(t, "sync", "--auto").Data); s.Paused || s.Reason != "remote moved" {
+		t.Fatalf("host-b timer tick after resume: %+v", s)
 	}
 	if _, code, _ := yadm(t, "apply"); code == ExitRefused {
 		t.Fatal("apply refused after resume")
@@ -377,10 +396,10 @@ func TestPauseForged(t *testing.T) {
 		t.Fatalf("a replayed pause held host-b again: %+v", s)
 	}
 
-	// A signed pause created 10h in the future (a skewed clock) holds at
+	// A signed pause created 48h in the future (a skewed clock) holds at
 	// most 4h from when host-b first saw it.
 	skew := rec(fixture.HostA)
-	skew.Created, skew.Deadline = now.Add(10*time.Hour), now.Add(12*time.Hour)
+	skew.Created, skew.Deadline = now.Add(48*time.Hour), now.Add(50*time.Hour)
 	if skew, err = pause.Sign(skew, fx.Identities[fixture.HostA]); err != nil {
 		t.Fatal(err)
 	}
@@ -395,5 +414,13 @@ func TestPauseForged(t *testing.T) {
 	clk.Add(pause.MaxSpan + time.Minute)
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
 		t.Fatalf("skewed pause held past first sight + 4h: %+v", s)
+	}
+	// A day later the record still sits on the ref with its future
+	// deadline; it does not hold host-b a second time.
+	for i := 0; i < 3; i++ {
+		clk.Add(15 * time.Hour)
+		if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
+			t.Fatalf("skewed pause held again %dh later: %+v", 15*(i+1), s)
+		}
 	}
 }

@@ -634,7 +634,7 @@ A resume is the same record with `op = "resume"` and its own signer. Why a dedic
 - A protected file in `main` would reach a held machine only through the replay and apply the pause stops.
 - One file per pause means a resume of one pause never hides another.
 
-The writer builds on the fetched ref and pushes fast-forward, never forced; a rejected push is redone on the new remote head. A write drops records that can hold no one for a day.
+The writer builds on the fetched ref and pushes fast-forward, never forced; a rejected push is redone on the new remote head. A write drops records that can hold no one for a day. A record that could not go out (the network lock stayed busy, or the remote was offline) stays on the local ref and the next sync pushes it, but only while the remote ref has not moved past it; after that the record holds only this machine, and `yadm pause` or `yadm resume` must run again. `yadm pause` without `--for` on a running pause changes nothing and waits for confirmations again.
 
 **Trust.**
 
@@ -927,7 +927,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
 - An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
-- A writer cannot start, extend or lift a fleet pause: pause and resume records count only when a member of a pinned key log signed them (section 10.1). A trusted member can hold the fleet for at most 4 hours per pause, and every machine resumes by its own clock. The pause reason is plain text every machine reads.
+- A writer cannot start, extend or lift a fleet pause: pause and resume records count only when a member of a pinned key log signed them (section 10.1). A trusted member can hold the fleet for at most 4 hours per pause, and every machine resumes by its own clock. The pause reason is plain text every machine reads. A writer can still hide a pause: it can overwrite or delete a record on the ref before a machine fetches it, and that machine then never holds. Pauses coordinate trusted members; they do not stop a writer that wants a machine to keep syncing.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies

@@ -446,7 +446,10 @@ func Evaluate(ctx context.Context, st store.Store, stateDir string, self model.M
 	for _, id := range ids {
 		e := l.Pauses[id]
 		u, clamped := until(e.Record, e.FirstSeen)
-		if now.After(u.Add(keepFor)) && now.After(e.FirstSeen.Add(keepFor)) {
+		// Forget a pause only once its record can hold no one by its own
+		// times too: a record created in the future would otherwise come
+		// back as new and hold again.
+		if now.After(u.Add(keepFor)) && now.After(claimedUntil(e.Record).Add(keepFor)) && now.After(e.FirstSeen.Add(keepFor)) {
 			delete(l.Pauses, id)
 			continue
 		}
