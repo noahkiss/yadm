@@ -709,7 +709,7 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 	if !dry {
 		// A deferred decision this commit settled leaves the review queue.
 		if hs, err := m.eng.Holds(ctx); err == nil {
-			openDeferred(m.paths.State, hs)
+			openDeferred(m.paths.State, hs, m.managedTargets())
 		}
 	}
 	rep = reportData(rep)

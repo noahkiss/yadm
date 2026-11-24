@@ -212,3 +212,92 @@ func TestDeferNewFileSettles(t *testing.T) {
 		t.Fatal("the scan committed an ignored file")
 	}
 }
+
+// writeDeferred replaces deferred.json, as an earlier version or a record
+// that outlived its hold leaves it.
+func writeDeferred(t *testing.T, stateDir string, d map[string]Deferred) {
+	t.Helper()
+	if err := saveDeferred(stateDir, d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestStaleDeferDoesNotBlockScan: a record whose hold is gone does not stop
+// the timer from committing a later change, even when a new hold appears on
+// the same path and no session or review prunes the record. A path-keyed
+// new-file record no longer covers the file once it is managed.
+func TestStaleDeferDoesNotBlockScan(t *testing.T) {
+	for name, rec := range map[string]map[string]Deferred{
+		"hold id":  {"0123456789ab": {ID: "0123456789ab", Target: ".config/tool/config", Reason: model.HoldDrifted, Why: "old"}},
+		"new file": {newFileKey(".config/tool/config"): {ID: "0123456789ab", Target: ".config/tool/config", Reason: model.HoldProtected, Kind: "new_file", Why: "old"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hermetic(t)
+			root := t.TempDir()
+			remote := seedRemote(t, root, hookTree())
+			a := hookMachine(t, root, remote, "a", "host-a")
+			writeDeferred(t, a.State, rec)
+
+			// A deletion is protected: the timer holds it.
+			file := filepath.Join(a.Home, ".config/tool/config")
+			if err := os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+			timerSyncs(t)
+			// The file comes back with a change: the timer commits it.
+			writeFile(t, file, "color = teal\n")
+			timerSyncs(t)
+			if got := git(t, a.Source, "show", "main:files/.config/tool/config"); got != "color = teal" {
+				t.Fatalf("a stale defer blocked the timer: %q", got)
+			}
+		})
+	}
+}
+
+// TestDeferOldRecordHolds: a new file's defer that an earlier version keyed
+// by hold id still holds against the timer, and deferring it again leaves
+// one record.
+func TestDeferOldRecordHolds(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	file := filepath.Join(a.Home, ".config/tool/new.conf")
+	writeFile(t, file, "fresh = 1\n")
+	code, stdout, _ := hookRun(t, payload(payloadWrite, "session-s", a.Home, file), HookPostEdit)
+	if code != HookBlock {
+		t.Fatalf("post-edit on a new file: exit %d", code)
+	}
+	p := verdictOf(t, stdout).Packets[0]
+	writeDeferred(t, a.State, map[string]Deferred{p.ID: {ID: p.ID, Target: ".config/tool/new.conf", Reason: model.HoldProtected, Why: "old"}})
+
+	before := git(t, a.Source, "rev-parse", "main")
+	timerSyncs(t)
+	if git(t, a.Source, "rev-parse", "main") != before {
+		t.Fatal("the scan committed a file an old record deferred")
+	}
+	yadmOK(t, "defer", p.ID, "--reason", "again")
+	if ds := deferredOf(t); len(ds) != 1 || ds[0].Kind != "new_file" {
+		t.Fatalf("deferred after a second defer: %+v", ds)
+	}
+}
+
+// TestUndecidedNewFileShared: a new file in an owned root that the hook held
+// and nobody decided on is shared by the timer after its quiet period.
+func TestUndecidedNewFileShared(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	file := filepath.Join(a.Home, ".config/tool/new.conf")
+	writeFile(t, file, "fresh = 1\n")
+	if code, _, _ := hookRun(t, payload(payloadWrite, "session-s", a.Home, file), HookPostEdit); code != HookBlock {
+		t.Fatalf("post-edit on a new file: exit %d", code)
+	}
+	timerSyncs(t)
+	if got := git(t, a.Source, "show", "main:files/.config/tool/new.conf"); got != "fresh = 1" {
+		t.Fatalf("the timer did not share an undecided new file: %q", got)
+	}
+}

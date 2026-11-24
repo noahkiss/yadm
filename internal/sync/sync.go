@@ -163,11 +163,21 @@ type Deps struct {
 	// `yadm sync --quick`). Its failure never fails the sync.
 	Nudge []string
 
-	// Deferred returns the targets an agent deferred a decision on. While
-	// such a target still has an open hold, scan and unattended commits
-	// neither capture nor commit it; only an attended commit that names
-	// it does. nil: none.
-	Deferred func() map[model.Target]bool
+	// Deferred returns the decisions an agent deferred. While a deferred
+	// decision's hold is open, scan and unattended commits neither capture
+	// nor commit its target; only an attended commit that names it does.
+	// nil: none.
+	Deferred func() []Deferral
+}
+
+// Deferral is one deferred decision. It covers the open hold with HoldID.
+// A new file's deferral (NewFile) also covers any protected hold on Target
+// while Target is not managed here, so an edit that raises the hold again
+// under a new id stays deferred.
+type Deferral struct {
+	HoldID  string
+	Target  model.Target
+	NewFile bool
 }
 
 // Syncer runs the sync loop.
@@ -490,7 +500,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 }
 
 // withoutDeferred drops the drift of targets with a deferred decision whose
-// hold is still open, except those keep approves. A dropped target is not
+// hold is still open (see Deferral), except those keep approves. A dropped target is not
 // captured, so its hold stays and it stays uncommitted.
 func (s *Syncer) withoutDeferred(drift []apply.Drift, keep func(model.Target) bool) []apply.Drift {
 	if s.Deferred == nil || len(drift) == 0 {
@@ -504,9 +514,25 @@ func (s *Syncer) withoutDeferred(drift []apply.Drift, keep func(model.Target) bo
 	if err != nil {
 		return drift
 	}
+	ids := map[string]bool{}
+	newFile := map[model.Target]bool{}
+	for _, x := range def {
+		ids[x.HoldID] = true
+		if x.NewFile {
+			newFile[x.Target] = true
+		}
+	}
 	held := map[model.Target]bool{}
 	for _, h := range st.Holds {
-		if h.Target != "" && def[h.Target] {
+		if h.Target == "" {
+			continue
+		}
+		id := h.ID
+		if id == "" {
+			id = apply.HoldID(h)
+		}
+		_, managed := st.Targets[h.Target]
+		if ids[id] || (newFile[h.Target] && h.Reason == model.HoldProtected && !managed) {
 			held[h.Target] = true
 		}
 	}

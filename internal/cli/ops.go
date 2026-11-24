@@ -176,7 +176,7 @@ func (a *app) cmdReviewList(cmd *cobra.Command, args []string) (result, error) {
 	// Decisions agents deferred wait here too, while their holds are open.
 	var deferred []Deferred
 	if hs, err := m.eng.Holds(ctx); err == nil {
-		deferred = openDeferred(m.paths.State, hs)
+		deferred = openDeferred(m.paths.State, hs, m.managedTargets())
 	}
 	if deferred == nil {
 		deferred = []Deferred{}
