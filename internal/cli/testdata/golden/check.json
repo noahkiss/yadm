@@ -39,6 +39,11 @@
       },
       {
         "detail": "<detail>",
+        "name": "reroot",
+        "ok": true
+      },
+      {
+        "detail": "<detail>",
         "name": "holds",
         "ok": true
       },

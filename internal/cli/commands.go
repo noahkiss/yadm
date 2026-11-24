@@ -104,6 +104,7 @@ func (a *app) register(root *cobra.Command) {
 	a.registerEnclave(root)
 	a.registerHooks(root)
 	a.registerPause(root)
+	a.registerReroot(root)
 
 	pr := a.group(root, "protection", "Local allows for weakened protection of a target")
 	exact(leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow), 1)
@@ -410,6 +411,9 @@ type statusData struct {
 	// Pause is the fleet pause that holds this machine or that it started,
 	// and pause records it ignored.
 	Pause *pauseStatus `json:"pause,omitempty"`
+	// Reroot is the last re-root this machine switched to, and the hold
+	// that keeps it from taking a rewritten remote (design §10.2).
+	Reroot *sync.RerootStatus `json:"reroot,omitempty"`
 }
 
 // LockShowAfter is how long a lock is held before `yadm status` shows it.
@@ -480,6 +484,14 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 		fmt.Fprintf(&b, "  network backoff: the remote failed; next check after %s\n", d.NetBackoff.Format(time.RFC3339))
 	}
 	b.WriteString(pauseText)
+	if rv, err := m.rerootView(); err == nil && (rv.Held != nil || rv.Last != nil) {
+		d.Reroot = &rv
+		if rv.Held != nil {
+			fmt.Fprintf(&b, "  remote history rewritten, not taken: %s\n", rv.Held.Detail)
+		} else if hooks.now().Sub(rv.Last.At) < 7*24*time.Hour {
+			fmt.Fprintf(&b, "  switched to re-root %s on %s\n", rv.Last.ID, rv.Last.At.UTC().Format(time.RFC3339))
+		}
+	}
 	for _, x := range d.Drift {
 		fmt.Fprintf(&b, "  %-10s %s\n", x.Kind, x.Target)
 	}

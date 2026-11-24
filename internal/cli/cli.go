@@ -77,6 +77,7 @@ var refusals = []error{
 	crypt.ErrBadSignature,
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
+	sync.ErrRerootRefused,
 }
 
 // classify maps an error to an exit code and an error code.

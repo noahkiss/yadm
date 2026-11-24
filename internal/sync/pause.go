@@ -121,6 +121,22 @@ func (s *Syncer) pausedRun(ctx context.Context, rep Report, lk *lockHold, f fetc
 	if opts.DryRun {
 		return s.finish(ctx, rep, nil, nil)
 	}
+	// A re-root by the machine whose pause holds this one is taken now,
+	// so the initiator sees every peer switch before it resumes.
+	if f.err == nil && rep.Pause != nil {
+		if h := rep.Pause.Holding(s.self()); h != nil {
+			tip, dirty, err := s.pausedReroot(ctx, &rep, f, h.Initiator)
+			if err != nil {
+				return s.finishErr(rep, nil, nil, err)
+			}
+			if dirty {
+				return s.finish(ctx, rep, nil, nil)
+			}
+			if tip != "" {
+				head = tip
+			}
+		}
+	}
 	if err := s.publish(ctx, head, false, 0); err != nil {
 		return rep, fmt.Errorf("status: %w", err)
 	}
@@ -288,4 +304,38 @@ func (s *Syncer) EvalPause(ctx context.Context) (pause.View, pause.Trust, error)
 func (s *Syncer) NudgePeers(ctx context.Context) {
 	head, _ := s.Store.ResolveRef(ctx, pause.Ref)
 	s.nudge(ctx, head)
+}
+
+// pausedReroot switches a held machine to a re-rooted history its pause's
+// initiator announced, and applies it. It returns the new local main, or
+// "" when there is nothing to switch to.
+func (s *Syncer) pausedReroot(ctx context.Context, rep *Report, f fetched, by model.MachineID) (model.CommitID, bool, error) {
+	base, err := s.startBase(ctx, f.base)
+	if err != nil {
+		return "", false, err
+	}
+	local := local0(ctx, s)
+	remote, err := s.Store.ResolveRef(ctx, store.RemoteMain)
+	if err != nil {
+		return "", false, err
+	}
+	rw, err := s.rewrite(ctx, base, local, remote, false, by)
+	if err != nil || rw.dirty {
+		return "", rw.dirty, err
+	}
+	if !rw.switched {
+		return "", false, nil
+	}
+	if _, err := s.setRefusal(nil); err != nil {
+		return "", false, err
+	}
+	a := model.Alert{Kind: AlertRerootAccepted, Commit: rw.rec.NewHead, Machine: rw.rec.Initiator,
+		Detail: fmt.Sprintf("switched to the re-rooted history %s (%s) during the pause", rw.rec.ID, short(rw.rec.NewHead)), At: s.now()}
+	s.notify(ctx, a)
+	if err := s.recordAlerts([]model.Alert{a}); err != nil {
+		return "", false, err
+	}
+	rep.Alerts = append(rep.Alerts, a)
+	dirty, err := s.moveAndApply(ctx, rep, rw.local, true)
+	return rw.local, dirty, err
 }

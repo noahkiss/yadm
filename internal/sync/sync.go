@@ -40,6 +40,10 @@ type Options struct {
 	Push       bool
 	DryRun     bool // scan, capture and plan; commit, fetch, apply and push nothing
 	MaxRetries int  // rounds after a rejected push; 0 means DefaultMaxRetries, negative none
+	// Carry lets a machine switch to a re-rooted history (§10.2) while it
+	// holds local commits the old history lacks: they are replayed onto
+	// the new history first. Without it such a machine holds.
+	Carry bool
 	// Quick first runs the cheap check (scan, `git ls-remote`) and stops
 	// there when nothing moved and no full sync is due (FullEvery, WakeGap).
 	Quick bool
@@ -164,6 +168,10 @@ type Deps struct {
 	Guard      RemoteGuard   // refuses a fetched source this machine has not allowed; nil allows all
 	Backoff    time.Duration // first push-retry delay; doubles per retry; default 200ms
 
+	// Backups is the directory of re-root backups (§10.2), outside the
+	// source clone and the state directory. Empty takes no backup.
+	Backups string
+
 	// Nudge is an optional extexec argv run after a push that moved main,
 	// so peers sync now instead of on their next timer tick (they run
 	// `yadm sync --quick`). Its failure never fails the sync.
@@ -182,12 +190,13 @@ type Syncer struct {
 	partial model.CommitID
 
 	pauseView *pause.View // the pause state this run evaluated; publish reports it
+	carry     bool        // Options.Carry of this run
 }
 
 // begin resets the per-run caches; the returned func clears them again.
 func (s *Syncer) begin() func() {
-	s.snaps, s.applied, s.partial, s.pauseView = nil, "", "", nil
-	return func() { s.snaps, s.applied, s.partial, s.pauseView = nil, "", "", nil }
+	s.snaps, s.applied, s.partial, s.pauseView, s.carry = nil, "", "", nil, false
+	return func() { s.snaps, s.applied, s.partial, s.pauseView, s.carry = nil, "", "", nil, false }
 }
 
 // load returns the snapshot of a commit id, loading each commit once per run.
@@ -373,6 +382,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, err
 	}
 	defer s.begin()()
+	s.carry = opts.Carry
 
 	if opts.Quick && !opts.DryRun {
 		why, err := s.quickDue(ctx, &rep)
@@ -697,9 +707,34 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 	if remote != "" {
 		snap, loadErr = s.load(ctx, remote)
 	}
-	ref, err := s.checkRemote(ctx, base, local, remote, snap)
+	// A remote whose main no longer descends from the accepted one is a
+	// rewrite: refused, unless a verified re-root record announces it.
+	rw, err := s.rewrite(ctx, base, local, remote, s.carry, "")
 	if err != nil {
 		return out, err
+	}
+	ref := rw.refusal
+	switch {
+	case rw.dirty:
+		out.dirty, out.tip = true, local
+		return out, nil
+	case rw.switched:
+		base, local = rw.rec.NewHead, rw.local
+		a := model.Alert{Kind: AlertRerootAccepted, Commit: rw.rec.NewHead, Machine: rw.rec.Initiator,
+			Detail: fmt.Sprintf("switched to the re-rooted history %s (%s)", rw.rec.ID, short(rw.rec.NewHead)), At: s.now()}
+		s.notify(ctx, a)
+		if err := s.recordAlerts([]model.Alert{a}); err != nil {
+			return out, err
+		}
+		out.alerts = append(out.alerts, a)
+		if err := s.putConflictHolds(ctx, rw.holds); err != nil {
+			return out, err
+		}
+	}
+	if ref == nil {
+		if ref, err = s.checkRemote(ctx, base, local, remote, snap); err != nil {
+			return out, err
+		}
 	}
 	if ref == nil && loadErr != nil {
 		return out, fmt.Errorf("load %s: %w", remote, loadErr)
@@ -745,25 +780,8 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 	}
 	rep.Replayed += in.replayed
 	rep.Resolutions = append(rep.Resolutions, in.resolutions...)
-	if len(in.holds) > 0 {
-		// Reload: integrate may not touch state, but stay on the latest copy.
-		if st, err = s.Apply.State.Load(); err != nil {
-			return out, err
-		}
-		for _, h := range in.holds {
-			putHold(st, h)
-			// Apply must not overwrite this machine's side of a conflict.
-			if ts, ok := st.Targets[h.Target]; ok {
-				ts.Written = ""
-				st.Targets[h.Target] = ts
-			}
-		}
-		if err := s.Apply.State.Save(st); err != nil {
-			return out, err
-		}
-		for _, h := range in.holds {
-			s.notify(ctx, model.Alert{Kind: "held", Detail: "conflict on " + string(h.Target) + " (" + string(h.Scope) + ")", At: s.now()})
-		}
+	if err := s.putConflictHolds(ctx, in.holds); err != nil {
+		return out, err
 	}
 	if in.tip == "" {
 		return out, nil
@@ -774,8 +792,34 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		}
 	}
 	out.tip = in.tip
-	out.dirty, err = s.moveAndApply(ctx, rep, in.tip, len(in.holds) > 0)
+	out.dirty, err = s.moveAndApply(ctx, rep, in.tip, len(in.holds) > 0 || len(rw.holds) > 0)
 	return out, err
+}
+
+// putConflictHolds records the conflict holds of a replay. Apply then
+// does not overwrite this machine's side of a conflict.
+func (s *Syncer) putConflictHolds(ctx context.Context, holds []model.Hold) error {
+	if len(holds) == 0 {
+		return nil
+	}
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return err
+	}
+	for _, h := range holds {
+		putHold(st, h)
+		if ts, ok := st.Targets[h.Target]; ok {
+			ts.Written = ""
+			st.Targets[h.Target] = ts
+		}
+	}
+	if err := s.Apply.State.Save(st); err != nil {
+		return err
+	}
+	for _, h := range holds {
+		s.notify(ctx, model.Alert{Kind: "held", Detail: "conflict on " + string(h.Target) + " (" + string(h.Scope) + ")", At: s.now()})
+	}
+	return nil
 }
 
 // setMain compare-and-swaps main from old to tip. When main is unborn (a

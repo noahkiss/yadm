@@ -210,6 +210,7 @@ type refusal struct {
 	task   string
 	kind   string
 	detail string
+	next   []string // the hold's suggested commands; default hold show and review list
 }
 
 // checkRemote runs the key-log rule and the RemoteGuard on a fetched source.
@@ -288,7 +289,10 @@ func (s *Syncer) setRefusal(r *refusal) (bool, error) {
 	st.Holds = out
 	if r != nil {
 		h := model.KeepSince(st.Holds, model.Hold{Task: r.task, Scope: model.ScopeShared, Reason: model.HoldProtected, Detail: r.detail}, s.now())
-		h.Next = []string{"yadm hold show " + h.ID, "yadm review list"}
+		h.Next = append([]string{"yadm hold show " + h.ID}, r.next...)
+		if len(r.next) == 0 {
+			h.Next = append(h.Next, "yadm review list")
+		}
 		putHold(st, h)
 	} else if len(st.Holds) == n {
 		return false, nil
@@ -423,7 +427,14 @@ func SeedStart(ctx context.Context, st store.Store, stateDir string, holds []mod
 
 // refusalHold reports a hold of a refused fetch.
 func refusalHold(h model.Hold) bool {
-	return h.Target == "" && h.Reason == model.HoldProtected && (h.Task == HoldTaskKeyLog || h.Task == HoldTaskGuard)
+	if h.Target != "" || h.Reason != model.HoldProtected {
+		return false
+	}
+	switch h.Task {
+	case HoldTaskKeyLog, HoldTaskGuard, HoldTaskRewrite, HoldTaskReroot:
+		return true
+	}
+	return false
 }
 
 func (s *Syncer) setAccepted(id model.CommitID) error {

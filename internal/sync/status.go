@@ -45,12 +45,23 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if !samePause(last, pausedUntil, pauseID, pauseVerified, pauseIgnored) {
 		changed = true // the confirmation the initiator waits for
 	}
-	if !fleet.PublishDue(last, changed, now) {
-		return nil
-	}
 	st, err := s.Apply.State.Load()
 	if err != nil {
 		return err
+	}
+	rr := ReadRerootStatus(s.Apply.StateDir, st.Holds)
+	var rerootID, rerootHeld string
+	if rr.Last != nil {
+		rerootID = rr.Last.ID
+	}
+	if rr.Held != nil {
+		rerootHeld = rr.Held.Task
+	}
+	if last != nil && (last.Reroot != rerootID || last.RerootHeld != rerootHeld) {
+		changed = true // the confirmation `yadm reroot` waits for
+	}
+	if !fleet.PublishDue(last, changed, now) {
+		return nil
 	}
 	rec := model.Status{
 		Schema:   model.StatusSchema,
@@ -59,6 +70,9 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 		Applied:  st.Applied,
 		LastSync: now.UTC(),
 		Pending:  pendingCount,
+
+		Reroot:     rerootID,
+		RerootHeld: rerootHeld,
 	}
 	for _, h := range st.Holds {
 		rec.Held++

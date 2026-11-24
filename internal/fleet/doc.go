@@ -24,7 +24,8 @@
 //
 //	type File struct{ Schema int; Types map[model.TypeName]TypeDef; Machines map[model.MachineID]model.Machine; Collectors map[string]CollectorDef; PauseRequires string }
 //	const PauseMember = "member" // PauseRequires: a fleet pause needs a pinned key-log member's signature
-//	type TypeDef struct{ Enclave, HidePaths bool }
+//	type TypeDef struct{ Enclave, HidePaths bool; RerootKeep int }
+//	func (f *File) RerootKeep(m model.MachineID) int // re-root backups machine m keeps: the largest reroot_keep of its types
 //	type CollectorDef struct{ Command []string; Timeout model.Duration; When string; Publish Publish }
 //	type Publish struct{ Mode PublishMode; Enclave model.EnclaveName }  // TOML: "local" | "plain" | "sealed:<enclave>"
 //	func Parse(b []byte) (*File, error)

@@ -21,6 +21,7 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/reroot"
 	"github.com/noahkiss/yadm/internal/rules"
 	"github.com/noahkiss/yadm/internal/schedule"
 	"github.com/noahkiss/yadm/internal/store"
@@ -318,6 +319,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Version:  version,
 		Now:      hooks.now,
 		Nudge:    hooks.nudge(),
+		Backups:  reroot.BackupDir(m.paths.Source),
 
 		Structural: rules.Structural{},
 		Guard:      &apply.Guard{List: m.allow},

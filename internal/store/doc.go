@@ -19,7 +19,8 @@
 //
 // Merges use `git merge-tree --write-tree` and return every conflicted path
 // with its three stage blobs, so apply can open sealed files, merge plaintext
-// and reseal. Pushes are atomic and never forced; held refs are never pushed.
+// and reseal. Pushes are atomic and never forced, except PushRewrite, the
+// leased push of a re-root; held refs are never pushed.
 //
 // Open and Clone require git 2.40 or newer (MinGitVersion). A ref or HEAD
 // that does not exist resolves to "", the value UpdateRef reads as "must not
@@ -52,6 +53,9 @@
 //	func (r *Repo) AttributeDrivers(ctx) (map[string]bool, error)                // "filter.<name>", "merge.<name>" any attribute source assigns
 //	func (r *Repo) Git(ctx, stdin, stdout, stderr, args...) (exit int, err error) // `yadm git`
 //	func (r *Repo) RemoteHeads(ctx) (map[string]model.CommitID, error)            // ls-remote main and refs/yadm/*
+//	type Rewrite struct{ Ref string; New, Old model.CommitID }
+//	func (r *Repo) PushRewrite(ctx, rewrites []Rewrite, plain []string) error      // atomic; each rewrite forced with a lease on Old
+//	func (r *Repo) Bundle(ctx, path string) error                                  // git bundle create --all, mode 0600
 //	func Passthrough(ctx, dir, stdin, stdout, stderr, args...) (int, error); func Output(ctx, dir, args...) ([]byte, error)
 //	func GitExitCode(err) int
 //	func FormatMessage(Message) string; func ParseMessage(raw string) Message

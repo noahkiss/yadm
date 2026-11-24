@@ -63,7 +63,7 @@
 //     up to MaxRetries rounds with backoff (negative: none), then leave it to
 //     the next sync. Only a run that fetched and whose push went out records
 //     a full sync for the quick check, so unpushed commits trigger the next
-//     one. Never force.
+//     one. Never force (the one forced push is Reroot's, below).
 //     A fetched reviewed ref moves the local one only when it skips no
 //     commit of its scope; otherwise it is refused with an alert
 //     (AlertReviewedSkip). SeedReviewed seeds empty local refs at init.
@@ -87,13 +87,27 @@
 // deadline. pushSpecs pushes a pause or resume written here that has not
 // gone out.
 //
+// A re-root (design §10.2, package reroot) replaces the remote's history.
+// When the fetched main does not descend from the accepted one, the run
+// looks for a re-root record that leads there, verified by a pinned
+// key-log member's signature. Without one it refuses the fetch with a
+// HoldTaskRewrite hold. With one it holds (HoldTaskReroot) while this
+// machine has commits the old history lacks (unless Options.Carry replays
+// them), or the rewrite changes a key-log file or fails the RemoteGuard;
+// otherwise it backs up the old history when fleet.toml asks (Deps.Backups,
+// reroot_keep), moves main to the new head, moves reviewed refs that point
+// into the old history, records the new head as accepted last, and goes on
+// with the normal checks on new..remote. A machine held by a pause switches
+// only for the pause's initiator, during the pause. Reroot is the
+// initiator side: checks, a signed record and one atomic, leased push.
+//
 // Fetched commits that touch an enclave and whose Machine trailer names no
 // member of its key log are applied, alerted through the notify hook and
 // kept in the status record.
 //
 // Exported API:
 //
-//	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick bool }
+//	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick, Carry bool }
 //	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
@@ -136,4 +150,12 @@
 //	func (s *Syncer) EvalPause(ctx) (pause.View, pause.Trust, error)
 //	func (s *Syncer) PublishPause(ctx, recs []pause.Record) (pushed bool, err error) // waits PauseNetWait for the network lock
 //	func (s *Syncer) FetchRefs(ctx) error; func (s *Syncer) NudgePeers(ctx)
+//	Deps.Backups string // re-root backup directory
+//	const HoldTaskRewrite, HoldTaskReroot; const AlertHistoryRewrite, AlertRerootAccepted, AlertRerootHeld
+//	var ErrRerootRefused, ErrRerootState; func RefCarry(id string) string
+//	type RerootRequest struct{ NewHead, Reason, PauseID string; Signer *crypt.Identity; FoldUnreviewed bool }
+//	type RerootResult struct{ Record reroot.Record; Pushed bool; Unreviewed map[model.Scope]int; Sync *Report }
+//	func (s *Syncer) RerootCheck(ctx, req) (RerootResult, error) // checks only
+//	func (s *Syncer) Reroot(ctx, req) (RerootResult, error)
+//	type RerootStatus struct{ Last *reroot.Accepted; Held *model.Hold }; func ReadRerootStatus(stateDir string, holds []model.Hold) RerootStatus
 package sync
