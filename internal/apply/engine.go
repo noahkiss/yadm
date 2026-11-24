@@ -296,12 +296,14 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 // loses it stops working. One wider bit is noise, not drift: group write on
 // a file whose group may already read it (0664 from a tool writing under
 // umask 002 where 0644 is wanted). Git does not record it, so no capture
-// could settle it. An owner-only want (0600, 0700) and other write stay
+// could settle it. An owner-only want (0600, 0700), a want the owner may not
+// write (0444), a target under .ssh or .gnupg (ssh refuses a group-writable
+// file there, whatever mode the manifest asks for) and other write stay
 // strict.
-func ModeAccepted(live, want fs.FileMode) bool {
+func ModeAccepted(t model.Target, live, want fs.FileMode) bool {
 	live, want = live.Perm(), want.Perm()
 	extra := live &^ want
-	if want&0o040 != 0 {
+	if want&0o240 == 0o240 && !privateTarget(t) {
 		extra &^= 0o020
 	}
 	if extra != 0 {
@@ -765,21 +767,21 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 			if !have && adopt {
 				s.Kind = ActAdopt
 			}
-		case have && ts.want() == d.mode && ModeAccepted(liveMode, d.mode):
+		case have && ts.want() == d.mode && ModeAccepted(r.Target, liveMode, d.mode):
 			// Stricter than wanted, by the file's own tool or user: not
 			// drift, and apply never widens it.
 			s.Kind = ActSkip
 		case have && uint32(liveMode) == ts.Mode:
 			// The entry's mode changed and the file is as last recorded.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
-		case have && ModeAccepted(liveMode, d.mode):
+		case have && ModeAccepted(r.Target, liveMode, d.mode):
 			s.Kind = ActSkip
 		case !have && liveMode&0o222 == 0:
 			// A read-only render another tool left (0444): adopt, and apply
 			// for a target adopt could not open yet, take it over at the
 			// source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
-		case !have && ModeAccepted(liveMode, d.mode):
+		case !have && ModeAccepted(r.Target, liveMode, d.mode):
 			s.Kind = ActSkip
 			if adopt {
 				s.Kind = ActAdopt

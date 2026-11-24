@@ -31,9 +31,10 @@ func TestModeAccepted(t *testing.T) {
 		{0o655, 0o755, false}, // the same, with others keeping theirs
 		{0o600, 0o600, true},
 		{0o640, 0o600, false},
+		{0o464, 0o444, false}, // the owner may not write: neither may the group
 	}
 	for _, c := range cases {
-		if got := ModeAccepted(c.live, c.want); got != c.ok {
+		if got := ModeAccepted(".rc", c.live, c.want); got != c.ok {
 			t.Errorf("ModeAccepted(%#o, %#o) = %v, want %v", c.live, c.want, got, c.ok)
 		}
 	}
@@ -237,6 +238,47 @@ func TestGroupWriteIsNotDrift(t *testing.T) {
 	for _, tg := range []model.Target{".rc", ".bin/tool"} {
 		if info, _ := os.Stat(w.path(tg)); info.Mode().Perm() != chmod[tg] {
 			t.Errorf("%s: apply changed mode to %#o, want %#o kept", tg, info.Mode().Perm(), chmod[tg])
+		}
+	}
+}
+
+// TestGroupWriteDriftsWhereStrict: group write stays drift where a tool
+// treats it as a security change. ssh refuses a group-writable file under
+// ~/.ssh even when the manifest asks for 0644 there, and a file whose owner
+// may not write it gains nothing from a group that may. Both drift and
+// hold, so no 0664 under ~/.ssh passes as noise.
+func TestGroupWriteDriftsWhereStrict(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	files := map[model.SourcePath]string{"files/.ssh/config": "Host a\n", "files/.gnupg/gpg.conf": "g\n", "files/.ro": "r\n"}
+	c := w.commit(files,
+		manifest.Entry{Target: ".ssh/config", Mode: 0o644},
+		manifest.Entry{Target: ".gnupg/gpg.conf", Mode: 0o644},
+		manifest.Entry{Target: ".ro", Mode: 0o444})
+	w.apply(c)
+	chmod := map[model.Target]os.FileMode{".ssh/config": 0o664, ".gnupg/gpg.conf": 0o664, ".ro": 0o464}
+	for tg, m := range chmod {
+		if err := os.Chmod(w.path(tg), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.tick(1e9)
+	ds, err := w.eng.Scan(ctx, ScanOptions{FullHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifting := map[model.Target]bool{}
+	for _, d := range ds {
+		drifting[d.Target] = d.Kind == DriftMode
+	}
+	res := w.apply(c)
+	held := map[model.Target]bool{}
+	for _, h := range res.Holds {
+		held[h.Target] = true
+	}
+	for tg := range chmod {
+		if !drifting[tg] || !held[tg] {
+			t.Errorf("%s at %#o: mode drift %v, held %v; want both", tg, chmod[tg], drifting[tg], held[tg])
 		}
 	}
 }

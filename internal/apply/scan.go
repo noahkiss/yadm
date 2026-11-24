@@ -182,7 +182,7 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 	case h != ts.Written:
 		d.Kind, d.Hash = DriftModified, h
 		return d, true, nil
-	case mode != ts.Mode && !ModeAccepted(fs.FileMode(mode), ts.want()):
+	case mode != ts.Mode && !ModeAccepted(t, fs.FileMode(mode), ts.want()):
 		d.Kind, d.Hash = DriftMode, h
 		return d, true, nil
 	}
