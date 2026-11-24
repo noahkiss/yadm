@@ -447,10 +447,11 @@ func clockOn(t, now time.Time) string {
 // shortDuration prints d without trailing zero units: 6h, 90m, 1h30m.
 func shortDuration(d time.Duration) string {
 	s := d.String()
-	s = strings.TrimSuffix(s, "0s")
-	s = strings.TrimSuffix(s, "0m")
-	if s == "" {
-		return "0s"
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
 	}
 	return s
 }

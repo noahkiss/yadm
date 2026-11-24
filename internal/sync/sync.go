@@ -271,6 +271,12 @@ type CommitOptions struct {
 	// them: its paths name targets, and these hold no plaintext.
 	Changes      []store.Change
 	ChangesScope model.Scope
+	// Build, when set, computes Capture and Changes once the commit holds
+	// the sync lock, from the main it lands on. A change computed before a
+	// wait would carry a whole manifest from an older main and undo what
+	// the process it waited for committed. Build replaces Capture and
+	// Changes; a nil Capture with no Changes commits nothing.
+	Build func(ctx context.Context) (*apply.Capture, []store.Change, error)
 	// Atomic commits everything or nothing: when the gate holds a target,
 	// Changes do not land without it (a manifest entry without its source).
 	Atomic bool
@@ -296,9 +302,15 @@ type CommitOptions struct {
 	MaxRetries int
 }
 
-// LockTimeout bounds how long any command waits for the sync lock before
-// failing with ErrLocked. Commands never wait without a bound.
+// LockTimeout bounds how long the timer (`sync --auto`) and FileLock wait
+// for the sync lock before failing with ErrLocked. Commands never wait
+// without a bound.
 const LockTimeout = 30 * time.Second
+
+// CommandLockTimeout bounds how long an interactive command waits for the
+// sync lock by default. A timer sync can hold it for minutes while tasks
+// run, so a command waits for it rather than fail at once.
+const CommandLockTimeout = 3 * time.Minute
 
 // lockHold is the sync lock a run takes, drops for its network steps and
 // takes again.

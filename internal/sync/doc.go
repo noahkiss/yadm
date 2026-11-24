@@ -2,8 +2,10 @@
 // the review queue.
 //
 // Two locks in the state directory serialize one machine's processes. The
-// sync lock (LockFile; Acquire waits at most LockTimeout, then ErrLocked)
-// covers local writes. The network lock (NetLockFile) covers fetch, push
+// sync lock (LockFile; Acquire waits at most its bound, then ErrLocked)
+// covers local writes. A holder named by extexec.EnvParentPID is the yadm
+// process that runs this one as a task or check: Acquire fails at once with
+// ErrSelfLocked instead of waiting on it. The network lock (NetLockFile) covers fetch, push
 // and ls-remote; it is only ever tried (TryAcquire), and a caller that
 // finds it held skips its network step (ErrNetBusy) and says so in
 // Report.Network. No process holds the sync lock while it waits on the
@@ -113,7 +115,8 @@
 // Exported API:
 //
 //	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick, Carry bool }
-//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
+//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Build; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
+//	(Build computes Capture and Changes under the commit's hold of the sync lock, on the main it lands on)
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
 //	const FullEvery, WakeGap
@@ -123,8 +126,9 @@
 //	func (s *Syncer) Commit(ctx, opts CommitOptions) (Report, error)
 //	type Lock interface{ Acquire(ctx context.Context) (release func(), err error) }
 //	func FileLock(stateDir string) Lock; func FileLockTimeout(stateDir string, d time.Duration) Lock
+//	func FileLockWait(stateDir string, d time.Duration, onWait func(*Holder, time.Duration)) Lock // onWait once, before the first wait
 //	type NetLock interface{ TryAcquire() (release func(), err error) }; func FileNetLock(stateDir string) NetLock
-//	const LockFile, NetLockFile, LockSync, LockNetwork; var ErrLocked, ErrNetBusy, ErrPushDeferred
+//	const LockFile, NetLockFile, LockSync, LockNetwork; var ErrLocked, ErrSelfLocked, ErrNetBusy, ErrPushDeferred
 //	type Holder struct{ PID int; Command string; Since time.Time }; type LockedError struct{ Lock; Holder; Cause }
 //	type HeldLock struct{ Lock; Holder; Age }; func HeldLocks(stateDir string) []HeldLock
 //	func NetBackingOff(stateDir, now) bool; func NetBackoff(stateDir, now) (time.Time, bool)
@@ -137,7 +141,7 @@
 //	(an Unattended Commit skips every path a live stored lease names)
 //	type Leases interface{ List() ([]Lease, error); Take(Lease) error; Release(holder string, paths ...string) error } // Take adds to a live lease of the same holder and refreshes its expiry
 //	func FileLeases(stateDir string) Leases
-//	const LockTimeout
+//	const LockTimeout, CommandLockTimeout // the timer's wait; an interactive command's default wait
 //	type ReviewItem struct{ Commit store.Commit; Scope model.Scope; Diff string }
 //	func Unreviewed(ctx, st store.Store, keys *crypt.Set, scope model.Scope) ([]ReviewItem, error)
 //	func Ack(ctx, st store.Store, scope model.Scope, upTo model.CommitID) error

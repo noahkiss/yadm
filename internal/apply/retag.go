@@ -56,20 +56,135 @@ type Retagged struct {
 // file in $HOME: a new entry for the types and its live bytes (track). A
 // file a glob entry covers is refused.
 func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (Retagged, error) {
+	all, err := e.RetagAll(ctx, []model.Target{t}, opts)
+	if err != nil {
+		return Retagged{}, err
+	}
+	return all.Each[0], nil
+}
+
+// RetaggedAll is several retags as one change.
+type RetaggedAll struct {
+	// Each is one retag per target, in the order asked. Each one's
+	// Changes holds the manifest as that retag left it.
+	Each []Retagged
+	// Sources are the changes that are not a target's new source read by
+	// the gate: the final manifest, the old sources a move removes and the
+	// new sources of entries that do not apply here.
+	Sources []store.Change
+	// Capture holds the new sources of the entries that apply here, one
+	// change per path, so the commit gate reads each live file.
+	Capture Capture
+}
+
+// RetagAll retags several targets on one source head as one change. Each
+// retag sees the manifest and the source tree the earlier ones left, and
+// the result carries one manifest. Any refusal fails the whole call, so
+// nothing is half retagged. A target named twice, or two retags that touch
+// one source path, are refused.
+func (e *Engine) RetagAll(ctx context.Context, ts []model.Target, opts RetagOptions) (RetaggedAll, error) {
 	if len(opts.Types) == 0 {
-		return Retagged{}, errors.New("retag: at least one type is required")
+		return RetaggedAll{}, errors.New("retag: at least one type is required")
+	}
+	if len(ts) == 0 {
+		return RetaggedAll{}, errors.New("retag: at least one path is required")
+	}
+	if len(ts) > 1 && opts.Source != "" {
+		return RetaggedAll{}, fmt.Errorf("retag: %w: --source picks one entry, so it takes one path", ErrBadRequest)
+	}
+	seen := map[model.Target]bool{}
+	for _, t := range ts {
+		if seen[t] {
+			return RetaggedAll{}, fmt.Errorf("retag %s: %w: the path is named twice", t, ErrBadRequest)
+		}
+		seen[t] = true
 	}
 	head, err := e.Store.Head(ctx)
 	if err != nil {
-		return Retagged{}, err
+		return RetaggedAll{}, err
 	}
 	snap, err := e.snapshot(ctx, head)
 	if err != nil {
-		return Retagged{}, err
+		return RetaggedAll{}, err
 	}
 	if snap.Manifest == nil {
-		return Retagged{}, errors.New("retag: snapshot has no manifest")
+		return RetaggedAll{}, errors.New("retag: snapshot has no manifest")
 	}
+	mb, err := e.Store.ReadPath(ctx, head, manifest.FileName)
+	if err != nil {
+		return RetaggedAll{}, err
+	}
+	var out RetaggedAll
+	touched := map[model.SourcePath]model.Target{} // source paths an earlier retag wrote or removed
+	cur := snap
+	for _, t := range ts {
+		r, err := e.retagOn(ctx, head, cur, mb, t, opts)
+		if err != nil {
+			return RetaggedAll{}, err
+		}
+		out.Each = append(out.Each, r)
+		if len(r.Changes) == 0 {
+			continue
+		}
+		next := *cur
+		next.Tree = maps.Clone(cur.Tree)
+		for _, ch := range r.Changes {
+			if ch.Path == manifest.FileName {
+				mb = ch.Blob
+				continue
+			}
+			if prev, ok := touched[ch.Path]; ok {
+				return RetaggedAll{}, fmt.Errorf("retag %s: %w: source %s is also changed by the retag of %s", t, ErrBadRequest, ch.Path, prev)
+			}
+			touched[ch.Path] = t
+			if ch.Delete {
+				delete(next.Tree, ch.Path)
+			} else {
+				next.Tree[ch.Path] = store.TreeEntry{Path: ch.Path, Mode: ch.Mode}
+			}
+		}
+		if len(ts) > 1 {
+			m, err := manifest.Parse(mb)
+			if err != nil {
+				return RetaggedAll{}, fmt.Errorf("retag %s: edited manifest does not parse: %w", t, err)
+			}
+			if err := m.LoadIncludes(func(p model.SourcePath) ([]byte, error) { return e.Store.ReadPath(ctx, head, p) }); err != nil {
+				return RetaggedAll{}, fmt.Errorf("retag %s: %w", t, err)
+			}
+			next.Manifest = m
+		}
+		cur = &next
+	}
+	for _, r := range out.Each {
+		if len(r.Changes) == 0 {
+			continue
+		}
+		last := len(r.Changes) - 1
+		for i, ch := range r.Changes {
+			switch {
+			case ch.Path == manifest.FileName:
+			case i == last && len(r.Paths) > 0:
+				// The target's new source: the gate reads the live file.
+				out.Capture.Changes = append(out.Capture.Changes, ch)
+				out.Capture.Paths = append(out.Capture.Paths, r.Paths...)
+				if out.Capture.Scopes == nil {
+					out.Capture.Scopes = map[model.Target]model.Scope{}
+				}
+				maps.Copy(out.Capture.Scopes, r.Scopes)
+			default:
+				out.Sources = append(out.Sources, ch)
+			}
+		}
+	}
+	if len(out.Sources) > 0 || len(out.Capture.Changes) > 0 {
+		out.Sources = append([]store.Change{{Path: manifest.FileName, Blob: mb, Mode: gitModeFile}}, out.Sources...)
+	}
+	return out, nil
+}
+
+// retagOn is one retag of t on snap at head, with mb as the manifest
+// bytes: the head's own, or what an earlier retag of the same call left.
+func (e *Engine) retagOn(ctx context.Context, head model.CommitID, snap *Snapshot, mb []byte, t model.Target, opts RetagOptions) (Retagged, error) {
 	idx, err := selectEntry(snap.Manifest, t, opts.Source)
 	if err != nil {
 		return Retagged{}, fmt.Errorf("retag %s: %w", t, err)
@@ -83,7 +198,7 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 	}
 	if idx < 0 {
 		when := strings.Join(prefixed("type:", types), " | ")
-		c, err := e.track(ctx, head, snap, t, when, opts.Enclave, "retag")
+		c, err := e.track(ctx, head, snap, mb, t, when, opts.Enclave, "retag")
 		return Retagged{Capture: c, When: when}, err
 	}
 	entry := snap.Manifest.Entries[idx]
@@ -132,10 +247,6 @@ func (e *Engine) Retag(ctx context.Context, t model.Target, opts RetagOptions) (
 		return Retagged{}, fmt.Errorf("retag %s: %w", t, err)
 	}
 
-	mb, err := e.Store.ReadPath(ctx, head, manifest.FileName)
-	if err != nil {
-		return Retagged{}, err
-	}
 	srcLine := ""
 	if entry.Source != "" {
 		srcLine = string(newSrc)
@@ -480,7 +591,7 @@ func (e *Engine) Track(ctx context.Context, t model.Target, opts TrackOptions) (
 			return Capture{}, fmt.Errorf("track %s: %q is not an enclave type", t, opts.Enclave)
 		}
 	}
-	return e.track(ctx, head, snap, t, opts.When, opts.Enclave, "track")
+	return e.track(ctx, head, snap, nil, t, opts.When, opts.Enclave, "track")
 }
 
 // ErrCovered reports a path that a manifest entry, glob or owned root
@@ -491,7 +602,8 @@ var ErrCovered = errors.New("already covered")
 // captures the live bytes into its source, in one change. A file a glob
 // entry already produces is refused: edit the manifest. verb names the
 // command in errors.
-func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, t model.Target, when string, enc model.EnclaveName, verb string) (Capture, error) {
+// mb is the manifest to add the entry to; nil reads the head's.
+func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot, mb []byte, t model.Target, when string, enc model.EnclaveName, verb string) (Capture, error) {
 	for _, en := range snap.Manifest.Entries {
 		if manifest.IsGlob(string(en.Target)) && manifest.Match(string(en.Target), string(t)) {
 			return Capture{}, fmt.Errorf("%s %s: %w: glob entry %q covers it, so a second entry would collide; where it applies, capture the file under that entry with yadm commit %s; otherwise edit the manifest", verb, t, ErrCovered, en.Target, model.ShellQuote(string(t)))
@@ -517,9 +629,10 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 	case !lv.exists || !lv.info.Mode().IsRegular():
 		return Capture{}, fmt.Errorf("%s %s: %w: no manifest entry names it, and it is not a regular file in $HOME to track", verb, t, ErrNotFile)
 	}
-	mb, err := e.Store.ReadPath(ctx, head, manifest.FileName)
-	if err != nil {
-		return Capture{}, err
+	if mb == nil {
+		if mb, err = e.Store.ReadPath(ctx, head, manifest.FileName); err != nil {
+			return Capture{}, err
+		}
 	}
 	var add strings.Builder
 	if len(mb) > 0 && mb[len(mb)-1] != '\n' {

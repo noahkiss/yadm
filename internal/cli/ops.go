@@ -953,7 +953,7 @@ func (a *app) cmdReviewNote(cmd *cobra.Command, args []string) (result, error) {
 			}
 		}
 		if err == nil {
-			d.Pushed, err = sync.PushNotes(ctx, m.repo, m.lock(0), sync.FileNetLock(m.paths.State))
+			d.Pushed, err = sync.PushNotes(ctx, m.repo, m.lock(cmdWait), sync.FileNetLock(m.paths.State))
 		}
 		if err != nil {
 			d.PushError = err.Error()

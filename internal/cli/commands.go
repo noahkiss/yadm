@@ -76,7 +76,8 @@ func (a *app) register(root *cobra.Command) {
 	lg.Args = cobra.MaximumNArgs(1)
 	lg.Flags().IntP("max-count", "n", 50, "show at most this many commits")
 	lg.Flags().BoolP("patch", "p", false, "show plaintext diffs (not implemented)")
-	rt := exact(leaf(root, "retag <path> <type>[,<type>...]", "Change which types receive a path, resealing as needed", a.cmdRetag), 2)
+	rt := leaf(root, "retag <path>... <type>[,<type>...]", "Change which types receive one or more paths, resealing as needed, in one commit", a.cmdRetag)
+	rt.Args = cobra.MinimumNArgs(2)
 	rt.Flags().String("enclave", "", "seal for this enclave; empty stores plaintext")
 	rt.Flags().String("source", "", "pick one of several entries for the path by its source (files/... or sealed/<enclave>/...)")
 	rt.Flags().Bool("dry-run", false, "plan only")
@@ -837,7 +838,13 @@ func (a *app) cmdSync(cmd *cobra.Command, args []string) (result, error) {
 		return notInit(err), err
 	}
 	_, _ = m.load(ctx)
-	rep, err := m.syncer(a.version).Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries, Quick: (quick || auto) && !full})
+	s := m.syncer(a.version)
+	if auto {
+		// The timer keeps its short wait: the next tick does what this
+		// one could not, and waits must not stack up behind a long hold.
+		s = m.syncerWait(a.version, m.timerWait())
+	}
+	rep, err := s.Run(ctx, sync.Options{Auto: auto, Push: !noPush, DryRun: dry, MaxRetries: sync.DefaultMaxRetries, Quick: (quick || auto) && !full})
 	// A sync run by hand repairs a schedule launchd stopped running; the
 	// scheduled run never does.
 	healed := ""
@@ -966,12 +973,13 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return notInit(err), err
 	}
-	t, err := target(m.home, args[0])
+	paths, typeArg := args[:len(args)-1], args[len(args)-1]
+	ts, err := targets(m.home, paths)
 	if err != nil {
 		return result{}, err
 	}
 	var types []model.TypeName
-	for _, s := range strings.Split(args[1], ",") {
+	for _, s := range strings.Split(typeArg, ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			types = append(types, model.TypeName(s))
 		}
@@ -979,17 +987,107 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 	if len(types) == 0 {
 		return result{}, usagef("retag needs at least one type")
 	}
-	var c apply.Retagged
+	ropts := apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), Source: model.SourcePath(source), DryRun: dry}
+	refused := func(err error) (result, error) {
+		switch {
+		case errors.Is(err, apply.ErrVariants) || errors.Is(err, cond.ErrRetype):
+			next := make([]string, len(ts))
+			for i, t := range ts {
+				next[i] = "yadm why " + model.ShellQuote(string(t))
+			}
+			return result{next: next}, usagef("%v", err)
+		case errors.Is(err, apply.ErrBadRequest):
+			return result{}, usagef("%v", err)
+		}
+		return lockedResult(err), err
+	}
+	// The first pass refuses a retag before any network step and serves a
+	// dry run. The commit computes it again under its own hold of the
+	// lock, on the main it lands on.
+	var c apply.RetaggedAll
 	if err := m.locked(ctx, func() error {
 		var err error
-		c, err = m.eng.Retag(ctx, t, apply.RetagOptions{Types: types, Enclave: model.EnclaveName(enclave), Source: model.SourcePath(source), DryRun: dry})
+		c, err = m.eng.RetagAll(ctx, ts, ropts)
 		return err
 	}); err != nil {
-		if errors.Is(err, apply.ErrVariants) || errors.Is(err, cond.ErrRetype) {
-			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
-		}
-		return result{}, err
+		return refused(err)
 	}
+	if len(ts) == 1 {
+		return a.retagOne(ctx, m, ts[0], typeArg, ropts, c, enclave, dry)
+	}
+	var holds []model.Hold
+	each := func(c apply.RetaggedAll) []map[string]any {
+		out := make([]map[string]any, len(c.Each))
+		for i, r := range c.Each {
+			out[i] = map[string]any{"target": ts[i], "removed_on": removedOn(m.snap, ts[i], r.Source, r.OldWhen, r.When), "source": r.NewSource, "when": r.When}
+		}
+		return out
+	}
+	for _, r := range c.Each {
+		holds = append(holds, r.Holds...)
+	}
+	data := map[string]any{"commit": "", "retagged": each(c), "holds": withHoldNext(holds)}
+	if dry || len(c.Sources) == 0 {
+		return result{data: data}, attention(holds)
+	}
+	scope := model.ScopeShared
+	if enclave != "" {
+		scope = model.Scope(enclave)
+	}
+	subject := fmt.Sprintf("retag %d paths: %s", len(ts), typeArg)
+	if len(ts) <= 3 {
+		subject = fmt.Sprintf("retag %s: %s", joinTargets(ts), typeArg)
+	}
+	opts := sync.CommitOptions{
+		Message: subject, ChangesScope: scope, Atomic: true, Push: true,
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			r, err := m.eng.RetagAll(ctx, ts, ropts)
+			if err != nil {
+				return nil, nil, err
+			}
+			if c = r; len(c.Sources) == 0 {
+				return nil, nil, nil
+			}
+			cp := c.Capture
+			return &cp, c.Sources, nil
+		},
+	}
+	rep, pushErr, err := m.commitThrough(ctx, a.version, opts)
+	data["retagged"] = each(c)
+	if pushErr != nil {
+		data["push_error"] = pushErr.Error()
+	}
+	if err != nil {
+		if res, rerr := refused(err); errors.Is(rerr, errUsage) {
+			return res, rerr
+		}
+		return result{data: data}, err
+	}
+	if len(c.Sources) == 0 {
+		return result{data: data}, attention(holds)
+	}
+	id, err := m.landed(ctx, rep, manifest.FileName)
+	data["commit"] = id
+	named := map[model.Target]bool{}
+	for _, t := range ts {
+		named[t] = true
+	}
+	for _, h := range rep.Holds {
+		if named[h.Target] {
+			holds = append(holds, h) // other holds on this machine are not the retag's
+		}
+	}
+	data["holds"] = withHoldNext(holds)
+	if err != nil {
+		return result{data: data}, err
+	}
+	return result{data: data, text: "committed " + short(id)}, attention(holds)
+}
+
+// retagOne is a retag of one path: its envelope names the path's source,
+// when and removed_on at the top level.
+func (a *app) retagOne(ctx context.Context, m *machineEnv, t model.Target, typeArg string, ropts apply.RetagOptions, all apply.RetaggedAll, enclave string, dry bool) (result, error) {
+	c := all.Each[0]
 	removed := removedOn(m.snap, t, c.Source, c.OldWhen, c.When)
 	data := map[string]any{"commit": "", "removed_on": removed, "holds": withHoldNext(c.Holds), "source": c.NewSource, "when": c.When}
 	if dry || len(c.Changes) == 0 {
@@ -1000,24 +1098,39 @@ func (a *app) cmdRetag(cmd *cobra.Command, args []string) (result, error) {
 		scope = model.Scope(enclave)
 	}
 	opts := sync.CommitOptions{
-		Message: fmt.Sprintf("retag %s: %s", t, args[1]), Capture: &apply.Capture{},
-		Changes: c.Changes, ChangesScope: scope, Atomic: true, Push: true,
-	}
-	if len(c.Paths) > 0 {
-		// The last change is the target's new source: the gate reads the
-		// target. The manifest edit and the old source's removal commit
-		// with it. Without Paths the entry does not apply here, and every
-		// change commits as a source change.
-		last := len(c.Changes) - 1
-		opts.Capture = &apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
-		opts.Changes = c.Changes[:last]
+		Message: fmt.Sprintf("retag %s: %s", t, typeArg), ChangesScope: scope, Atomic: true, Push: true,
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			// The last change is the target's new source: the gate reads
+			// the target. The manifest edit and the old source's removal
+			// commit with it. Without Paths the entry does not apply here,
+			// and every change commits as a source change.
+			r, err := m.eng.Retag(ctx, t, ropts)
+			if err != nil {
+				return nil, nil, err
+			}
+			if c = r; len(c.Changes) == 0 {
+				return nil, nil, nil
+			}
+			if len(c.Paths) == 0 {
+				return &apply.Capture{}, c.Changes, nil
+			}
+			last := len(c.Changes) - 1
+			return &apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}, c.Changes[:last], nil
+		},
 	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, opts)
+	data["removed_on"], data["source"], data["when"] = removedOn(m.snap, t, c.Source, c.OldWhen, c.When), c.NewSource, c.When
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()
 	}
 	if err != nil {
+		if errors.Is(err, apply.ErrVariants) || errors.Is(err, cond.ErrRetype) {
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
+		}
 		return result{data: data}, err
+	}
+	if len(c.Changes) == 0 {
+		return result{data: data}, attention(c.Holds)
 	}
 	id, err := m.landed(ctx, rep, manifest.FileName)
 	data["commit"] = id
@@ -1079,12 +1192,20 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	data := map[string]any{"target": t, "source": "", "scope": scope, "commit": "", "pushed": false, "holds": []model.Hold{}}
 	// The last change is the file's source: the gate reads the target. The
 	// manifest edit commits with it.
-	last := len(c.Changes) - 1
-	data["source"] = c.Changes[last].Path
-	src := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
+	data["source"] = c.Changes[len(c.Changes)-1].Path
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
-		Message: "track " + string(t), Capture: &src,
-		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: !noPush,
+		Message: "track " + string(t), ChangesScope: scope, Atomic: true, Push: !noPush,
+		// Computed again under the commit's hold of the lock, on the main
+		// it lands on: a manifest edit from before a wait would undo what
+		// the process it waited for committed.
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			c, err := m.eng.Track(ctx, t, apply.TrackOptions{When: when, Enclave: model.EnclaveName(enclave)})
+			if err != nil {
+				return nil, nil, err
+			}
+			last := len(c.Changes) - 1
+			return &apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}, c.Changes[:last], nil
+		},
 	})
 	if pushErr != nil {
 		data["push_error"] = pushErr.Error()

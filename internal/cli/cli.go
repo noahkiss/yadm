@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -161,10 +162,39 @@ type app struct {
 
 func (a *app) wrap(name string, fn runFunc) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
+		w, err := a.lockWait(cmd)
+		if err != nil {
+			a.emit(name, result{}, err)
+			return nil
+		}
+		cmd.SetContext(withLockWait(cmd.Context(), w))
 		res, err := fn(cmd, args)
 		a.emit(name, res, err)
 		return nil
 	}
+}
+
+// lockWait reads the command's wait for the sync lock: --lock-wait, else
+// $YADM_LOCK_WAIT, else the default (hooks.lockWait).
+func (a *app) lockWait(cmd *cobra.Command) (*lockWait, error) {
+	w := &lockWait{}
+	if !a.json {
+		w.stderr = a.stderr // --json keeps stderr empty
+	}
+	if f := cmd.Flags().Lookup("lock-wait"); f != nil && f.Changed {
+		d, err := cmd.Flags().GetDuration("lock-wait")
+		if err != nil || d < 0 {
+			return nil, usagef("--lock-wait %q: want a duration such as 5m, or 0 to not wait", f.Value.String())
+		}
+		w.d, w.set = d, true
+	} else if v := os.Getenv(LockWaitEnv); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return nil, usagef("$%s %q: want a duration such as 5m, or 0 to not wait", LockWaitEnv, v)
+		}
+		w.d, w.set = d, true
+	}
+	return w, nil
 }
 
 func (a *app) emit(name string, res result, err error) {
@@ -220,6 +250,7 @@ func (a *app) root() *cobra.Command {
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print one JSON envelope on stdout")
 	root.PersistentFlags().Bool("interactive", false, "allow prompts (no command prompts without it)")
+	root.PersistentFlags().Duration("lock-wait", sync.CommandLockTimeout, "how long a command waits for another yadm process's lock before it exits 4; 0 does not wait (or $"+LockWaitEnv+")")
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {

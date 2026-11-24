@@ -52,11 +52,15 @@
 //	defer                          deferred.json in the state directory; review list shows it
 //	protection allow, root allow   apply.Engine.AllowProtection / AllowRoot, then Apply
 //	log                            store.Log + crypt.Set + textmerge.Diff
-//	retag                          apply.Engine.Retag, committed through sync.Commit (Capture + Changes; Changes
-//	                               alone when the picked entry does not apply here)
+//	retag                          apply.Engine.RetagAll (one or more paths), committed once through sync.Commit
+//	                               (Capture + Changes; Changes alone when the picked entry does not apply here)
 //	source mv                      apply.Engine.MoveSource, committed through sync.Commit (Changes, Atomic)
 //	untrack                        apply.Engine.Untrack, committed through sync.Commit (Changes, Atomic, Forget)
 //	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`
+//	                               retag, track, untrack and source mv check their change under the lock, then
+//	                               compute it again in CommitOptions.Build, on the main the commit lands on
+//	--lock-wait, $YADM_LOCK_WAIT   a command's wait for the sync lock (default sync.CommandLockTimeout; one stderr
+//	                               line names the holder); sync --auto waits at most sync.LockTimeout
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status

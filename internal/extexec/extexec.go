@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,11 +80,17 @@ type Spec struct {
 	Timeout time.Duration
 }
 
+// EnvParentPID names the pid of the yadm process that runs an external
+// execution. A yadm command run from a task or check that finds the sync
+// lock held by that pid fails at once instead of waiting on its parent.
+const EnvParentPID = "YADM_PARENT_PID"
+
 // Env returns the environment variables every external execution gets:
 // YADM_KIND, YADM_NAME, YADM_MACHINE (id), YADM_MACHINE_NAME, YADM_TYPES
 // (comma-separated), YADM_OS, YADM_ARCH, YADM_HOME, YADM_SOURCE,
-// YADM_COMMIT, YADM_JSON=1, and YADM_FACT_<KEY> for each declared fact (key
-// upper-cased, non-alphanumerics as "_").
+// YADM_COMMIT, YADM_JSON=1, YADM_PARENT_PID (EnvParentPID), and
+// YADM_FACT_<KEY> for each declared fact (key upper-cased, non-alphanumerics
+// as "_").
 func Env(req Request) []string {
 	m := req.Machine
 	types := make([]string, len(m.Types))
@@ -102,6 +109,7 @@ func Env(req Request) []string {
 		"YADM_SOURCE=" + req.Source,
 		"YADM_COMMIT=" + string(req.Commit),
 		"YADM_JSON=1",
+		EnvParentPID + "=" + strconv.Itoa(os.Getpid()),
 	}
 	keys := make([]string, 0, len(m.Facts))
 	for k := range m.Facts {

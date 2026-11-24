@@ -32,6 +32,7 @@ func hermetic(t *testing.T) {
 	t.Setenv("GIT_COMMITTER_EMAIL", "user@example.invalid")
 	t.Setenv("USER", "user")
 	t.Setenv(schedule.LiveEnv, "")
+	t.Setenv(LockWaitEnv, "")
 	for _, k := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)

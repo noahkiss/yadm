@@ -7,8 +7,8 @@
 //   - The tool runs argv directly (no shell) with a timeout, in the user's
 //     $HOME, with stdin set to one JSON Request.
 //   - The environment adds the machine's id, name, types, os, arch and declared
-//     facts, plus home, source and commit (see Env), so a plain shell script
-//     can ignore stdin.
+//     facts, plus home, source, commit and the running yadm's pid
+//     (EnvParentPID; see Env), so a plain shell script can ignore stdin.
 //   - On exit 0, stdout is read as one JSON Response when its first non-space
 //     byte is '{'. Otherwise each non-empty stdout line is one item; items are
 //     trimmed, sorted and de-duplicated (the normalized collector form).

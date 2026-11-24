@@ -7,7 +7,7 @@
       "yadm fleet show",
       "yadm fleet status"
     ],
-    "flags": "  -h, --help          help for fleet\n      --interactive   allow prompts (no command prompts without it)\n      --json          print one JSON envelope on stdout\n",
+    "flags": "  -h, --help                 help for fleet\n      --interactive          allow prompts (no command prompts without it)\n      --json                 print one JSON envelope on stdout\n      --lock-wait duration   how long a command waits for another yadm process's lock before it exits 4; 0 does not wait (or $YADM_LOCK_WAIT) (default 3m0s)\n",
     "short": "Machines, their status refs and observed facts",
     "usage": "yadm fleet [flags]"
   },

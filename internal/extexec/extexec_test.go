@@ -56,7 +56,8 @@ func TestRunRequestEnvAndLines(t *testing.T) {
 	env, _ := os.ReadFile(filepath.Join(home, "env.txt"))
 	for _, want := range []string{"YADM_KIND=collector", "YADM_NAME=packages", "YADM_MACHINE=m-a1b2c3",
 		"YADM_MACHINE_NAME=host-a", "YADM_TYPES=personal,work", "YADM_OS=darwin", "YADM_ARCH=arm64",
-		"YADM_HOME=" + home, "YADM_COMMIT=abc123", "YADM_JSON=1", "YADM_FACT_EDITOR=editor-one", "YADM_FACT_MY_KEY_X=v"} {
+		"YADM_HOME=" + home, "YADM_COMMIT=abc123", "YADM_JSON=1", "YADM_FACT_EDITOR=editor-one", "YADM_FACT_MY_KEY_X=v",
+		EnvParentPID + "=" + strconv.Itoa(os.Getpid())} {
 		if !strings.Contains(string(env), want+"\n") {
 			t.Errorf("env lacks %s", want)
 		}

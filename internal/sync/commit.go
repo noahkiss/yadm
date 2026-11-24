@@ -462,6 +462,16 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err := s.heldError(pv); err != nil && !opts.DryRun {
 		return rep, err
 	}
+	if opts.Build != nil {
+		cp, changes, err := opts.Build(ctx)
+		if err != nil {
+			return rep, err
+		}
+		if cp == nil && len(changes) == 0 {
+			return rep, nil
+		}
+		opts.Capture, opts.Changes = cp, changes
+	}
 	if opts.Resolve && opts.Capture == nil {
 		// Resolve against the current main, not a stale local head: when
 		// several machines resolve in turn, each settles over the last.

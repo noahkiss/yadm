@@ -173,7 +173,7 @@ func TestTaskOutputsAreGenerated(t *testing.T) {
 	if len(gen) != 2 || gen[0] != ".config/agent/gen/a.json" || gen[1] != ".config/agent/hooks.json" {
 		t.Fatalf("Generated = %v", gen)
 	}
-	if _, err := w.eng.track(ctx, c, mustSnap(t, w, c), ".config/agent/hooks.json", "type:work", "", "retag"); err == nil || !strings.Contains(err.Error(), "outputs") {
+	if _, err := w.eng.track(ctx, c, mustSnap(t, w, c), nil, ".config/agent/hooks.json", "type:work", "", "retag"); err == nil || !strings.Contains(err.Error(), "outputs") {
 		t.Fatalf("retag of a generated file: %v", err)
 	}
 }

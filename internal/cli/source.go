@@ -11,6 +11,7 @@ import (
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 )
 
@@ -42,8 +43,15 @@ func (a *app) cmdSourceMv(cmd *cobra.Command, args []string) (result, error) {
 		return result{data: data}, nil
 	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
-		Message: fmt.Sprintf("move %s to %s", from, to), Capture: &apply.Capture{},
-		Changes: mv.Changes, ChangesScope: mv.Scope, Atomic: true, Push: !noPush,
+		Message: fmt.Sprintf("move %s to %s", from, to), ChangesScope: mv.Scope, Atomic: true, Push: !noPush,
+		// Computed again on the main the commit lands on (see track).
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			mv, err := m.eng.MoveSource(ctx, from, to)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &apply.Capture{}, mv.Changes, nil
+		},
 	})
 	return a.landedResult(ctx, m, data, rep, pushErr, err, manifest.FileName)
 }
@@ -91,8 +99,15 @@ func (a *app) cmdUntrack(cmd *cobra.Command, args []string) (result, error) {
 		return result{data: data}, nil
 	}
 	opts2 := sync.CommitOptions{
-		Message: "untrack " + string(u.Target), Capture: &apply.Capture{},
-		Changes: u.Changes, ChangesScope: u.Scope, Atomic: true, Push: !noPush,
+		Message: "untrack " + string(u.Target), ChangesScope: u.Scope, Atomic: true, Push: !noPush,
+		// Computed again on the main the commit lands on (see track).
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			u, err := m.eng.Untrack(ctx, t, opts)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &apply.Capture{}, u.Changes, nil
+		},
 	}
 	if u.Here {
 		opts2.Forget = []model.Target{u.Target}

@@ -8,8 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/noahkiss/yadm/internal/extexec"
 )
 
 // lockPoll is how often a waiting Acquire retries the lock.
@@ -32,6 +35,12 @@ const (
 
 // ErrLocked means another yadm process holds the sync lock.
 var ErrLocked = errors.New("another yadm process holds the lock")
+
+// ErrSelfLocked means the sync lock is held by the yadm process that runs
+// this one as a task, check, collector or extension (extexec.EnvParentPID).
+// Waiting would wait on itself, so Acquire fails at once. It matches
+// ErrLocked too.
+var ErrSelfLocked = errors.New("the sync lock is held by the yadm process that runs this command; a task, check or collector cannot take it")
 
 // ErrNetBusy means another yadm process holds the network lock. A caller
 // that meets it skips its network step; the next sync does it.
@@ -56,6 +65,12 @@ type LockedError struct {
 }
 
 func (e *LockedError) Error() string {
+	if e.Cause == ErrSelfLocked {
+		if h := e.Holder; h != nil {
+			return fmt.Sprintf("%s (pid %d, %s)", ErrSelfLocked, h.PID, h.Command)
+		}
+		return ErrSelfLocked.Error()
+	}
 	base := ErrLocked.Error()
 	if e.Lock == LockNetwork {
 		base = ErrNetBusy.Error()
@@ -149,9 +164,17 @@ func FileLock(stateDir string) Lock {
 	return fileLock{dir: stateDir, file: LockFile, timeout: LockTimeout}
 }
 
-// FileLockTimeout is FileLock with another bound on the wait.
+// FileLockTimeout is FileLock with another bound on the wait. A bound of 0
+// tries once and does not wait.
 func FileLockTimeout(stateDir string, d time.Duration) Lock {
 	return fileLock{dir: stateDir, file: LockFile, timeout: d}
+}
+
+// FileLockWait is FileLockTimeout that calls onWait once, before its first
+// wait, with the holder record (nil: unknown) and the bound. A command uses
+// it to say what it waits for.
+func FileLockWait(stateDir string, d time.Duration, onWait func(h *Holder, d time.Duration)) Lock {
+	return fileLock{dir: stateDir, file: LockFile, timeout: d, onWait: onWait}
 }
 
 // NetLock serializes network calls on one machine. TryAcquire never waits:
@@ -168,6 +191,7 @@ type fileLock struct {
 	dir     string
 	file    string
 	timeout time.Duration
+	onWait  func(*Holder, time.Duration)
 }
 
 func (l fileLock) name() string {
@@ -203,7 +227,7 @@ func (l fileLock) Acquire(ctx context.Context) (func(), error) {
 		return nil, err
 	}
 	deadline := time.Now().Add(l.timeout)
-	for {
+	for first := true; ; first = false {
 		ok, err := tryLock(f)
 		if err != nil {
 			f.Close()
@@ -211,6 +235,16 @@ func (l fileLock) Acquire(ctx context.Context) (func(), error) {
 		}
 		if ok {
 			return l.hold(f), nil
+		}
+		if first {
+			h := readHolder(filepath.Join(l.dir, l.file))
+			if l.file == LockFile && ownHolder(h) {
+				f.Close()
+				return nil, &LockedError{Lock: l.name(), Holder: h, Cause: ErrSelfLocked}
+			}
+			if l.onWait != nil && l.timeout > 0 {
+				l.onWait(h, l.timeout)
+			}
 		}
 		if !time.Now().Before(deadline) {
 			f.Close()
@@ -223,6 +257,19 @@ func (l fileLock) Acquire(ctx context.Context) (func(), error) {
 		case <-time.After(lockPoll):
 		}
 	}
+}
+
+// ownHolder reports whether h is the yadm process that runs this one as a
+// task, check, collector or extension (extexec.EnvParentPID names it): a
+// wait for it would only end at the bound, since that process waits for
+// this one. Within one process, no code path takes the lock while it holds
+// it; a goroutine that holds it is a holder like any other.
+func ownHolder(h *Holder) bool {
+	if h == nil {
+		return false
+	}
+	pid, err := strconv.Atoi(os.Getenv(extexec.EnvParentPID))
+	return err == nil && pid > 0 && pid == h.PID
 }
 
 func (l fileLock) open() (*os.File, error) {

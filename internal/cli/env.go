@@ -71,7 +71,7 @@ var hooks = struct {
 		}
 		return nil
 	},
-	lockWait: sync.LockTimeout,
+	lockWait: sync.CommandLockTimeout,
 	sleep: func(ctx context.Context, d time.Duration) error {
 		select {
 		case <-ctx.Done():
@@ -99,6 +99,63 @@ type machineEnv struct {
 	exec  extexec.Runner
 	allow tasks.AllowList
 	snap  *apply.Snapshot // set by load
+	wait  *lockWait       // the command's lock wait; nil: hooks.lockWait, silent
+}
+
+// LockWaitEnv overrides an interactive command's wait for the sync lock
+// (a Go duration; "0" does not wait). --lock-wait overrides it.
+const LockWaitEnv = "YADM_LOCK_WAIT"
+
+// lockWait is a command's wait for the sync lock and the line it prints
+// once, on stderr, before it waits.
+type lockWait struct {
+	d      time.Duration
+	set    bool // --lock-wait or $YADM_LOCK_WAIT chose d
+	stderr io.Writer
+	once   gosync.Once
+}
+
+type lockWaitKey struct{}
+
+// withLockWait returns ctx carrying the command's lock wait.
+func withLockWait(ctx context.Context, w *lockWait) context.Context {
+	return context.WithValue(ctx, lockWaitKey{}, w)
+}
+
+// note prints the one line that says what the command waits for.
+func (w *lockWait) note(h *sync.Holder, d time.Duration) {
+	if w == nil || w.stderr == nil {
+		return
+	}
+	w.once.Do(func() {
+		who := "another yadm process"
+		if h != nil {
+			who = fmt.Sprintf("pid %d (%s, held %s)", h.PID, h.Command, shortDuration(time.Since(h.Since).Round(time.Second)))
+		}
+		fmt.Fprintf(w.stderr, "yadm: waiting up to %s for the yadm lock held by %s…\n", shortDuration(d), who)
+	})
+}
+
+// cmdWait asks lock for the command's own wait: --lock-wait, else
+// $YADM_LOCK_WAIT, else hooks.lockWait.
+const cmdWait time.Duration = -1
+
+// commandWait is the bound an interactive command waits for the sync lock.
+func (m *machineEnv) commandWait() time.Duration {
+	if m.wait != nil && m.wait.set {
+		return m.wait.d
+	}
+	return hooks.lockWait
+}
+
+// timerWait is the bound `sync --auto` waits for the sync lock: at most
+// sync.LockTimeout unless --lock-wait or $YADM_LOCK_WAIT says otherwise.
+// The next tick does what a skipped one left.
+func (m *machineEnv) timerWait() time.Duration {
+	if m.wait != nil && m.wait.set {
+		return m.wait.d
+	}
+	return min(sync.LockTimeout, hooks.lockWait)
 }
 
 func homeAndUser() (string, string, error) {
@@ -181,6 +238,7 @@ func open(ctx context.Context) (*machineEnv, error) {
 	ex := hooks.exec()
 	allow := tasks.FileAllowList(p.State)
 	m := &machineEnv{paths: p, home: home, user: usr, local: local, id: id, repo: repo, exec: ex, allow: allow}
+	m.wait, _ = ctx.Value(lockWaitKey{}).(*lockWait)
 	m.eng = apply.New(apply.Deps{
 		Store:    repo,
 		Self:     local.Machine,
@@ -284,18 +342,19 @@ func policy(s *apply.Snapshot) sync.Policy {
 	return p
 }
 
-// lock is the sync lock with the command's bounded wait.
+// lock is the sync lock with a bounded wait: wait itself, or with cmdWait
+// the command's wait, which says on stderr what it waits for.
 func (m *machineEnv) lock(wait time.Duration) sync.Lock {
-	if wait <= 0 {
-		wait = hooks.lockWait
+	if wait >= 0 {
+		return sync.FileLockTimeout(m.paths.State, wait)
 	}
-	return sync.FileLockTimeout(m.paths.State, wait)
+	return sync.FileLockWait(m.paths.State, m.commandWait(), m.wait.note)
 }
 
 // locked runs fn under the sync lock, so apply, capture, collect and
 // enclave writes never interleave with a sync or a commit.
 func (m *machineEnv) locked(ctx context.Context, fn func() error) error {
-	release, err := m.lock(0).Acquire(ctx)
+	release, err := m.lock(cmdWait).Acquire(ctx)
 	if err != nil {
 		return err
 	}
@@ -312,7 +371,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Status:   store.StatusRefs(m.repo, m.local.Machine),
 		Exec:     m.exec,
 		Identity: m.local,
-		Lock:     m.lock(0),
+		Lock:     m.lock(cmdWait),
 		NetLock:  sync.FileNetLock(m.paths.State),
 		Leases:   sync.FileLeases(m.paths.State),
 		Policy:   policy(m.snap),
@@ -342,7 +401,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 // after the commit landed comes back as pushErr: the commit stands and the
 // next sync pushes it.
 func (m *machineEnv) commitThrough(ctx context.Context, version string, opts sync.CommitOptions) (rep sync.Report, pushErr, err error) {
-	return m.hookCommit(ctx, version, opts, 0)
+	return m.hookCommit(ctx, version, opts, cmdWait)
 }
 
 // selfStatus is this machine's last published status record, or nil.
