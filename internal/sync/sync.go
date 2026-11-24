@@ -967,9 +967,10 @@ func (s *Syncer) pushSpecs(ctx context.Context, tip, remote model.CommitID) ([]s
 	} else if sp != "" {
 		specs = append(specs, sp)
 	}
-	if ps, err := pause.Spec(ctx, s.Store); err != nil {
-		return nil, err
-	} else if ps != "" {
+	// The pause ref never stops main from going out: a failure here leaves
+	// the record for the next sync.
+	_ = pause.Restage(ctx, s.Store, s.now())
+	if ps, err := pause.Spec(ctx, s.Store); err == nil && ps != "" {
 		specs = append(specs, ps)
 	}
 	more, err := s.reviewedSpecs(ctx)

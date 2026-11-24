@@ -7,6 +7,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/noahkiss/yadm/internal/crypt"
+	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
@@ -15,25 +17,41 @@ import (
 // PauseNetWait bounds how long PublishPause waits for the network lock.
 const PauseNetWait = 15 * time.Second
 
-// Signers returns the signers this machine trusts for pause records: the
-// members of the key logs it has pinned, at rev. A source that does not
-// load gives none.
-func (s *Syncer) Signers(ctx context.Context, rev model.CommitID) pause.Signers {
-	if rev == "" || s.Apply == nil {
-		return pause.Signers{}
+// Trust returns who may pause here: the machines in fleet.toml at rev, the
+// members of the key logs this machine pinned, and whether fleet.toml
+// requires a member's signature. A source that does not load gives the
+// fallback fleet file and no members.
+func (s *Syncer) Trust(ctx context.Context, rev model.CommitID) pause.Trust {
+	f := s.Fleet
+	var loads map[model.EnclaveName]crypt.EnclaveLoad
+	if rev != "" {
+		if snap, err := s.load(ctx, rev); err == nil {
+			if snap.Fleet != nil {
+				f = snap.Fleet
+			}
+			loads = snap.Enclaves
+		}
 	}
-	snap, err := s.load(ctx, rev)
-	if err != nil {
-		return pause.Signers{}
+	return pause.NewTrust(FleetIDs(f), loads, s.Apply.Pins, f != nil && f.PauseRequires == fleet.PauseMember)
+}
+
+// FleetIDs lists the machines of a fleet file.
+func FleetIDs(f *fleet.File) []model.MachineID {
+	if f == nil {
+		return nil
 	}
-	return pause.TrustedSigners(snap.Enclaves, s.Apply.Pins)
+	out := make([]model.MachineID, 0, len(f.Machines))
+	for id := range f.Machines {
+		out = append(out, id)
+	}
+	return out
 }
 
 // evalPause evaluates the pause ref against the key logs at rev and keeps
 // the view for publish. With save it records what it accepted; the caller
 // then holds the sync lock.
 func (s *Syncer) evalPause(ctx context.Context, rev model.CommitID, save bool) (pause.View, error) {
-	v, err := pause.Evaluate(ctx, s.Store, s.Apply.StateDir, s.self(), s.Signers(ctx, rev), s.now(), save)
+	v, err := pause.Evaluate(ctx, s.Store, s.Apply.StateDir, s.self(), s.Trust(ctx, rev), s.now(), save)
 	if err != nil {
 		return v, fmt.Errorf("pause: %w", err)
 	}
@@ -55,10 +73,10 @@ func (s *Syncer) heldError(v pause.View) error {
 }
 
 // pauseFields are the status-record fields of the run's pause view.
-func (s *Syncer) pauseFields() (until *time.Time, id string, ignored []model.PauseIgnored) {
+func (s *Syncer) pauseFields() (until *time.Time, id string, verified bool, ignored []model.PauseIgnored) {
 	v := s.pauseView
 	if v == nil {
-		return nil, "", nil
+		return nil, "", false, nil
 	}
 	a := v.Holding(s.self())
 	if a == nil && len(v.Active) > 0 {
@@ -66,20 +84,20 @@ func (s *Syncer) pauseFields() (until *time.Time, id string, ignored []model.Pau
 	}
 	if a != nil {
 		t := a.Until.UTC()
-		until, id = &t, a.ID
+		until, id, verified = &t, a.ID, a.Verified
 	}
 	for _, x := range v.Ignored {
 		ignored = append(ignored, model.PauseIgnored{ID: x.ID, Why: x.Why})
 	}
-	return until, id, ignored
+	return until, id, verified, ignored
 }
 
 // samePause reports whether a status record already carries these fields.
-func samePause(last *model.Status, until *time.Time, id string, ignored []model.PauseIgnored) bool {
+func samePause(last *model.Status, until *time.Time, id string, verified bool, ignored []model.PauseIgnored) bool {
 	if last == nil {
 		return until == nil && id == "" && len(ignored) == 0
 	}
-	if last.PauseID != id || (last.PausedUntil == nil) != (until == nil) {
+	if last.PauseID != id || last.PauseVerified != verified || (last.PausedUntil == nil) != (until == nil) {
 		return false
 	}
 	if until != nil && !last.PausedUntil.Equal(*until) {
@@ -191,8 +209,17 @@ func (s *Syncer) PublishPause(ctx context.Context, recs []pause.Record) (pushed 
 			return false, fetchErr
 		}
 		spec, err := pause.Spec(ctx, s.Store)
-		if err != nil || spec == "" {
+		if err != nil {
 			return false, err
+		}
+		if spec == "" {
+			// Nothing new to push: the remote already holds the record.
+			local, err := s.Store.ResolveRef(ctx, pause.Ref)
+			if err != nil {
+				return false, err
+			}
+			remote, err := s.Store.ResolveRef(ctx, pause.RemoteRef)
+			return err == nil && local == remote, err
 		}
 		err = onNet(func() error { return s.Store.Push(ctx, []string{spec}) })
 		if err == nil {
@@ -237,23 +264,23 @@ func (s *Syncer) FetchRefs(ctx context.Context) error {
 // EvalPause evaluates the pause ref at local main under the sync lock and
 // records what it accepted. Commands that write a pause or a resume use it
 // before and after the write.
-func (s *Syncer) EvalPause(ctx context.Context) (pause.View, pause.Signers, error) {
+func (s *Syncer) EvalPause(ctx context.Context) (pause.View, pause.Trust, error) {
 	if err := s.check(); err != nil {
-		return pause.View{}, nil, err
+		return pause.View{}, pause.Trust{}, err
 	}
 	defer s.begin()()
 	release, err := s.Lock.Acquire(ctx)
 	if err != nil {
-		return pause.View{}, nil, err
+		return pause.View{}, pause.Trust{}, err
 	}
 	defer release()
 	head, err := s.Store.ResolveRef(ctx, store.RefMain)
 	if err != nil {
-		return pause.View{}, nil, err
+		return pause.View{}, pause.Trust{}, err
 	}
-	signers := s.Signers(ctx, head)
-	v, err := pause.Evaluate(ctx, s.Store, s.Apply.StateDir, s.self(), signers, s.now(), true)
-	return v, signers, err
+	trust := s.Trust(ctx, head)
+	v, err := pause.Evaluate(ctx, s.Store, s.Apply.StateDir, s.self(), trust, s.now(), true)
+	return v, trust, err
 }
 
 // NudgePeers runs the nudge after a pause record went out, so peers sync

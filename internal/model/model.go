@@ -210,9 +210,12 @@ type Status struct {
 	// PausedUntil and PauseID confirm a fleet pause this machine honours:
 	// it resumes by its own clock at PausedUntil. PauseIgnored lists pause
 	// records it did not accept, with why. All three are self-reported.
-	PausedUntil  *time.Time     `json:"paused_until,omitempty"`
-	PauseID      string         `json:"pause_id,omitempty"`
-	PauseIgnored []PauseIgnored `json:"pause_ignored,omitempty"`
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
+	PauseID     string     `json:"pause_id,omitempty"`
+	// PauseVerified says a member of a key log this machine pinned signed
+	// the pause in PauseID.
+	PauseVerified bool           `json:"pause_verified,omitempty"`
+	PauseIgnored  []PauseIgnored `json:"pause_ignored,omitempty"`
 }
 
 // PauseIgnored is one pause record a machine did not accept.

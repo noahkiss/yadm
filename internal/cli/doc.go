@@ -8,8 +8,8 @@
 // unless it is given --interactive. A command that succeeds with holds exits
 // ExitAttention with ok true and error code "attention". Key-log trust failures
 // (crypt.ErrInvalidLog, ErrNotPinned, ErrBadSignature, ErrBrokenChain,
-// ErrNotMember) and a write while a fleet pause holds this machine
-// (pause.ErrHeld) exit ExitRefused.
+// ErrNotMember) exit ExitRefused. A write while a fleet pause holds this
+// machine (pause.ErrHeld) exits ExitLocked, like a held sync lock.
 //
 // A relative path argument is relative to $HOME; an absolute one must be
 // under $HOME. Upstream yadm verbs (alt, bootstrap, encrypt, decrypt, enter,
@@ -39,7 +39,7 @@
 //	review note                    sync.WriteNote under the sync lock, then sync.PushNotes
 //	pause, resume                  pause.Sign with the machine's key, sync.Syncer.EvalPause + PublishPause;
 //	                               pause waits for peers' status refs (store.StatusRefs.ReadAll), polling with hooks.sleep;
-//	                               apply, capture, hold resolve and the allows refuse (pause.HeldError, ExitRefused)
+//	                               apply, capture, hold resolve and the allows refuse (pause.HeldError, ExitLocked)
 //	                               while another machine's pause holds this one
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md);

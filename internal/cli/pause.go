@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/noahkiss/yadm/internal/crypt"
+	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
@@ -47,9 +48,12 @@ How it works:
      even offline. To end early, run "yadm resume". To extend, run
      "yadm pause --for <duration>" again on this machine.
 
-Trust: only a member of an enclave can start a pause, and a machine honours
-a pause or a resume only when the signer is a member of a key log that
-machine has pinned. Any other record is ignored, and "yadm check" reports it.`
+Trust: any machine in fleet.toml can pause or resume. The record is signed
+with this machine's key. A peer marks the pause verified when this machine
+is a member of a key log the peer pinned, and unverified otherwise; it
+honours both, unless fleet.toml sets pause_requires = "member". A record
+from a machine outside fleet.toml, or with a forged signature, is ignored,
+and "yadm check" reports it.`
 
 // registerPause adds pause and resume.
 func (a *app) registerPause(root *cobra.Command) {
@@ -61,9 +65,9 @@ func (a *app) registerPause(root *cobra.Command) {
 	pa.Flags().Duration("wait", pauseDefaultWait, "how long to wait for other machines to confirm")
 	pa.Flags().Bool("no-wait", false, "return as soon as the pause is pushed")
 	rs := a.leaf(root, "resume [pause-id]", "Lift a fleet pause before its deadline", a.cmdResume)
-	rs.Long = `Resume lifts a fleet pause before its deadline. Any member of an enclave
-can resume, not only the machine that paused: the resume record is signed,
-and a machine accepts it only from a signer in a key log it has pinned.
+	rs.Long = `Resume lifts a fleet pause before its deadline. Any machine in fleet.toml
+can resume, not only the machine that paused. The resume record is signed
+and verified like a pause.
 Without an id it lifts the pause that holds this machine, or the one this
 machine started. Every machine resumes on its next sync. A pause also ends
 by itself at its deadline; that needs no resume.`
@@ -175,13 +179,18 @@ func ignoredWhy(st model.Status, id string) string {
 
 // pauseView evaluates the pause ref without recording anything: status,
 // check and the refusals of apply and capture use it.
-func (m *machineEnv) pauseView(ctx context.Context) (pause.View, pause.Signers) {
-	var signers pause.Signers
-	if m.snap != nil {
-		signers = pause.TrustedSigners(m.snap.Enclaves, crypt.FilePins(m.paths.State))
+func (m *machineEnv) pauseView(ctx context.Context) (pause.View, pause.Trust) {
+	trust := m.pauseTrust(ctx)
+	v, _ := pause.Evaluate(ctx, m.repo, m.paths.State, m.local.Machine, trust, hooks.now(), false)
+	return v, trust
+}
+
+// pauseTrust is who may pause here, as sync sees it.
+func (m *machineEnv) pauseTrust(ctx context.Context) pause.Trust {
+	if m.snap == nil {
+		return pause.Trust{}
 	}
-	v, _ := pause.Evaluate(ctx, m.repo, m.paths.State, m.local.Machine, signers, hooks.now(), false)
-	return v, signers
+	return pause.NewTrust(sync.FleetIDs(m.snap.Fleet), m.snap.Enclaves, crypt.FilePins(m.paths.State), m.snap.Fleet != nil && m.snap.Fleet.PauseRequires == fleet.PauseMember)
 }
 
 // refuseHeld returns a pause.HeldError when another machine's pause holds
@@ -209,20 +218,11 @@ func heldResult(h pause.Active) result {
 	return result{details: h, next: []string{"yadm status", "yadm resume"}}
 }
 
-// trusted reports whether peers that pin the same key logs as this machine
-// would accept its signature.
-func trusted(signers pause.Signers, id *crypt.Identity) bool {
-	me := id.Member()
-	for _, m := range signers[id.Machine] {
-		if m.SignKey == me.SignKey {
-			return true
-		}
+func errNoSigner(self model.MachineID, t pause.Trust) error {
+	if t.RequireMember {
+		return fmt.Errorf("%w: fleet.toml requires a pause signed by a member of a pinned key log, and %s is not one", ErrRefused, self)
 	}
-	return false
-}
-
-func errNoSigner(self model.MachineID) error {
-	return fmt.Errorf("%w: %s is not a member of a pinned enclave key log, so no machine would trust its pause or resume; run it on a member (see `yadm enclave list`)", ErrRefused, self)
+	return fmt.Errorf("%w: %s is not a machine in fleet.toml, so no machine would accept its pause or resume", ErrRefused, self)
 }
 
 func clock(t time.Time) string { return t.In(time.Local).Format("15:04") }
@@ -262,15 +262,15 @@ func (a *app) cmdPause(cmd *cobra.Command, args []string) (result, error) {
 	}
 	s := m.syncer(a.version)
 	_ = s.FetchRefs(ctx) // see the current pauses; offline still writes locally
-	v, signers, err := s.EvalPause(ctx)
+	v, trust, err := s.EvalPause(ctx)
 	if err != nil {
 		return lockedResult(err), err
 	}
 	if h := v.Holding(self); h != nil {
 		return heldResult(*h), m.heldErr(*h)
 	}
-	if !trusted(signers, m.id) {
-		return result{next: []string{"yadm enclave list"}}, errNoSigner(self)
+	if !trust.Can(self, m.id.Member().SignKey) {
+		return result{next: []string{"yadm fleet list"}}, errNoSigner(self, trust)
 	}
 	now := hooks.now().UTC().Truncate(time.Second)
 	var own *pause.Active
@@ -301,20 +301,21 @@ func (a *app) cmdPause(cmd *cobra.Command, args []string) (result, error) {
 		rec.Deadline = capAt
 	}
 	d := pauseData{ID: rec.ID, Initiator: self, Reason: rec.Reason, Created: rec.Created, Extended: extended && rec.Deadline.After(own.Requested)}
-	if own == nil || rec.Deadline.After(own.Requested) || rec.Reason != own.Reason {
-		signed, err := pause.Sign(rec, m.id)
-		if err != nil {
-			return result{}, err
+	// A record with nothing new is signed and written again: the write
+	// changes nothing when the remote holds it, and pushes it when an
+	// earlier push failed.
+	signed, err := pause.Sign(rec, m.id)
+	if err != nil {
+		return result{}, err
+	}
+	d.Pushed, err = s.PublishPause(ctx, []pause.Record{signed})
+	if err != nil {
+		if errors.Is(err, sync.ErrLocked) {
+			return lockedResult(err), err
 		}
-		d.Pushed, err = s.PublishPause(ctx, []pause.Record{signed})
-		if err != nil {
-			if errors.Is(err, sync.ErrLocked) {
-				return lockedResult(err), err
-			}
-			d.PushError = err.Error()
-		}
-	} else {
-		d.Pushed = true // nothing new to say; the record already went out
+		d.PushError = err.Error()
+	} else if !d.Pushed {
+		d.PushError = "the remote pause ref moved; run yadm pause again"
 	}
 	if v, _, err = s.EvalPause(ctx); err != nil {
 		return lockedResult(err), err
@@ -398,7 +399,7 @@ func (a *app) cmdResume(cmd *cobra.Command, args []string) (result, error) {
 	}
 	s := m.syncer(a.version)
 	_ = s.FetchRefs(ctx)
-	v, signers, err := s.EvalPause(ctx)
+	v, trust, err := s.EvalPause(ctx)
 	if err != nil {
 		return lockedResult(err), err
 	}
@@ -416,8 +417,8 @@ func (a *app) cmdResume(cmd *cobra.Command, args []string) (result, error) {
 	if act == nil {
 		return result{data: map[string]any{"resumed": false}, text: "no pause holds the fleet"}, nil
 	}
-	if !trusted(signers, m.id) {
-		return result{next: []string{"yadm enclave list"}}, errNoSigner(self)
+	if !trust.Can(self, m.id.Member().SignKey) {
+		return result{next: []string{"yadm fleet list"}}, errNoSigner(self, trust)
 	}
 	rec, err := pause.Sign(pause.Record{Op: pause.OpResume, ID: act.ID, Initiator: act.Initiator, Reason: act.Reason, Created: act.Created, Deadline: act.Requested}, m.id)
 	if err != nil {
@@ -459,7 +460,7 @@ func (m *machineEnv) statusPause(ctx context.Context) (*pauseStatus, string) {
 	}
 	var b strings.Builder
 	if h := ps.Held; h != nil {
-		fmt.Fprintf(&b, "  paused by %s until %s", m.names([]model.MachineID{h.Initiator}), clock(h.Until))
+		fmt.Fprintf(&b, "  paused by %s until %s, %s", m.names([]model.MachineID{h.Initiator}), clock(h.Until), verifiedWord(h.Verified))
 		if h.Reason != "" {
 			fmt.Fprintf(&b, " (%s)", h.Reason)
 		}
@@ -482,7 +483,7 @@ func (m *machineEnv) statusPause(ctx context.Context) (*pauseStatus, string) {
 
 // pauseCheck is the pause item of `yadm check`.
 func (m *machineEnv) pauseCheck(ctx context.Context) checkItem {
-	v, signers := m.pauseView(ctx)
+	v, _ := m.pauseView(ctx)
 	if len(v.Ignored) > 0 {
 		var parts []string
 		for _, x := range v.Ignored {
@@ -495,10 +496,16 @@ func (m *machineEnv) pauseCheck(ctx context.Context) checkItem {
 		return checkItem{Name: "pause", OK: false, Detail: "ignored pause records: " + strings.Join(parts, "; ")}
 	}
 	if h := v.Holding(m.local.Machine); h != nil {
-		return checkItem{Name: "pause", OK: true, Warn: true, Detail: fmt.Sprintf("paused by %s until %s", h.Initiator, h.Until.UTC().Format(time.RFC3339))}
-	}
-	if len(signers) == 0 {
-		return checkItem{Name: "pause", OK: true, Warn: true, Detail: "no pinned key log: this machine cannot verify a fleet pause and ignores every one"}
+		return checkItem{Name: "pause", OK: true, Warn: true, Detail: fmt.Sprintf("paused by %s until %s (%s)", h.Initiator, h.Until.UTC().Format(time.RFC3339), verifiedWord(h.Verified))}
 	}
 	return checkItem{Name: "pause", OK: true, Detail: "no pause holds this machine"}
+}
+
+// verifiedWord says whether a pinned key-log member's signature verified a
+// pause.
+func verifiedWord(v bool) string {
+	if v {
+		return "verified"
+	}
+	return "unverified: no signature by a pinned key-log member"
 }

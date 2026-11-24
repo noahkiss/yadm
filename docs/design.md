@@ -53,6 +53,7 @@ An entry may point anywhere under `files/` or `sealed/<enclave>/` with `source =
 
 ```toml
 schema = 1
+# pause_requires = "member"   # a fleet pause counts only when a pinned key-log member signed it (section 10.1)
 
 [types.personal]
 enclave = true          # files of this type are sealed for members
@@ -613,7 +614,7 @@ A fetched commit that touches `sealed/<enclave>/` or `keys/<enclave>/` from a ma
 
 1. The initiator writes a signed pause record and pushes it: `yadm pause [--for 30m] [--reason R] [--wait 2m | --no-wait]`. It prints progress while peers confirm (`waiting… 1/2 confirmed (host-c not yet)`), then `paused fleet-wide until 22:41 (30m); resumes automatically`. A peer that has not confirmed when the wait ends does not block the initiator; it pauses on its next sync if the pause is still on.
 2. Every other machine's sync still fetches, so it sees a resume or an extension. It skips scan and capture, auto-commit, collectors, replay and apply, and pushes only its status ref. The status record carries `paused_until` and `pause_id`: that is the confirmation.
-3. On a held machine, `commit`, `apply`, `capture`, `hold resolve`, `protection allow`, `root allow` and every other command that commits through `sync.Commit` (track, retag, source mv, untrack, the enclave writes) refuse with exit 6. The message names the initiator, the reason and the deadline. A dry run still works. A harness hook leaves its paths recorded and returns a quiet verdict, and the timer commits them after the pause.
+3. On a held machine, `commit`, `apply`, `capture`, `hold resolve`, `protection allow`, `root allow` and every other command that commits through `sync.Commit` (track, retag, source mv, untrack, the enclave writes) refuse with exit 4 (`locked`), like a held sync lock: retry later. The message names the initiator, the reason and the deadline. A dry run still works. A harness hook leaves its paths recorded and returns a quiet verdict, and the timer commits them after the pause.
 4. The initiator is not held. Its commits proceed and push as usual; peers apply them when they resume.
 5. Every machine resumes by itself at the deadline, by its own clock, offline included. The quick check runs a full sync once a pause that held this machine has passed its deadline. A lost initiator can therefore hold the fleet at most 4 hours.
 
@@ -634,34 +635,46 @@ A resume is the same record with `op = "resume"` and its own signer. Why a dedic
 - A protected file in `main` would reach a held machine only through the replay and apply the pause stops.
 - One file per pause means a resume of one pause never hides another.
 
-The writer builds on the fetched ref and pushes fast-forward, never forced; a rejected push is redone on the new remote head. A write drops records that can hold no one for a day. A record that could not go out (the network lock stayed busy, or the remote was offline) stays on the local ref and the next sync pushes it, but only while the remote ref has not moved past it; after that the record holds only this machine, and `yadm pause` or `yadm resume` must run again. `yadm pause` without `--for` on a running pause changes nothing and waits for confirmations again.
+The writer builds on the fetched ref and pushes fast-forward, never forced; a rejected push is redone on the new remote head. A write drops records that can hold no one for a day. A record that could not go out (the network lock stayed busy, or the remote was offline) stays on the local ref and the next sync pushes it; when the remote ref moved meanwhile, the sync carries the record onto it. `yadm pause` without `--for` on a running pause changes nothing on a remote that holds it, pushes it again when it never went out, and waits for confirmations again.
 
-**Trust.**
+**Trust.** A pause must reach every machine in the fleet, including machines in no enclave; a machine that ignores it keeps writing while the rest waits, which defeats the pause.
 
 | Item | Choice |
 |---|---|
-| Key | The machine's Ed25519 signing key, the one its key-log entries carry as `sign_key` |
+| Key | The machine's Ed25519 signing key, the one its key-log entries carry as `sign_key`. Every machine signs its pause and resume records. |
 | Domain | The signed message is `"yadm v1 statement pause\n"` followed by the canonical JSON of the record with `sig` empty. A key-log entry is signed over its bare TOML, so no signature is valid as both. |
-| Trusted signers | The members of the head of each key log this machine has pinned and verified. An unpinned log gives no signer: a writer can replace it with one that lists its own key. |
-| Pause | Signed by its initiator (`signer = initiator`) |
-| Resume | Signed by any trusted signer, so a member can end a pause whose initiator is lost. A deadline needs no signature: each machine applies it by its own clock. |
-| Who may pause | `yadm pause` and `yadm resume` refuse on a machine that is not a trusted signer by its own pins: no peer would accept its record. |
+| Accepted | A well-formed record whose signer is a machine in `fleet.toml` at this machine's local `main`. A record from any other id is ignored. |
+| Verified | The signer is a member of the head of a key log this machine has pinned and verified, and the signature verifies under that member's key. `status`, `check` and `fleet list` show whether a pause is verified. |
+| Unverified | A signer that no pinned log lists, or a record without a signature. It counts like a verified one. |
+| Forged | A signature that fails under every pinned key of the signer it names. The record is ignored and `check` fails. |
+| Pause | Signed by its initiator (`signer = initiator`). Only the initiator extends it; an unverified record never extends a verified pause. |
+| Resume | Any machine in `fleet.toml` may resume, so a pause whose initiator is lost can end early. A deadline needs no record: each machine applies it by its own clock. |
+| Switch | `pause_requires = "member"` in `fleet.toml` makes an unverified record count for nothing, and `yadm pause` and `yadm resume` refuse on a machine that no pinned log lists. The default is off. |
 
-Why the pinned key logs and not `fleet.toml`: any writer edits `fleet.toml`, while a key-log entry is signed and chained from a pin a human carried out of band (section 7.2). A mere repo writer therefore cannot freeze the fleet or break an owner's pause. A machine verifies against the key logs at its local `main`; during a pause that is the state from before the pause.
+Why accepting unverified pauses is acceptable for now:
 
-A record that fails any check is ignored. It appears in `pause_ignored` in the status record, in `yadm status`, and as a failing `pause` item in `yadm check`, until its claimed deadline passes. A machine that pins no key log cannot verify any pause and ignores every one; `yadm check` warns about it. A non-member pins an enclave's log with `yadm enclave join <enclave> --expect <fingerprint>`.
+- A repository writer can already run code on every machine: the source ships scripts and tasks that machines apply and run. A pinned-member signature on a pause would not stop that writer.
+- The cap bounds a hostile pause: it holds a machine at most 4 hours in a row, chained pauses included, and every machine resumes by its own clock.
+- `check`, `status` and `fleet list` show an unverified pause, so it does not pass unnoticed.
+
+Once a fleet-wide enclave is the norm, `pause_requires = "member"` turns the signature into the requirement.
+
+A record that does not count is ignored. It appears in `pause_ignored` in the status record, in `yadm status`, and as a failing `pause` item in `yadm check`, until its claimed deadline passes. A machine reads at most 64 records of at most 4 KiB from the ref, reports at most 16 ignored records, and never fails a sync over the pause ref: a ref it cannot read is reported the same way.
 
 **Bounds.** Local state in the state directory (`pause.json`) is the authority. Each accepted record merges into it: the first time this machine saw the pause, the latest signed deadline, and whether a signed resume lifted it. A machine resumes at
 
 ```
-min(signed deadline, created + 4h, first seen here + 4h)
+min(signed deadline, created + 4h, first seen here + min(deadline - created, 4h), end of the hold run)
 ```
 
 - The 4-hour cap holds whatever the record asks; `yadm pause` itself clamps a longer request and says so. An extension keeps `created`, so it never passes the cap.
-- `first seen + 4h` bounds a record whose `created` lies in the future (a skewed clock).
+- `first seen + span` bounds a record whose `created` lies in the future (the initiator's clock runs ahead): a 30-minute pause holds 30 minutes here, whatever the skew.
+- A hold run starts when a pause first holds this machine and ends at the first evaluation that finds none holding. A pause first seen during a run ends with it, at most 4 hours after the run began. Chained pauses therefore hold a machine at most 4 hours in a row; then one sync runs unheld, replays `main` and takes any change to `fleet.toml` and the key logs before a newer pause can hold it.
 - A pause whose window ended before this machine saw it is a no-op: a machine that slept through it never holds.
 - A lifted pause stays lifted, so a replayed pause record does not hold the machine again. A shorter deadline for a known pause is ignored. A ref that a writer rewinds, deletes or fills with garbage changes nothing already accepted.
 - A writer can replay a signed record a machine has not seen yet. It holds that machine at most until the cap from the record's creation.
+- When two machines pause at the same time, each holds the rest of the fleet, but only the earlier pause (by `created`, then id) holds the other initiator. The later initiator is held like any peer.
+- A pause record never replaces a resume of the same pause on the ref. A write that the remote moved past is carried onto the new remote head by the next sync, unless the remote already holds a resume or a later record of that pause.
 
 ## 11. Status refs and observed facts
 
@@ -685,11 +698,12 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "on_demand": ["work"],
   "paused_until": "2030-01-01T12:30:00Z",
   "pause_id": "p-1a2b3c4d5e6f",
-  "pause_ignored": [ { "id": "p-…", "why": "signer is not a member of a key log this machine has pinned: m-…" } ]
+  "pause_verified": true,
+  "pause_ignored": [ { "id": "p-…", "why": "signer is not trusted: m-… is not a machine in fleet.toml" } ]
 }
 ```
 
-`paused_until` and `pause_id` confirm a fleet pause the machine honours, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
+`paused_until` and `pause_id` confirm a fleet pause the machine honours, `pause_verified` says a pinned key-log member signed it, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
 
 `on_demand` lists the enclaves the machine reads on demand only (section 7.6). It is self-reported: `yadm check` uses it to explain a key-log member without the enclave's type, and a change to it publishes a record on the next sync.
 
@@ -821,9 +835,9 @@ On failure, `ok` is false and `error` is `{ "code": "…", "message": "…", "de
 | 1 | `error` | The command failed |
 | 2 | `usage` | Bad flags or arguments, or an unknown command with no `yadm-<name>` |
 | 3 | `attention` | The command succeeded, but holds or conflicts exist; `data` lists them |
-| 4 | `locked` | Another yadm process has held the sync lock past the wait (section 10); the message names its pid, command and age. Retry later |
+| 4 | `locked` | Another yadm process has held the sync lock past the wait (section 10); the message names its pid, command and age. Or another machine's fleet pause holds this one (section 10.1); the message names the initiator, the reason and the deadline. Retry later |
 | 5 | `not_implemented` | |
-| 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition, a write while another machine's fleet pause holds this one (section 10.1) |
+| 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition |
 
 `yadm hook <event>` has its own contract, for harnesses: it prints one verdict object (not an envelope) or nothing, and exits 0 (allow), 2 (a decision blocks) or 1 (the hook failed; harnesses go on). See `docs/hooks.md`.
 
@@ -868,7 +882,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `untrack <path> [--source <s>] [--dry-run] [--no-push]` | Section 8.8; commits and pushes; the file stays here | `{target, source, scope, source_kept, commit, pushed, push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
-| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, the fleet pause (failed for an ignored pause record, warned while held or with no pinned key log), holds, secrecy config. `warn` marks a check that passes but needs a look. |
+| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, the fleet pause (failed for an ignored pause record, warned while held, naming whether the pause is verified), holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
 | `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
@@ -927,7 +941,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
 - An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
-- A writer cannot start, extend or lift a fleet pause: pause and resume records count only when a member of a pinned key log signed them (section 10.1). A trusted member can hold the fleet for at most 4 hours per pause, and every machine resumes by its own clock. The pause reason is plain text every machine reads. A writer can still hide a pause: it can overwrite or delete a record on the ref before a machine fetches it, and that machine then never holds. Pauses coordinate trusted members; they do not stop a writer that wants a machine to keep syncing.
+- A writer can start or lift a fleet pause by writing an unverified record under the id of any machine in `fleet.toml`, unless `fleet.toml` sets `pause_requires = "member"` (section 10.1). It cannot forge a verified one, and an unverified record never extends a verified pause. A pause holds a machine at most 4 hours in a row, chained pauses included, and every machine resumes by its own clock. `check`, `status` and `fleet list` show an unverified pause. The pause reason is plain text every machine reads. A writer can also hide a pause: it can overwrite or delete a record on the ref before a machine fetches it, and that machine then never holds.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies

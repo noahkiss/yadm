@@ -37,7 +37,15 @@ type File struct {
 	Types      map[model.TypeName]TypeDef        `toml:"types" json:"types"`
 	Machines   map[model.MachineID]model.Machine `toml:"machines" json:"machines"`
 	Collectors map[string]CollectorDef           `toml:"collectors" json:"collectors,omitempty"`
+	// PauseRequires is what a fleet pause record needs to count: "" (any
+	// well-formed record from a machine in this file) or PauseMember (a
+	// signature by a member of a key log the receiver pinned).
+	PauseRequires string `toml:"pause_requires,omitempty" json:"pause_requires,omitempty"`
 }
+
+// PauseMember is the PauseRequires value that requires a pinned member's
+// signature on a fleet pause.
+const PauseMember = "member"
 
 // TypeDef declares one user-defined machine type.
 type TypeDef struct {
@@ -131,6 +139,9 @@ func (f *File) validate() error {
 		f.Collectors = map[string]CollectorDef{}
 	}
 	var errs []error
+	if f.PauseRequires != "" && f.PauseRequires != PauseMember {
+		errs = append(errs, fmt.Errorf("pause_requires %q: want %q or nothing", f.PauseRequires, PauseMember))
+	}
 	for t := range f.Types {
 		if !namePattern.MatchString(string(t)) {
 			errs = append(errs, fmt.Errorf("type %q: invalid name", t))

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,8 +29,9 @@ func (c *fakeClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c
 func (c *fakeClock) Add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unlock() }
 
 // pauseFleet sets up host-a (member of personal), host-b (no enclave) and
-// host-c (member of client). host-b and host-c also pin personal's key log,
-// so they trust host-a's signature. Every machine has applied and synced.
+// host-c (member of client). No machine pins another enclave's key log: a
+// pause trusts the fleet.toml machines under the keys their status records
+// published. Every machine has applied and synced, so each pins the others.
 func pauseFleet(t *testing.T) (root, remote string, fx *fixture.Fixture, clk *fakeClock, m map[model.MachineID]machineDirs) {
 	t.Helper()
 	hermetic(t)
@@ -45,16 +47,9 @@ func pauseFleet(t *testing.T) (root, remote string, fx *fixture.Fixture, clk *fa
 	clk = &fakeClock{t: time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)}
 	hooks.now = clk.Now
 	hooks.sleep = func(context.Context, time.Duration) error { clk.Add(3 * time.Second); return nil }
-	pin, err := crypt.PinOf(fx.Logs["personal"][len(fx.Logs["personal"])-1])
-	if err != nil {
-		t.Fatal(err)
-	}
 	m = map[model.MachineID]machineDirs{}
 	for _, id := range []model.MachineID{fixture.HostA, fixture.HostB, fixture.HostC} {
 		d := fixtureMachine(t, root, remote, fx, id, true)
-		if err := crypt.FilePins(d.State).Set("personal", pin); err != nil {
-			t.Fatal(err)
-		}
 		yadmOK(t, "task", "allow")
 		yadmOK(t, "apply")
 		yadmOK(t, "sync", "--full")
@@ -129,7 +124,7 @@ func TestPauseFleet(t *testing.T) {
 	writeFile(t, filepath.Join(m[fixture.HostB].Home, shared), "# edited on host-b during the pause\n")
 	for _, args := range [][]string{{"commit", shared}, {"apply"}, {"capture"}} {
 		env, code, _ := yadm(t, args...)
-		if code != ExitRefused || !strings.Contains(env.Error.Message, "host-a") || !strings.Contains(env.Error.Message, "rename shell config") || !strings.Contains(env.Error.Message, "2030-01-01T12:30:00Z") {
+		if code != ExitLocked || env.Error.Code != CodeLocked || !strings.Contains(env.Error.Message, "host-a") || !strings.Contains(env.Error.Message, "rename shell config") || !strings.Contains(env.Error.Message, "2030-01-01T12:30:00Z") {
 			t.Fatalf("%v while paused: exit %d %+v", args, code, env.Error)
 		}
 	}
@@ -143,10 +138,6 @@ func TestPauseFleet(t *testing.T) {
 	}
 	if ps := decode[statusData](t, yadmOK(t, "status").Data).Pause; ps == nil || ps.Held == nil || ps.Held.ID != id {
 		t.Fatalf("status on host-b: %+v", ps)
-	}
-	// host-b is no member of an enclave: it cannot resume.
-	if _, code, _ := yadm(t, "resume"); code != ExitRefused {
-		t.Fatalf("resume by a non-member: exit %d", code)
 	}
 
 	// host-a waits for confirmations: both are in.
@@ -213,7 +204,7 @@ func TestPauseFleet(t *testing.T) {
 	}
 	// host-b's own edit conflicts with host-a's change; either way the
 	// commit is no longer refused for the pause.
-	if env, code, _ := yadm(t, "commit", shared); code == ExitRefused {
+	if env, code, _ := yadm(t, "commit", shared); code == ExitLocked {
 		t.Fatalf("commit after the deadline refused: %+v", env.Error)
 	}
 	// host-c, with no edit of its own, applies the initiator's change.
@@ -249,7 +240,7 @@ func TestPauseResumeAndOffline(t *testing.T) {
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--auto").Data); s.Paused || s.Reason != "remote moved" {
 		t.Fatalf("host-b timer tick after resume: %+v", s)
 	}
-	if _, code, _ := yadm(t, "apply"); code == ExitRefused {
+	if _, code, _ := yadm(t, "apply"); code == ExitLocked {
 		t.Fatal("apply refused after resume")
 	}
 
@@ -282,11 +273,13 @@ func useMachineState(t *testing.T, root string, id model.MachineID) string {
 	return useMachine(t, root, string(id)).State
 }
 
-// TestPauseForged: a writer pushes pause records that no trusted member
-// signed: unsigned, with a forged signature, and signed by a member of an
-// enclave host-b has not pinned. host-b ignores each and check flags them.
-// A record host-a did sign that asks for 24h, and one whose creation time
-// lies in the future, hold host-b at most 4h from when it first saw them.
+// TestPauseForged: host-b pins personal's key log, so it can verify
+// host-a. A writer pushes a record whose signature fails under host-a's
+// pinned key, and one from a machine that is not in fleet.toml: host-b
+// ignores both and check fails. A record host-a did sign that asks for 24h
+// holds host-b at most 4h, verified; a forged resume does not lift it. One
+// whose creation time lies in the future holds for its own span from when
+// host-b first saw it.
 func TestPauseForged(t *testing.T) {
 	root, remote, fx, clk, m := pauseFleet(t)
 	ctx := context.Background()
@@ -294,6 +287,13 @@ func TestPauseForged(t *testing.T) {
 
 	on(t, root, fixture.HostB)
 	b := m[fixture.HostB]
+	pin, err := crypt.PinOf(fx.Logs["personal"][len(fx.Logs["personal"])-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := crypt.FilePins(b.State).Set("personal", pin); err != nil {
+		t.Fatal(err)
+	}
 	repo, err := store.Open(b.Source, b.State)
 	if err != nil {
 		t.Fatal(err)
@@ -309,13 +309,16 @@ func TestPauseForged(t *testing.T) {
 	rec := func(by model.MachineID) pause.Record {
 		return pause.Record{Schema: pause.Schema, Op: pause.OpPause, ID: newID(), Initiator: by, Signer: by, Created: now, Deadline: now.Add(time.Hour)}
 	}
-	unsigned := rec(fixture.HostA)
 	forged, err := pause.Sign(rec(fixture.HostB), fx.Identities[fixture.HostB])
 	if err != nil {
 		t.Fatal(err)
 	}
 	forged.Initiator, forged.Signer = fixture.HostA, fixture.HostA // host-b's key, host-a's name
-	unpinned, err := pause.Sign(rec(fixture.HostC), fx.Identities[fixture.HostC])
+	strangerID, err := crypt.GenerateIdentity("m-stranger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := pause.Sign(rec("m-stranger"), strangerID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +329,7 @@ func TestPauseForged(t *testing.T) {
 		}
 		git(t, b.Source, "push", "-q", remote, pause.Ref+":"+pause.Ref)
 	}
-	push(unsigned, forged, unpinned)
+	push(forged, stranger)
 
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
 		t.Fatalf("host-b honoured a forged pause: %+v", s)
@@ -344,25 +347,24 @@ func TestPauseForged(t *testing.T) {
 			}
 		}
 	}
-	for _, r := range []pause.Record{unsigned, forged, unpinned} {
+	for _, r := range []pause.Record{forged, stranger} {
 		if !strings.Contains(detail, r.ID) {
 			t.Fatalf("check does not name %s: %s", r.ID, detail)
 		}
 	}
-	if !strings.Contains(detail, string(fixture.HostC)) || !strings.Contains(detail, "pinned") {
-		t.Fatalf("check does not explain the unpinned signer: %s", detail)
+	if !strings.Contains(detail, "forged") || !strings.Contains(detail, "m-stranger") || !strings.Contains(detail, "fleet.toml") {
+		t.Fatalf("check does not explain the ignored records: %s", detail)
 	}
-	if st := selfStatus(t, fixture.HostB); len(st.PauseIgnored) != 3 {
+	if st := selfStatus(t, fixture.HostB); len(st.PauseIgnored) != 2 {
 		t.Fatalf("host-b status does not report the ignored records: %+v", st.PauseIgnored)
 	}
-	// host-a never trusted them either.
 	on(t, root, fixture.HostA)
-	if _, code, _ := yadm(t, "commit"); code == ExitRefused {
+	if _, code, _ := yadm(t, "commit"); code == ExitLocked {
 		t.Fatal("host-a held by a forged pause")
 	}
 
 	// host-a's key signs a 24h pause directly (a buggy or old client): host-b
-	// clamps it to 4h.
+	// clamps it to 4h and marks it verified.
 	on(t, root, fixture.HostB)
 	long := rec(fixture.HostA)
 	long.Deadline = now.Add(24 * time.Hour)
@@ -373,17 +375,24 @@ func TestPauseForged(t *testing.T) {
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); !s.Paused {
 		t.Fatalf("host-b ignored a signed pause: %+v", s)
 	}
-	if st := selfStatus(t, fixture.HostB); st.PausedUntil == nil || !st.PausedUntil.Equal(now.Add(pause.MaxSpan)) {
-		t.Fatalf("24h pause not clamped: %+v", st.PausedUntil)
+	if st := selfStatus(t, fixture.HostB); st.PausedUntil == nil || !st.PausedUntil.Equal(now.Add(pause.MaxSpan)) || !st.PauseVerified {
+		t.Fatalf("24h pause not clamped or not verified: %+v", st)
 	}
-	// A forged resume does not lift it; host-a's signed resume does.
+	on(t, root, fixture.HostA)
+	yadmOK(t, "sync", "--full") // host-a records its own pause
+	// A resume whose signature fails under host-a's key does not lift it;
+	// host-a's signed resume does.
+	on(t, root, fixture.HostB)
 	fakeResume := long
-	fakeResume.Op, fakeResume.Signer, fakeResume.Sig = pause.OpResume, fixture.HostA, nil
+	fakeResume.Op = pause.OpResume
+	if fakeResume, err = pause.Sign(fakeResume, fx.Identities[fixture.HostB]); err != nil {
+		t.Fatal(err)
+	}
+	fakeResume.Signer = fixture.HostA
 	push(fakeResume)
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); !s.Paused {
-		t.Fatalf("an unsigned resume lifted the pause: %+v", s)
+		t.Fatalf("a forged resume lifted the pause: %+v", s)
 	}
-	push(long) // the fake replaced the record on the ref; put it back so host-a sees it
 	on(t, root, fixture.HostA)
 	yadmOK(t, "resume", long.ID)
 	on(t, root, fixture.HostB)
@@ -391,13 +400,23 @@ func TestPauseForged(t *testing.T) {
 		t.Fatalf("signed resume did not lift: %+v", s)
 	}
 	// Replaying the original signed pause does not hold host-b again.
-	push(long)
+	git(t, b.Source, "fetch", "-q", remote, "+"+pause.Ref+":"+pause.RemoteRef)
+	git(t, b.Source, "update-ref", pause.Ref, strings.TrimSpace(git(t, b.Source, "rev-parse", pause.RemoteRef)))
+	p, err := pause.Sign(long, fx.Identities[fixture.HostA])
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := repo.CommitPaths(ctx, model.CommitID(strings.TrimSpace(git(t, b.Source, "rev-parse", pause.Ref))), []store.Change{{Path: model.SourcePath(p.ID + ".json"), Blob: recordJSON(t, p), Mode: 0o100644}}, store.Message{Subject: "replay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, b.Source, "push", "-q", remote, string(c)+":"+pause.Ref)
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
 		t.Fatalf("a replayed pause held host-b again: %+v", s)
 	}
 
-	// A signed pause created 48h in the future (a skewed clock) holds at
-	// most 4h from when host-b first saw it.
+	// A signed 2h pause created 48h in the future (a skewed clock) holds
+	// 2h from when host-b first saw it.
 	skew := rec(fixture.HostA)
 	skew.Created, skew.Deadline = now.Add(48*time.Hour), now.Add(50*time.Hour)
 	if skew, err = pause.Sign(skew, fx.Identities[fixture.HostA]); err != nil {
@@ -408,12 +427,12 @@ func TestPauseForged(t *testing.T) {
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); !s.Paused {
 		t.Fatalf("host-b ignored the skewed pause: %+v", s)
 	}
-	if st := selfStatus(t, fixture.HostB); st.PausedUntil == nil || !st.PausedUntil.Equal(seen.Add(pause.MaxSpan)) {
-		t.Fatalf("skewed pause not clamped to first sight: %+v", st.PausedUntil)
+	if st := selfStatus(t, fixture.HostB); st.PausedUntil == nil || !st.PausedUntil.Equal(seen.Add(2*time.Hour)) {
+		t.Fatalf("skewed pause not clamped to its span: %+v", st.PausedUntil)
 	}
 	clk.Add(pause.MaxSpan + time.Minute)
 	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
-		t.Fatalf("skewed pause held past first sight + 4h: %+v", s)
+		t.Fatalf("skewed pause held past first sight + its span: %+v", s)
 	}
 	// A day later the record still sits on the ref with its future
 	// deadline; it does not hold host-b a second time.
@@ -423,4 +442,100 @@ func TestPauseForged(t *testing.T) {
 			t.Fatalf("skewed pause held again %dh later: %+v", 15*(i+1), s)
 		}
 	}
+}
+
+func recordJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(b, '\n')
+}
+
+// TestPauseUnverifiedAndSwitch: host-b, in no enclave, pauses; host-a
+// honours it as unverified and may resume it. With pause_requires =
+// "member" in fleet.toml, host-b may not pause, and host-a ignores an
+// unverified record.
+func TestPauseUnverifiedAndSwitch(t *testing.T) {
+	root, remote, _, clk, m := pauseFleet(t)
+	ctx := context.Background()
+
+	on(t, root, fixture.HostB)
+	id := decode[pauseData](t, yadmOK(t, "pause", "--no-wait").Data).ID
+	on(t, root, fixture.HostA)
+	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); !s.Paused {
+		t.Fatalf("host-a ignored a pause from a machine in no enclave: %+v", s)
+	}
+	if ps := decode[statusData](t, yadmOK(t, "status").Data).Pause; ps == nil || ps.Held == nil || ps.Held.Verified {
+		t.Fatalf("host-a status: %+v", ps)
+	}
+	if st := selfStatus(t, fixture.HostA); st.PauseID != id || st.PauseVerified {
+		t.Fatalf("host-a status record: %+v", st)
+	}
+	env, _, _ := yadm(t, "check")
+	for _, c := range decode[map[string][]checkItem](t, env.Data)["checks"] {
+		if c.Name == "pause" && (!c.OK || !c.Warn || !strings.Contains(c.Detail, "unverified")) {
+			t.Fatalf("pause check while held unverified: %+v", c)
+		}
+	}
+	if out, _, _ := yadmRaw(t, "fleet", "list"); !strings.Contains(out, "(unverified)") {
+		t.Fatalf("fleet list does not mark the pause unverified:\n%s", out)
+	}
+	if _, code, _ := yadm(t, "commit"); code != ExitLocked {
+		t.Fatalf("host-a commit while host-b paused: exit %d", code)
+	}
+	yadmOK(t, "resume", id) // any fleet machine may resume
+	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
+		t.Fatalf("host-a still held after its resume: %+v", s)
+	}
+
+	// Turn the switch on.
+	a := m[fixture.HostA]
+	fl := filepath.Join(a.Source, "fleet.toml")
+	writeFile(t, fl, strings.Replace(readFile(t, fl), "schema = 1\n", "schema = 1\npause_requires = \"member\"\n", 1))
+	git(t, a.Source, "commit", "-q", "-am", "chore: require a member's signature on a pause")
+	yadmOK(t, "sync", "--full")
+	on(t, root, fixture.HostB)
+	yadmOK(t, "sync", "--full")
+	if _, code, _ := yadm(t, "pause", "--no-wait"); code != ExitRefused {
+		t.Fatalf("pause by a non-member with the switch on: exit %d", code)
+	}
+
+	// A writer pushes host-b's signed record anyway: host-a ignores it.
+	b := m[fixture.HostB]
+	repo, err := store.Open(b.Source, b.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	pid, err := pause.NewID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := clk.Now()
+	r, err := pause.Sign(pause.Record{Op: pause.OpPause, ID: pid, Initiator: fixture.HostB, Created: now, Deadline: now.Add(time.Hour)}, useIdentity(t, b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pause.Write(ctx, repo, []pause.Record{r}, now); err != nil {
+		t.Fatal(err)
+	}
+	git(t, b.Source, "push", "-q", remote, pause.Ref+":"+pause.Ref)
+	on(t, root, fixture.HostA)
+	if s := decode[syncOut](t, yadmOK(t, "sync", "--full").Data); s.Paused {
+		t.Fatalf("host-a honoured an unverified pause with the switch on: %+v", s)
+	}
+	if st := selfStatus(t, fixture.HostA); len(st.PauseIgnored) != 1 || st.PauseIgnored[0].ID != pid {
+		t.Fatalf("host-a does not report the unverified record: %+v", st.PauseIgnored)
+	}
+}
+
+func useIdentity(t *testing.T, d machineDirs) *crypt.Identity {
+	t.Helper()
+	id, err := crypt.LoadIdentity(d.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }

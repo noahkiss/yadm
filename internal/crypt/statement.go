@@ -41,7 +41,7 @@ func (id *Identity) SignStatement(kind string, body []byte) ([]byte, error) {
 }
 
 // VerifyStatement checks a statement signature against a member's sign_key.
-// The caller decides which members to trust: a member of a pinned key log.
+// The caller decides which keys to trust.
 func VerifyStatement(m Member, kind string, body, sig []byte) error {
 	pub, err := m.publicKey()
 	if err != nil {

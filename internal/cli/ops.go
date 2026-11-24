@@ -57,6 +57,9 @@ func (a *app) cmdFleetList(cmd *cobra.Command, args []string) (result, error) {
 		paused := ""
 		if r.Status != nil && r.Status.PausedUntil != nil && r.Status.PausedUntil.After(hooks.now()) {
 			paused = " paused until " + clock(*r.Status.PausedUntil)
+			if !r.Status.PauseVerified {
+				paused += " (unverified)"
+			}
 		}
 		fmt.Fprintf(&b, "%-10s %-14s last %s held %d%s%s\n", r.Machine.ID, r.Machine.Name, last, held, stale, paused)
 	}

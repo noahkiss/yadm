@@ -28,9 +28,9 @@ const (
 	ExitError          = 1 // the command failed
 	ExitUsage          = 2 // bad flags or arguments
 	ExitAttention      = 3 // the command succeeded but holds or conflicts exist (Data lists them)
-	ExitLocked         = 4 // another yadm process holds the lock; retry later
+	ExitLocked         = 4 // another yadm process holds the lock, or another machine's fleet pause holds this one; retry later
 	ExitNotImplemented = 5
-	ExitRefused        = 6 // refused for secrecy or trust: non-member, unsigned key change, untrusted task, another machine's fleet pause
+	ExitRefused        = 6 // refused for secrecy or trust: non-member, unsigned key change, untrusted task
 )
 
 // Error codes in ErrorBody.Code.
@@ -77,7 +77,6 @@ var refusals = []error{
 	crypt.ErrBadSignature,
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
-	pause.ErrHeld,
 }
 
 // classify maps an error to an exit code and an error code.
@@ -90,7 +89,7 @@ func classify(err error) (int, string) {
 		return ExitAttention, CodeAttention
 	case errors.Is(err, errUsage):
 		return ExitUsage, CodeUsage
-	case errors.Is(err, sync.ErrLocked):
+	case errors.Is(err, sync.ErrLocked), errors.Is(err, pause.ErrHeld):
 		return ExitLocked, CodeLocked
 	}
 	for _, r := range refusals {
