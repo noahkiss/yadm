@@ -169,6 +169,9 @@ func TestRerootSquash(t *testing.T) {
 	on(t, root, fixture.HostA)
 	old := trimmed(t, a.Source, "rev-parse", "main")
 	newHead := squash(t, a.Source, "new root")
+	// A reviewed ref of a scope fleet.toml does not name.
+	git(t, a.Source, "push", "-q", "origin", "main:refs/yadm/reviewed/gone")
+	git(t, a.Source, "fetch", "-q", "origin")
 
 	// Unreviewed commits block it until --fold-unreviewed; no pause starts.
 	env, code, _ := yadm(t, "reroot", "--new-head", newHead, "--no-wait")
@@ -187,6 +190,9 @@ func TestRerootSquash(t *testing.T) {
 	id := d.ID
 	if got := trimmed(t, remote, "rev-parse", "main"); got != newHead {
 		t.Fatalf("remote main %s, want %s", got, newHead)
+	}
+	if got := trimmed(t, remote, "rev-parse", "refs/yadm/reviewed/gone"); got != newHead {
+		t.Fatalf("remote reviewed ref of a stale scope %s, want %s", got, newHead)
 	}
 	if got := trimmed(t, a.Source, "rev-parse", "main"); got != newHead {
 		t.Fatalf("host-a main %s, want %s", got, newHead)

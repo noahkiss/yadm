@@ -655,6 +655,27 @@ func (s *Syncer) prepareReroot(ctx context.Context, req RerootRequest, out *Rero
 		}
 		rewrites = append(rewrites, store.Rewrite{Ref: store.RefReviewed(sc), New: newID, Old: rv})
 	}
+	// A fetched reviewed ref of a scope fleet.toml no longer names would
+	// keep the old history reachable on the remote: it moves too.
+	listed := map[string]bool{}
+	for _, sc := range scopes {
+		listed[remoteReviewed(sc)] = true
+	}
+	stale, err := s.Store.ListRefs(ctx, remoteYadmPrefix+"reviewed/")
+	if err != nil {
+		return rec, nil, "", "", err
+	}
+	names := make([]string, 0, len(stale))
+	for ref := range stale {
+		if !listed[ref] {
+			names = append(names, ref)
+		}
+	}
+	sort.Strings(names)
+	for _, ref := range names {
+		sc := model.Scope(strings.TrimPrefix(ref, remoteYadmPrefix+"reviewed/"))
+		rewrites = append(rewrites, store.Rewrite{Ref: store.RefReviewed(sc), New: newID, Old: stale[ref]})
+	}
 	if len(behind) > 0 && !req.FoldUnreviewed {
 		return rec, nil, "", "", fmt.Errorf("%w: unreviewed commits would be folded into the new root and marked reviewed (%s); review them first (yadm review list), or pass --fold-unreviewed", ErrRerootState, strings.Join(behind, ", "))
 	}
