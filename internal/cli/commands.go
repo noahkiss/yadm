@@ -740,6 +740,16 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 		}
 		return result{next: next}, fmt.Errorf("%w: nothing committed: no manifest entry or owned root covers %s on this machine; add an entry first", ErrRefused, joinTargets(bad))
 	}
+	// A new file inside an owned root that no root may capture here (an
+	// ignore glob, a deeper enclave root, an entry that names it) is refused
+	// by name, never captured through a shallower root.
+	for _, t := range paths {
+		if err := m.eng.CheckNew(ctx, t); errors.Is(err, apply.ErrRootRefused) {
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, fmt.Errorf("%w: nothing committed: %v", ErrRefused, err)
+		} else if err != nil {
+			return result{}, err
+		}
+	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry, Push: !noPush && !dry})
 	if err != nil {
 		return result{}, err

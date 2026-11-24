@@ -66,8 +66,9 @@ func (e *Engine) Ignore(ctx context.Context, snap *Snapshot, t model.Target) err
 
 // Ignored reports whether t is left untracked on purpose on this machine:
 // `hold ignore` recorded it, or the accepted owned root holding it has an
-// ignore glob that matches it. Unattended commits (agent hooks) skip it; a
-// commit that names it tracks it.
+// ignore glob that matches it. Unattended commits (agent hooks) skip it. A
+// commit that names it tracks a file `hold ignore` recorded; a file an
+// ignore glob matches is never captured (CheckNew).
 func (e *Engine) Ignored(t model.Target) bool {
 	st, err := e.loadState()
 	if err != nil {

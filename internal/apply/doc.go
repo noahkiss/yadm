@@ -48,7 +48,12 @@
 //     root that is new or changed its enclave takes effect, for capture and
 //     delivery, only after AllowRoot (model.HoldRootUntrusted until then);
 //     files already in it, or copied in by adopt, go into State.Baseline and
-//     are never captured automatically.
+//     are never captured automatically. Only the deepest accepted root
+//     that contains a new file captures it, never a shallower one, and not
+//     when its ignore globs match the file, a deeper enclave root of another
+//     enclave (not accepted or not applying here) contains it, or a manifest
+//     entry names it. Track and retag refuse to take a file under an
+//     enclave root out of that enclave.
 //   - A target whose parent directory resolves outside $HOME (InsideHome,
 //     ErrOutsideHome), or whose name holds a control character, is held:
 //     never read, written or captured.
@@ -106,7 +111,8 @@
 //	func (s *Snapshot) CanOpen(e model.EnclaveName) bool // delivery: false for an on-demand enclave
 //	func (s *Snapshot) CanRead(e) bool; func (s *Snapshot) Readable() *crypt.Set; func (s *Snapshot) IsOnDemand(e) bool // stdout and key-log writes only
 //	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed
-//	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error) // a named path also reports a new file under an applying glob or in an accepted root
+//	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error) // a named path also reports a new file under an applying glob or in an accepted root that may capture it
+//	func (e *Engine) CheckNew(ctx, t model.Target) error; var ErrRootRefused // why no owned root may capture a new file t here
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)
 //	func (e *Engine) Apply(ctx, rev model.CommitID, opts ApplyOptions) (Result, error)
 //	func (e *Engine) Capture(ctx, drift []Drift) (Capture, error) // a new file an applying glob matches captures through that entry (rules, enclave, round trip)

@@ -612,7 +612,7 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	if !managedOrRooted(snap, t) || m.eng.Ignored(t) {
-		return Verdict{}, nil // ignored on purpose: only a named commit tracks it
+		return Verdict{}, nil // ignored on purpose: a named commit tracks a hold-ignored file; an ignore glob's never
 	}
 	if ls := liveLeases(m.paths.State, []model.Target{t}); len(ls) > 0 {
 		// Leased: recorded, not committed; the holder, stop or the timer
