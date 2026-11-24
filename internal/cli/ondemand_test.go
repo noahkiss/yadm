@@ -367,3 +367,37 @@ func TestShowAsRendersPeerHome(t *testing.T) {
 	secrecytest.AssertRepoClean(t, a.Source, canary)
 	secrecytest.AssertRepoClean(t, remote, canary)
 }
+
+// TestShowHomeRefusesForgedValues: a status record is self-reported and any
+// machine that can push can write one. show --as prints a peer's home and
+// user only when they look like a home and a user: an absolute clean path
+// and a plain name, without control characters, of bounded length. Anything
+// else renders as the $HOME and $USER placeholders.
+func TestShowHomeRefusesForgedValues(t *testing.T) {
+	cases := []struct {
+		home, user string
+		ok         bool
+	}{
+		{"/srv/user-c", "user-c", true},
+		{"/srv/homes/user-c", "user-c", true},
+		{"relative/home", "user-c", false},
+		{"/srv/../etc", "user-c", false},
+		{"/srv/user-c/", "user-c", false},
+		{"/srv/user-c\x1b]0;title\x07", "user-c", false},
+		{"/srv/user-c\n", "user-c", false},
+		{"/srv/user-c", "user\x1b[2J", false},
+		{"/srv/user-c", "a/b", false},
+		{"/" + strings.Repeat("h", 5000), "user-c", false},
+		{"/srv/user-c", strings.Repeat("u", 300), false},
+	}
+	for _, c := range cases {
+		var mctx model.Context
+		got := showHome(&mctx, model.Status{Home: c.home, User: c.user}, true)
+		if (got == homePublished) != c.ok {
+			t.Errorf("showHome(%q, %q) = %s, want published %v", c.home, c.user, got, c.ok)
+		}
+		if got == homePlaceholder && (mctx.Home != "$HOME" || mctx.User != "$USER") {
+			t.Errorf("showHome(%q, %q): placeholder context %q %q", c.home, c.user, mctx.Home, mctx.User)
+		}
+	}
+}

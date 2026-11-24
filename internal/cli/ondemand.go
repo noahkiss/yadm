@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -44,15 +46,33 @@ const (
 )
 
 // showHome fills the home and user of another machine's render context
-// from its status record. A machine that published neither renders with
-// the literal placeholders $HOME and $USER, never with this machine's own.
+// from its status record. A machine that published neither, or values that
+// are not an absolute clean path and a plain name (the record is
+// self-reported), renders with the literal placeholders $HOME and $USER,
+// never with this machine's own.
 func showHome(mctx *model.Context, st model.Status, ok bool) string {
-	if ok && st.Home != "" && st.User != "" {
+	if ok && plausibleHome(st.Home) && plausibleUser(st.User) {
 		mctx.Home, mctx.User = st.Home, st.User
 		return homePublished
 	}
 	mctx.Home, mctx.User = "$HOME", "$USER"
 	return homePlaceholder
+}
+
+// plausibleHome reports an absolute, clean slash path of bounded length
+// without control characters.
+func plausibleHome(h string) bool {
+	return len(h) <= 4096 && path.IsAbs(h) && path.Clean(h) == h && printable(h)
+}
+
+// plausibleUser reports a non-empty name of bounded length without a slash
+// or control characters.
+func plausibleUser(u string) bool {
+	return u != "" && len(u) <= 256 && !strings.Contains(u, "/") && printable(u)
+}
+
+func printable(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // cmdShow prints a target as a fleet machine receives it: the same render
