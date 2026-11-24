@@ -38,4 +38,16 @@ func TestNewRecoveryRefusesManaged(t *testing.T) {
 	if env, code, _ := yadm(t, "enclave", "set-recovery", "--enclave", "personal", "--recovery-dir", a.State, "--new-recovery", filepath.Join(a.Config, "rec")); code != ExitUsage || !strings.Contains(env.Error.Message, "outside") {
 		t.Fatalf("--new-recovery in the config directory: exit %d %+v", code, env.Error)
 	}
+
+	// A set-up machine whose manifest does not load refuses rather than
+	// skip the managed-path check.
+	writeFile(t, filepath.Join(a.Source, "manifest.toml"), "schema = [\n")
+	git(t, a.Source, "commit", "-qam", "break the manifest")
+	dir := filepath.Join(root, "offline", "rec")
+	if env, code, _ := yadm(t, "enclave", "new-recovery", dir); code == ExitOK {
+		t.Fatalf("new-recovery with a broken manifest: %+v", env)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("a refused new-recovery created its directory")
+	}
 }

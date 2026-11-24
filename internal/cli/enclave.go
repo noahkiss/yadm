@@ -324,9 +324,13 @@ a directory with mode 0700.`
 func (a *app) cmdEnclaveNewRecovery(cmd *cobra.Command, args []string) (result, error) {
 	// It needs no init; on an initialized machine the guard also knows the
 	// manifest's managed paths and owned roots.
+	// A machine that is set up but fails to load refuses: the guard would
+	// not know its owned roots.
 	var g recoveryGuard
 	if m, err := openLoaded(cmd.Context()); err == nil {
 		g = m.recoveryGuard()
+	} else if !errors.Is(err, errNotInitialized) {
+		return result{}, fmt.Errorf("new-recovery needs the manifest to keep the identity out of managed paths: %w", err)
 	} else {
 		p, err := DefaultPaths()
 		if err != nil {
