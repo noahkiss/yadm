@@ -488,36 +488,67 @@ func (p pendingPins) Get(e model.EnclaveName) (*crypt.Pin, error) {
 
 func (p pendingPins) Set(e model.EnclaveName, pin crypt.Pin) error { return p.mem.Set(e, pin) }
 
+// entryBuild computes a key-log entry, plus the reseal capture an entry
+// that starts an epoch needs, from m.snap.
+type entryBuild func(ctx context.Context) (crypt.LogEntry, *apply.Capture, error)
+
 // writeEntry commits a key-log entry (plus a reseal capture) on main through
 // sync.Commit, so the gate and the lock apply, pushes it, and pins it. The
-// pin moves only after the commit lands.
-func (m *machineEnv) writeEntry(ctx context.Context, version string, e crypt.LogEntry, reseal *apply.Capture, subject string) (entryData, error) {
-	b, err := crypt.MarshalLogEntry(e)
-	if err != nil {
-		return entryData{}, err
+// pin moves only after the commit lands. The caller has run build once to
+// refuse early; writeEntry runs it again under the commit's hold of the
+// sync lock, on the main the commit lands on, so an entry another process
+// appended meanwhile is extended, never overwritten. A sequence number the
+// source already holds is refused: the key log is append-only. It returns
+// the entry and reseal that landed.
+func (m *machineEnv) writeEntry(ctx context.Context, version string, enc model.EnclaveName, subject string, build entryBuild) (entryData, crypt.LogEntry, *apply.Capture, error) {
+	var e crypt.LogEntry
+	var reseal *apply.Capture
+	opts := sync.CommitOptions{
+		Message:      subject,
+		ChangesScope: model.Scope(enc),
+		// A reseal lands whole with its entry, or nothing lands: an entry
+		// that starts an epoch must never commit without the reseal.
+		Atomic: true,
+		Push:   true,
+		Build: func(ctx context.Context) (*apply.Capture, []store.Change, error) {
+			if _, err := m.reload(ctx); err != nil {
+				return nil, nil, err
+			}
+			x, r, err := build(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+			p := crypt.LogPath(x.Enclave, x.Seq)
+			if _, ok := m.snap.Tree[p]; ok || x.Enclave != enc {
+				return nil, nil, fmt.Errorf("%w: key log of %s already holds seq %d", crypt.ErrBrokenChain, x.Enclave, x.Seq)
+			}
+			b, err := crypt.MarshalLogEntry(x)
+			if err != nil {
+				return nil, nil, err
+			}
+			e, reseal = x, r
+			cp := r
+			if cp == nil {
+				cp = &apply.Capture{}
+			}
+			return cp, []store.Change{{Path: p, Blob: b, Mode: 0o100644}}, nil
+		},
 	}
-	fp, err := crypt.Fingerprint(e)
-	if err != nil {
-		return entryData{}, err
+	rep, pushErr, err := m.commitThrough(ctx, version, opts)
+	if e.Enclave == "" {
+		if err == nil {
+			err = fmt.Errorf("enclave %s: no key-log entry was written", enc)
+		}
+		return entryData{Enclave: enc, Members: []model.MachineID{}}, e, nil, err
+	}
+	fp, ferr := crypt.Fingerprint(e)
+	if ferr != nil {
+		return entryData{}, e, reseal, errors.Join(err, ferr)
 	}
 	d := entryData{Enclave: e.Enclave, Op: e.Op, Seq: e.Seq, Epoch: e.Epoch, Subject: e.Subject, Fingerprint: fp, Members: []model.MachineID{}}
 	for _, mb := range e.Members {
 		d.Members = append(d.Members, mb.Machine)
 	}
-	opts := sync.CommitOptions{
-		Message:      subject,
-		Changes:      []store.Change{{Path: crypt.LogPath(e.Enclave, e.Seq), Blob: b, Mode: 0o100644}},
-		ChangesScope: model.Scope(e.Enclave),
-		Capture:      reseal,
-		// A reseal lands whole with its entry, or nothing lands: an entry
-		// that starts an epoch must never commit without the reseal.
-		Atomic: reseal != nil,
-		Push:   true,
-	}
-	if reseal == nil {
-		opts.Capture = &apply.Capture{}
-	}
-	rep, pushErr, err := m.commitThrough(ctx, version, opts)
 	if pushErr != nil {
 		d.PushError = pushErr.Error()
 	}
@@ -530,13 +561,13 @@ func (m *machineEnv) writeEntry(ctx context.Context, version string, e crypt.Log
 	}
 	d.Commit = id
 	if id == "" {
-		return d, err
+		return d, e, reseal, err
 	}
 	pin, perr := crypt.PinOf(e)
 	if perr == nil {
 		perr = crypt.FilePins(m.paths.State).Set(e.Enclave, pin)
 	}
-	return d, errors.Join(err, perr)
+	return d, e, reseal, errors.Join(err, perr)
 }
 
 func (a *app) cmdEnclaveCreate(cmd *cobra.Command, args []string) (result, error) {
@@ -563,11 +594,17 @@ func (a *app) cmdEnclaveCreate(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	entry, _, err := crypt.Create(e, m.id, rec, m.pendingPins())
-	if err != nil {
+	build := func(context.Context) (crypt.LogEntry, *apply.Capture, error) {
+		if l, ok := m.snap.Enclaves[e]; ok && l.Head.Seq > 0 {
+			return crypt.LogEntry{}, nil, fmt.Errorf("enclave %s already has a key log", e)
+		}
+		entry, _, err := crypt.Create(e, m.id, rec, m.pendingPins())
+		return entry, nil, err
+	}
+	if _, _, err := build(ctx); err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, a.version, entry, nil, "enclave "+string(e)+": create")
+	d, _, _, err := m.writeEntry(ctx, a.version, e, "enclave "+string(e)+": create", build)
 	d.Recovery = dir
 	next := []string{"yadm sync"}
 	if dir != "" {
@@ -604,7 +641,7 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 	} else if who, err = machineID(m, args[0]); err != nil {
 		return result{}, usagef("%v", err)
 	}
-	ring, head, err := ringFor(m, e)
+	_, head, err := ringFor(m, e)
 	if err != nil {
 		return result{}, err
 	}
@@ -627,11 +664,19 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 			}
 		}
 	}
-	entry, err := ring.Add(head, crypt.Member{Machine: who, Recipient: recipient, SignKey: signKey}, m.id, m.pendingPins())
-	if err != nil {
+	member := crypt.Member{Machine: who, Recipient: recipient, SignKey: signKey}
+	build := func(context.Context) (crypt.LogEntry, *apply.Capture, error) {
+		ring, head, err := ringFor(m, e)
+		if err != nil {
+			return crypt.LogEntry{}, nil, err
+		}
+		entry, err := ring.Add(head, member, m.id, m.pendingPins())
+		return entry, nil, err
+	}
+	if _, _, err := build(ctx); err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
+	d, _, _, err := m.writeEntry(ctx, a.version, e, fmt.Sprintf("enclave %s: add %s", e, who), build)
 	d.KeysFrom = from
 	if d.Commit == "" {
 		return result{data: d, next: warn}, err
@@ -772,35 +817,48 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, usagef("%v", err)
 	}
-	ring, head, err := ringFor(m, e)
+	var head crypt.LogEntry
+	var newRing *crypt.Keyring
+	build := func(ctx context.Context) (crypt.LogEntry, *apply.Capture, error) {
+		ring, h, err := ringFor(m, e)
+		if err != nil {
+			return crypt.LogEntry{}, nil, err
+		}
+		entry, nr, err := ring.Remove(h, who, m.id, m.pendingPins())
+		if err != nil {
+			return crypt.LogEntry{}, nil, err
+		}
+		// Reseal under the new epoch with a snapshot that holds the new keyring.
+		rings := map[model.EnclaveName]*crypt.Keyring{}
+		for k, v := range m.snap.Readable().Rings {
+			rings[k] = v
+		}
+		rings[e] = nr
+		snap := *m.snap
+		snap.Keys = &crypt.Set{Rings: rings}
+		snap.Crypto = apply.SetCrypto(snap.Keys)
+		c, err := m.eng.Reseal(ctx, &snap, e)
+		if err != nil {
+			return crypt.LogEntry{}, nil, err
+		}
+		head, newRing = h, nr
+		return entry, &c, nil
+	}
+	_, first, err := build(ctx)
 	if err != nil {
 		return result{}, err
 	}
-	entry, newRing, err := ring.Remove(head, who, m.id, m.pendingPins())
-	if err != nil {
-		return result{}, err
+	d, entry, c, err := m.writeEntry(ctx, a.version, e, fmt.Sprintf("enclave %s: remove %s", e, who), build)
+	if c == nil {
+		c = first
 	}
-	// Reseal under the new epoch with a snapshot that holds the new keyring.
-	rings := map[model.EnclaveName]*crypt.Keyring{}
-	for k, v := range m.snap.Readable().Rings {
-		rings[k] = v
-	}
-	rings[e] = newRing
-	snap := *m.snap
-	snap.Keys = &crypt.Set{Rings: rings}
-	snap.Crypto = apply.SetCrypto(snap.Keys)
-	c, err := m.eng.Reseal(ctx, &snap, e)
-	if err != nil {
-		return result{}, err
-	}
-	d, err := m.writeEntry(ctx, a.version, entry, &c, fmt.Sprintf("enclave %s: remove %s", e, who))
 	d.Resealed = c.Paths
 	if d.Commit == "" {
 		// Nothing landed: no entry, no pin, no epoch change.
 		return result{data: d, next: heldNext(d.Holds)}, removeHeld(e, who, c.Paths, d.Holds, err)
 	}
 	if err == nil {
-		err = m.resealLanded(ctx, d.Commit, c)
+		err = m.resealLanded(ctx, d.Commit, *c)
 	}
 	retired := false
 	if err == nil {
@@ -809,7 +867,7 @@ func (a *app) cmdEnclaveRemove(cmd *cobra.Command, args []string) (result, error
 		var re crypt.LogEntry
 		if re, err = newRing.Retire(entry, m.id, m.pendingPins()); err == nil {
 			var rd entryData
-			rd, err = m.writeEntry(ctx, a.version, re, nil, fmt.Sprintf("enclave %s: retire epochs below %d", e, re.MinEpoch))
+			rd, _, _, err = m.writeEntry(ctx, a.version, e, fmt.Sprintf("enclave %s: retire epochs below %d", e, re.MinEpoch), retireBuild(m, e))
 			retired = err == nil && rd.Commit != ""
 		}
 	}
@@ -882,16 +940,25 @@ func (a *app) cmdEnclaveRetire(cmd *cobra.Command, args []string) (result, error
 	if err != nil {
 		return result{}, err
 	}
-	ring, head, err := ringFor(m, e)
+	build := retireBuild(m, e)
+	entry, _, err := build(ctx)
 	if err != nil {
 		return result{}, err
 	}
-	entry, err := ring.Retire(head, m.id, m.pendingPins())
-	if err != nil {
-		return result{}, err
-	}
-	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: retire epochs below %d", e, entry.MinEpoch))
+	d, _, _, err := m.writeEntry(ctx, a.version, e, fmt.Sprintf("enclave %s: retire epochs below %d", e, entry.MinEpoch), build)
 	return result{data: d}, err
+}
+
+// retireBuild retires the epochs below the head's of e.
+func retireBuild(m *machineEnv, e model.EnclaveName) entryBuild {
+	return func(context.Context) (crypt.LogEntry, *apply.Capture, error) {
+		ring, head, err := ringFor(m, e)
+		if err != nil {
+			return crypt.LogEntry{}, nil, err
+		}
+		entry, err := ring.Retire(head, m.id, m.pendingPins())
+		return entry, nil, err
+	}
 }
 
 func (a *app) cmdEnclaveSetRecovery(cmd *cobra.Command, args []string) (result, error) {
@@ -923,11 +990,19 @@ func (a *app) cmdEnclaveSetRecovery(cmd *cobra.Command, args []string) (result, 
 	if err != nil {
 		return result{}, err
 	}
-	entry, err := crypt.SetRecovery(l.Head, cur, to, m.pendingPins())
-	if err != nil {
+	enc := model.EnclaveName(e)
+	build := func(context.Context) (crypt.LogEntry, *apply.Capture, error) {
+		l, ok := m.snap.Enclaves[enc]
+		if !ok || l.Err != nil {
+			return crypt.LogEntry{}, nil, fmt.Errorf("enclave %s: key log not readable: %v", e, l.Err)
+		}
+		entry, err := crypt.SetRecovery(l.Head, cur, to, m.pendingPins())
+		return entry, nil, err
+	}
+	if _, _, err := build(ctx); err != nil {
 		return result{}, err
 	}
-	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: set recovery", e))
+	d, _, _, err := m.writeEntry(ctx, a.version, enc, fmt.Sprintf("enclave %s: set recovery", e), build)
 	d.Recovery = saved
 	return result{data: d}, err
 }

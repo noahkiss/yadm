@@ -57,8 +57,9 @@
 //	source mv                      apply.Engine.MoveSource, committed through sync.Commit (Changes, Atomic)
 //	untrack                        apply.Engine.Untrack, committed through sync.Commit (Changes, Atomic, Forget)
 //	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`
-//	                               retag, track, untrack and source mv check their change under the lock, then
-//	                               compute it again in CommitOptions.Build, on the main the commit lands on
+//	                               retag, track, untrack, source mv and the enclave writes (writeEntry) check
+//	                               their change, then compute it again in CommitOptions.Build, on the main the
+//	                               commit lands on; writeEntry refuses a key-log seq the source holds
 //	--lock-wait, $YADM_LOCK_WAIT   a command's wait for the sync lock (default sync.CommandLockTimeout; one stderr
 //	                               line names the holder); sync --auto waits at most sync.LockTimeout
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox

@@ -45,6 +45,9 @@ var hooks = struct {
 	sleep     func(ctx context.Context, d time.Duration) error // `yadm pause` between polls
 	hookWait  time.Duration                                    // how long a harness hook waits for the lock
 	stdin     func() io.Reader
+	// beforeCommit runs when a command has checked its change and is
+	// about to commit it; a test lands another process's commit there.
+	beforeCommit func(ctx context.Context)
 }{
 	// The CLI changes the real schedule: init, adopt and `schedule install`
 	// need the live scheduler. Tests replace this hook.
@@ -401,6 +404,9 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 // after the commit landed comes back as pushErr: the commit stands and the
 // next sync pushes it.
 func (m *machineEnv) commitThrough(ctx context.Context, version string, opts sync.CommitOptions) (rep sync.Report, pushErr, err error) {
+	if f := hooks.beforeCommit; f != nil {
+		f(ctx)
+	}
 	return m.hookCommit(ctx, version, opts, cmdWait)
 }
 
