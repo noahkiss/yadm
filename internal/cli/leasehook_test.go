@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/noahkiss/yadm/internal/model"
 )
 
 // TestLeaseKeepsHooksOff: a leased path is the holder's. The post-edit hook
@@ -179,5 +181,52 @@ func TestLeaseRepeatTakeKeepsEarlierPaths(t *testing.T) {
 	env := yadmOK(t, "lease", "list")
 	if s := mustJSON(t, env.Data); !strings.Contains(s, "new.conf") || strings.Contains(s, "tool/config") {
 		t.Fatalf("lease list after a path release: %s", s)
+	}
+}
+
+// TestLeaseRaisesConflict: a lease holds back a path's commit, never a
+// conflict on it. The stop hook and post-edit still raise the conflict.
+func TestLeaseRaisesConflict(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	b := hookMachine(t, root, remote, "b", "host-b")
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	fa := filepath.Join(a.Home, ".config/tool/config")
+	writeFile(t, fa, "color = green\n")
+	hookRun(t, payload(payloadEdit, "session-a", a.Home, fa), HookPostEdit)
+	yadmOK(t, "sync")
+
+	useMachine(t, root, "b")
+	fb := filepath.Join(b.Home, ".config/tool/config")
+	writeFile(t, fb, "color = red\n")
+	if code, stdout, stderr := hookRun(t, payload(payloadEdit, "session-b", b.Home, fb), HookPostEdit); code != HookAllow {
+		t.Fatalf("b post-edit: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	yadm(t, "sync") // meets a's edit: a conflict hold
+	yadmOK(t, "lease", "take", ".config/tool", "--holder", "agent-x", "--ttl", "1h")
+
+	hasConflict := func(v Verdict) bool {
+		for _, p := range v.Packets {
+			if p.Kind == string(model.HoldConflict) && p.Target == ".config/tool/config" {
+				return true
+			}
+		}
+		return false
+	}
+	code, stdout, stderr := hookRun(t, payload(payloadStop, "session-b", b.Home, ""), HookStop)
+	if code != HookBlock {
+		t.Fatalf("stop on a leased path with a conflict: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if v := verdictOf(t, stdout); !hasConflict(v) || !strings.Contains(v.Reason, "leased by agent-x") {
+		t.Fatalf("stop verdict: %+v", v)
+	}
+	code, stdout, stderr = hookRun(t, payload(payloadEdit, "session-b", b.Home, fb), HookPostEdit)
+	if code != HookBlock {
+		t.Fatalf("post-edit on a leased path with a conflict: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	if v := verdictOf(t, stdout); !hasConflict(v) {
+		t.Fatalf("post-edit verdict: %+v", v)
 	}
 }
