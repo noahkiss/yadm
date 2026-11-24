@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,6 +80,11 @@ func TestEnclaveRootEntryKeepsEnclave(t *testing.T) {
 	yadmOK(t, "retag", z, y, "personal", "--enclave", "personal")
 	secrecytest.AssertRepoClean(t, a.Source, canaries...)
 	secrecytest.AssertRepoClean(t, remote, canaries...)
+	// The root does not deliver the variant's source as a file of its own.
+	yadmOK(t, "sync")
+	if _, err := os.Stat(filepath.Join(a.Home, ".config/vault/x.mine.toml")); !os.IsNotExist(err) {
+		t.Fatalf("the enclave root delivered the variant's source as a file: %v", err)
+	}
 
 	useMachine(t, root, string(fixture.HostB))
 	yadmOK(t, "sync")
