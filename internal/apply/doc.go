@@ -90,7 +90,7 @@
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; ReadKeys; OnDemand; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
 //	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
-//	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode is not drift, unless it drops the owner's execute bit
+//	func ModeAccepted(t model.Target, live, want fs.FileMode) bool // a stricter live mode, or group write the owner and group may read and write, is not drift (never under .ssh or .gnupg), unless it drops the owner's execute bit
 //	func InsideHome(home, p string) error; var ErrOutsideHome // p's real parent directory stays under $HOME
 //	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
 //	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error
@@ -100,8 +100,9 @@
 //	func (e *Engine) Load(ctx, rev model.CommitID) (*Snapshot, error)
 //	func ExpandRoots(man, plan, tree, allowed); const RootIndex // owned roots share their entry-less source files; Load calls it with this machine's accepted or allowed roots
 //	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
+//	func (e *Engine) OpenSource(ctx, snap *Snapshot, t model.Target) ([]byte, error) // the source as stored, a whole sealed file opened in memory; refuses what Render refuses
 //	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
-//	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write, and a new file's protected hold once the file is gone
+//	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write, and an unmanaged file's protected or gate hold once the file is gone
 //	func (s *Snapshot) CanOpen(e model.EnclaveName) bool // delivery: false for an on-demand enclave
 //	func (s *Snapshot) CanRead(e) bool; func (s *Snapshot) Readable() *crypt.Set; func (s *Snapshot) IsOnDemand(e) bool // stdout and key-log writes only
 //	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed

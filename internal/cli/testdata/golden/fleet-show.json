@@ -16,6 +16,7 @@
       "applied": "<oid>",
       "conflicts": 0,
       "held": 0,
+      "home": "$TMP/a/home",
       "last_sync": "<last_sync>",
       "machine": "<machine-id>",
       "observed": {
@@ -40,6 +41,7 @@
           "trigger": "paths"
         }
       ],
+      "user": "user",
       "version": "test"
     }
   },

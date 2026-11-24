@@ -33,7 +33,7 @@ func TestScanFindsDriftKinds(t *testing.T) {
 	w.apply(c)
 	w.write(".m", "changed\n")
 	os.Remove(w.path(".d"))
-	os.Chmod(w.path(".p"), 0o664) // wider than 0644; a stricter mode is not drift
+	os.Chmod(w.path(".p"), 0o646) // wider than 0644; a stricter mode, or group write, is not drift
 	w.write(".config/shell/extra.sh", "new\n")
 
 	ds, err := w.eng.Scan(context.Background(), ScanOptions{})

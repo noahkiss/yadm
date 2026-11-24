@@ -60,6 +60,9 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if last != nil && (last.Reroot != rerootID || last.RerootHeld != rerootHeld) {
 		changed = true // the confirmation `yadm reroot` waits for
 	}
+	if last != nil && (last.Home != s.Apply.Home || last.User != s.Apply.User) {
+		changed = true // show --as on peers renders with them
+	}
 	if !fleet.PublishDue(last, changed, now) {
 		return nil
 	}
@@ -73,6 +76,9 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 
 		Reroot:     rerootID,
 		RerootHeld: rerootHeld,
+
+		Home: s.Apply.Home,
+		User: s.Apply.User,
 	}
 	for _, h := range st.Holds {
 		rec.Held++

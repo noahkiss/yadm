@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -28,6 +30,49 @@ type showData struct {
 	Enclave  model.EnclaveName `json:"enclave,omitempty"`
 	Content  string            `json:"content"`
 	Encoding string            `json:"encoding"` // "utf-8", or "base64" for bytes that are not UTF-8
+	// HomeFrom says where {{ home }} and {{ user }} came from: this
+	// machine ("local"), the machine's status record ("published"), or the
+	// literal placeholders $HOME and $USER when it published none.
+	HomeFrom string `json:"home_from"`
+	// View is "source" with --source: the entry's source unrendered.
+	View string `json:"view,omitempty"`
+}
+
+// Where show took {{ home }} and {{ user }} from.
+const (
+	homeLocal       = "local"
+	homePublished   = "published"
+	homePlaceholder = "placeholder"
+)
+
+// showHome fills the home and user of another machine's render context
+// from its status record. A machine that published neither, or values that
+// are not an absolute clean path and a plain name (the record is
+// self-reported), renders with the literal placeholders $HOME and $USER,
+// never with this machine's own.
+func showHome(mctx *model.Context, st model.Status, ok bool) string {
+	if ok && plausibleHome(st.Home) && plausibleUser(st.User) {
+		mctx.Home, mctx.User = st.Home, st.User
+		return homePublished
+	}
+	mctx.Home, mctx.User = "$HOME", "$USER"
+	return homePlaceholder
+}
+
+// plausibleHome reports an absolute, clean slash path of bounded length
+// without control characters.
+func plausibleHome(h string) bool {
+	return len(h) <= 4096 && path.IsAbs(h) && path.Clean(h) == h && printable(h)
+}
+
+// plausibleUser reports a non-empty name of bounded length without a slash
+// or control characters.
+func plausibleUser(u string) bool {
+	return u != "" && len(u) <= 256 && !strings.Contains(u, "/") && printable(u)
+}
+
+func printable(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // cmdShow prints a target as a fleet machine receives it: the same render
@@ -51,9 +96,13 @@ func (a *app) cmdShow(cmd *cobra.Command, args []string) (result, error) {
 	}
 	id := ids[0]
 	self := id == m.local.Machine
-	mctx, _ := machineCtx(m, statuses(ctx, m), id)
+	pub := statuses(ctx, m)
+	mctx, _ := machineCtx(m, pub, id)
+	homeFrom := homeLocal
 	plan := m.snap.Plan
 	if !self {
+		st, ok := pub[id]
+		homeFrom = showHome(&mctx, st, ok)
 		paths := make([]model.SourcePath, 0, len(m.snap.Tree))
 		for p := range m.snap.Tree {
 			paths = append(paths, p)
@@ -106,16 +155,27 @@ func (a *app) cmdShow(cmd *cobra.Command, args []string) (result, error) {
 	view.Plan, view.Context = plan, mctx
 	view.Keys, view.ReadKeys, view.OnDemand = keys, keys, nil
 	view.Crypto = apply.SetCrypto(keys)
-	var live []byte
-	if self {
-		// keep rules merge into the live target, as apply does here.
-		live, _ = os.ReadFile(filepath.Join(m.home, filepath.FromSlash(string(t))))
+	source, _ := cmd.Flags().GetBool("source")
+	var out []byte
+	if source {
+		out, err = m.eng.OpenSource(ctx, &view, t)
+	} else {
+		var live []byte
+		if self {
+			// keep rules merge into the live target, as apply does here.
+			live, _ = os.ReadFile(filepath.Join(m.home, filepath.FromSlash(string(t))))
+		}
+		out, err = m.eng.Render(ctx, &view, t, live)
 	}
-	out, err := m.eng.Render(ctx, &view, t, live)
 	if err != nil {
 		return result{}, err
 	}
-	d := showData{Machine: id, Name: mctx.Machine.Name, Target: t, Source: r.Source, Enclave: r.Entry.Enclave, Content: string(out), Encoding: "utf-8"}
+	d := showData{Machine: id, Name: mctx.Machine.Name, Target: t, Source: r.Source, Enclave: r.Entry.Enclave, Content: string(out), Encoding: "utf-8", HomeFrom: homeFrom}
+	if source {
+		d.View = "source"
+	} else if homeFrom == homePlaceholder && r.Entry.Template && !a.json {
+		fmt.Fprintf(a.stderr, "yadm show: %s has published no home or user; {{ home }} and {{ user }} print as $HOME and $USER\n", who)
+	}
 	if !utf8.Valid(out) {
 		d.Content, d.Encoding = base64.StdEncoding.EncodeToString(out), "base64"
 	}

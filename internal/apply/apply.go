@@ -40,8 +40,8 @@ type TargetState struct {
 	ModTime    time.Time        `json:"mtime"`
 	Mode       uint32           `json:"mode"` // live mode at last record (stat cache)
 	// Want is the mode the entry asked for at last record. A live mode that
-	// grants a subset of it (ModeAccepted) is not drift. Zero in an older
-	// state: Mode stands for it.
+	// grants a subset of it, or adds only group write the group may read
+	// (ModeAccepted), is not drift. Zero in an older state: Mode stands for it.
 	Want    uint32   `json:"want,omitempty"`
 	SealSet []string `json:"seal_set,omitempty"` // key paths and region labels sealed at last apply
 	// The protection recorded at last apply: whole-file enclave, sealed keys

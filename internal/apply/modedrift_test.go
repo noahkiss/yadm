@@ -18,7 +18,12 @@ func TestModeAccepted(t *testing.T) {
 		{0o644, 0o644, true},
 		{0o640, 0o644, true},  // umask 027 on a 0644 file
 		{0o600, 0o644, true},  // stricter still
-		{0o664, 0o644, false}, // group write is wider
+		{0o664, 0o644, true},  // umask 002: group write git does not record
+		{0o646, 0o644, false}, // other write is wider
+		{0o666, 0o644, false}, //
+		{0o775, 0o755, true},  // umask 002 on a script
+		{0o620, 0o600, false}, // an owner-only file stays owner-only
+		{0o660, 0o640, true},  // group already reads it
 		{0o755, 0o644, false}, // an execute bit is wider
 		{0o750, 0o755, true},  // stricter, still executable by the owner
 		{0o700, 0o755, true},  //
@@ -26,9 +31,10 @@ func TestModeAccepted(t *testing.T) {
 		{0o655, 0o755, false}, // the same, with others keeping theirs
 		{0o600, 0o600, true},
 		{0o640, 0o600, false},
+		{0o464, 0o444, false}, // the owner may not write: neither may the group
 	}
 	for _, c := range cases {
-		if got := ModeAccepted(c.live, c.want); got != c.ok {
+		if got := ModeAccepted(".rc", c.live, c.want); got != c.ok {
 			t.Errorf("ModeAccepted(%#o, %#o) = %v, want %v", c.live, c.want, got, c.ok)
 		}
 	}
@@ -52,7 +58,7 @@ func TestStricterModeIsNotDrift(t *testing.T) {
 	w.setMode(c, "files/.bin/noexec", gitModeExec)
 	w.apply(c)
 
-	chmod := map[model.Target]os.FileMode{".strict": 0o640, ".wide": 0o664, ".bin/narrow": 0o750, ".bin/noexec": 0o644}
+	chmod := map[model.Target]os.FileMode{".strict": 0o640, ".wide": 0o646, ".bin/narrow": 0o750, ".bin/noexec": 0o644}
 	for tg, m := range chmod {
 		if err := os.Chmod(w.path(tg), m); err != nil {
 			t.Fatal(err)
@@ -180,6 +186,99 @@ func TestStricterModeTakenOver(t *testing.T) {
 		}
 		if info, _ := os.Stat(w.path(".s")); info.Mode().Perm() != 0o640 {
 			t.Errorf("adopt=%v: .s mode %#o, want 0640 kept", adopt, info.Mode().Perm())
+		}
+	}
+}
+
+// TestGroupWriteIsNotDrift: a file a tool rewrote under umask 002 differs
+// from its entry only by group write, which git does not record. Scan
+// reports nothing, apply holds nothing and leaves the mode, so no hold
+// recurs on every sync. An owner-only target, other write and a gained
+// execute bit still drift and hold.
+func TestGroupWriteIsNotDrift(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	files := map[model.SourcePath]string{
+		"files/.rc": "r\n", "files/.bin/tool": "#!/bin/sh\n",
+		"files/.ssh/config": "Host a\n", "files/.world": "o\n", "files/.exec": "x\n",
+	}
+	entries := []manifest.Entry{{Target: ".rc"}, {Target: ".bin/tool"}, {Target: ".ssh/config"}, {Target: ".world"}, {Target: ".exec"}}
+	c := w.commit(files, entries...)
+	w.setMode(c, "files/.bin/tool", gitModeExec)
+	w.apply(c)
+
+	chmod := map[model.Target]os.FileMode{".rc": 0o664, ".bin/tool": 0o775, ".ssh/config": 0o620, ".world": 0o666, ".exec": 0o755}
+	for tg, m := range chmod {
+		if err := os.Chmod(w.path(tg), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantDrift := map[model.Target]bool{".ssh/config": true, ".world": true, ".exec": true}
+	for round := 0; round < 2; round++ {
+		w.tick(1e9)
+		ds, err := w.eng.Scan(ctx, ScanOptions{FullHash: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		drifting := map[model.Target]bool{}
+		for _, d := range ds {
+			drifting[d.Target] = true
+		}
+		res := w.apply(c)
+		held := map[model.Target]bool{}
+		for _, h := range res.Holds {
+			held[h.Target] = true
+		}
+		for tg := range chmod {
+			if drifting[tg] != wantDrift[tg] || held[tg] != wantDrift[tg] {
+				t.Errorf("round %d %s: drifting %v held %v, want %v", round, tg, drifting[tg], held[tg], wantDrift[tg])
+			}
+		}
+	}
+	for _, tg := range []model.Target{".rc", ".bin/tool"} {
+		if info, _ := os.Stat(w.path(tg)); info.Mode().Perm() != chmod[tg] {
+			t.Errorf("%s: apply changed mode to %#o, want %#o kept", tg, info.Mode().Perm(), chmod[tg])
+		}
+	}
+}
+
+// TestGroupWriteDriftsWhereStrict: group write stays drift where a tool
+// treats it as a security change. ssh refuses a group-writable file under
+// ~/.ssh even when the manifest asks for 0644 there, and a file whose owner
+// may not write it gains nothing from a group that may. Both drift and
+// hold, so no 0664 under ~/.ssh passes as noise.
+func TestGroupWriteDriftsWhereStrict(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	files := map[model.SourcePath]string{"files/.ssh/config": "Host a\n", "files/.gnupg/gpg.conf": "g\n", "files/.ro": "r\n"}
+	c := w.commit(files,
+		manifest.Entry{Target: ".ssh/config", Mode: 0o644},
+		manifest.Entry{Target: ".gnupg/gpg.conf", Mode: 0o644},
+		manifest.Entry{Target: ".ro", Mode: 0o444})
+	w.apply(c)
+	chmod := map[model.Target]os.FileMode{".ssh/config": 0o664, ".gnupg/gpg.conf": 0o664, ".ro": 0o464}
+	for tg, m := range chmod {
+		if err := os.Chmod(w.path(tg), m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.tick(1e9)
+	ds, err := w.eng.Scan(ctx, ScanOptions{FullHash: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifting := map[model.Target]bool{}
+	for _, d := range ds {
+		drifting[d.Target] = d.Kind == DriftMode
+	}
+	res := w.apply(c)
+	held := map[model.Target]bool{}
+	for _, h := range res.Holds {
+		held[h.Target] = true
+	}
+	for tg := range chmod {
+		if !drifting[tg] || !held[tg] {
+			t.Errorf("%s at %#o: mode drift %v, held %v; want both", tg, chmod[tg], drifting[tg], held[tg])
 		}
 	}
 }

@@ -353,7 +353,8 @@ A lease lasts --ttl, at most 24h (a longer --ttl is capped). A repeat take
 by the same holder adds its paths and renews the expiry of all of them.
 yadm lease release <holder> ends the lease; with paths it drops only those.
 When a lease ends, pending paths commit as usual: through the next hook
-or the timer.`
+or the timer. yadm check and the session-start hook name each live lease,
+so a forgotten one is seen before it expires.`
 
 // ---- deferred decisions ----
 
@@ -753,6 +754,37 @@ func mergeHolds(a, b []model.Hold) []model.Hold {
 	return out
 }
 
+// leaseLine describes one live lease: holder, paths and expiry. Long marks
+// a lease that expires later than LeaseMax from now: taken before the cap,
+// or the clock moved back.
+type leaseLine struct {
+	Text string
+	Long bool
+}
+
+// leaseLines describes every live lease. A forgotten lease holds its paths
+// back until it expires, so yadm check and the session-start hook name
+// each one.
+func leaseLines(stateDir string, now time.Time) ([]leaseLine, error) {
+	ls, err := sync.FileLeases(stateDir).List()
+	if err != nil {
+		return nil, err
+	}
+	var out []leaseLine
+	for _, x := range ls {
+		if !now.Before(x.Expires) {
+			continue
+		}
+		l := leaseLine{Text: fmt.Sprintf("%s holds %s until %s (yadm lease release %s)", x.Holder, strings.Join(x.Paths, ", "), clockOn(x.Expires, now), model.ShellQuote(x.Holder))}
+		if x.Expires.After(now.Add(LeaseMax + time.Minute)) {
+			l.Long = true
+			l.Text += fmt.Sprintf("; it outlasts the %s cap", shortDuration(LeaseMax))
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
 // liveLeases maps each of targets that a live lease names to that lease.
 // Any holder counts: a holder name is a free-form label, and hooks never
 // match it against a session. An expired lease protects nothing.
@@ -870,6 +902,13 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	}
 	if n := len(deferred); n > 0 {
 		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) still waiting, %d expired and open again: yadm review list", n-expired, expired))
+	}
+	if ls, _ := leaseLines(m.paths.State, hooks.now()); len(ls) > 0 {
+		texts := make([]string, len(ls))
+		for i, l := range ls {
+			texts[i] = l.Text
+		}
+		lines = append(lines, fmt.Sprintf("yadm: %d live lease(s) keep paths uncommitted: %s", len(ls), strings.Join(texts, "; ")))
 	}
 	if s := m.fleetDrift(ctx, snap); s != "" {
 		lines = append(lines, s)

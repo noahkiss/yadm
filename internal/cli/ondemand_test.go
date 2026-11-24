@@ -282,3 +282,122 @@ func TestOnDemandUnknownNameFailsCheck(t *testing.T) {
 		t.Fatalf("check: %+v", c)
 	}
 }
+
+// TestShowAsRendersPeerHome: a template that reads {{ home }} and
+// {{ user }} renders for another machine with the home and user that
+// machine published in its status record. Here an on-demand member prints
+// a peer's sealed template, and --source prints the opened template
+// unrendered. Both go to stdout only: the enclave's plaintext reaches
+// neither the member's $HOME and state nor any object store. A machine that
+// published neither renders with $HOME and $USER placeholders, and the
+// output says so.
+func TestShowAsRendersPeerHome(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	fx := fixture.Build(t)
+	canary := fx.Canaries["client"]
+	const tmplSrc = "sealed/client/.config/client-tool/env.tmpl"
+	blob, err := fx.Rings["client"].SealFile(tmplSrc, []byte("home={{ home }}\nuser={{ user }}\nsecret="+canary.String()+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(fx.Root, filepath.FromSlash(tmplSrc)), string(blob))
+	mp := filepath.Join(fx.Root, "manifest.toml")
+	writeFile(t, mp, readFile(t, mp)+"\n[[file]]\ntarget = \".config/client-tool/env\"\nsource = \""+tmplSrc+"\"\nenclave = \"client\"\nwhen = \"type:client\"\ntemplate = true\n")
+	remote := fixtureRemote(t, root, fx)
+	bin := t.TempDir()
+	writeFile(t, filepath.Join(bin, "secret-check"), "#!/bin/sh\ncat >/dev/null\necho '{\"schema\":1,\"ok\":true}'\n")
+	if err := os.Chmod(filepath.Join(bin, "secret-check"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// host-c, a client member, publishes its home and user, and adds host-a.
+	t.Setenv("USER", "user-c")
+	c := fixtureMachine(t, root, remote, fx, fixture.HostC, true)
+	yadmOK(t, "apply")
+	yadmOK(t, "task", "allow")
+	ha := fx.Identities[fixture.HostA].Member()
+	env := yadmOK(t, "enclave", "add", "host-a", "--enclave", "client", "--recipient", ha.Recipient, "--sign-key", ha.SignKey)
+	fp := decode[entryData](t, env.Data).Fingerprint
+	yadmOK(t, "sync")
+
+	// host-a reads client on demand.
+	t.Setenv("USER", "user-a")
+	a := fixtureMachine(t, root, remote, fx, fixture.HostA, true)
+	yadmOK(t, "enclave", "on-demand", "client")
+	yadmOK(t, "enclave", "join", "client", "--expect", fp)
+	yadmOK(t, "apply")
+	yadmOK(t, "sync")
+
+	env, code, _ := yadm(t, "show", ".config/client-tool/env", "--as", "host-c")
+	if code != ExitOK {
+		t.Fatalf("show --as host-c: exit %d %+v", code, env.Error)
+	}
+	d := decode[showData](t, env.Data)
+	want := "home=" + c.Home + "\nuser=user-c\nsecret=" + canary.String() + "\n"
+	if d.Content != want || d.HomeFrom != homePublished {
+		t.Fatalf("show --as host-c: home_from %q, content %q", d.HomeFrom, d.Content)
+	}
+	out, _, code := yadmRaw(t, "show", ".config/client-tool/env", "--as", "host-c")
+	if code != ExitOK || out != want {
+		t.Fatalf("show --as host-c text: exit %d %q", code, out)
+	}
+	out, _, code = yadmRaw(t, "show", "--source", ".config/client-tool/env", "--as", "host-c")
+	if code != ExitOK || out != "home={{ home }}\nuser={{ user }}\nsecret="+canary.String()+"\n" {
+		t.Fatalf("show --source --as host-c: exit %d %q", code, out)
+	}
+
+	// host-b never synced: it published no home, so the render uses
+	// placeholders and says so.
+	env = yadmOK(t, "show", ".gitconfig", "--as", "host-b")
+	if d := decode[showData](t, env.Data); d.HomeFrom != homePlaceholder || !strings.Contains(d.Content, "excludesfile = $HOME/.config/git/ignore") {
+		t.Fatalf("show --as host-b: %+v", d)
+	}
+	if _, stderr, code := yadmRaw(t, "show", ".gitconfig", "--as", "host-b"); code != ExitOK || !strings.Contains(stderr, "print as $HOME and $USER") {
+		t.Fatalf("show --as host-b text: exit %d, stderr %q", code, stderr)
+	}
+	// This machine renders with its own.
+	env = yadmOK(t, "show", ".gitconfig")
+	if d := decode[showData](t, env.Data); d.HomeFrom != homeLocal || !strings.Contains(d.Content, "excludesfile = "+a.Home+"/.config/git/ignore") {
+		t.Fatalf("show as host-a: %+v", d)
+	}
+
+	secrecytest.AssertTreeClean(t, a.Home, canary)
+	secrecytest.AssertRepoClean(t, a.Source, canary)
+	secrecytest.AssertRepoClean(t, remote, canary)
+}
+
+// TestShowHomeRefusesForgedValues: a status record is self-reported and any
+// machine that can push can write one. show --as prints a peer's home and
+// user only when they look like a home and a user: an absolute clean path
+// and a plain name, without control characters, of bounded length. Anything
+// else renders as the $HOME and $USER placeholders.
+func TestShowHomeRefusesForgedValues(t *testing.T) {
+	cases := []struct {
+		home, user string
+		ok         bool
+	}{
+		{"/srv/user-c", "user-c", true},
+		{"/srv/homes/user-c", "user-c", true},
+		{"relative/home", "user-c", false},
+		{"/srv/../etc", "user-c", false},
+		{"/srv/user-c/", "user-c", false},
+		{"/srv/user-c\x1b]0;title\x07", "user-c", false},
+		{"/srv/user-c\n", "user-c", false},
+		{"/srv/user-c", "user\x1b[2J", false},
+		{"/srv/user-c", "a/b", false},
+		{"/" + strings.Repeat("h", 5000), "user-c", false},
+		{"/srv/user-c", strings.Repeat("u", 300), false},
+	}
+	for _, c := range cases {
+		var mctx model.Context
+		got := showHome(&mctx, model.Status{Home: c.home, User: c.user}, true)
+		if (got == homePublished) != c.ok {
+			t.Errorf("showHome(%q, %q) = %s, want published %v", c.home, c.user, got, c.ok)
+		}
+		if got == homePlaceholder && (mctx.Home != "$HOME" || mctx.User != "$USER") {
+			t.Errorf("showHome(%q, %q): placeholder context %q %q", c.home, c.user, mctx.Home, mctx.User)
+		}
+	}
+}

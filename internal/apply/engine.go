@@ -293,10 +293,20 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 // the mode its entry wants: it grants no bit outside want (a stricter mode,
 // such as 0640 from a tool writing under umask 027 where 0644 is wanted),
 // and keeps the owner's execute bit when want has it, since a script that
-// loses it stops working.
-func ModeAccepted(live, want fs.FileMode) bool {
+// loses it stops working. One wider bit is noise, not drift: group write on
+// a file whose group may already read it (0664 from a tool writing under
+// umask 002 where 0644 is wanted). Git does not record it, so no capture
+// could settle it. An owner-only want (0600, 0700), a want the owner may not
+// write (0444), a target under .ssh or .gnupg (ssh refuses a group-writable
+// file there, whatever mode the manifest asks for) and other write stay
+// strict.
+func ModeAccepted(t model.Target, live, want fs.FileMode) bool {
 	live, want = live.Perm(), want.Perm()
-	if live&^want != 0 {
+	extra := live &^ want
+	if want&0o240 == 0o240 && !privateTarget(t) {
+		extra &^= 0o020
+	}
+	if extra != 0 {
 		return false
 	}
 	return want&0o100 == 0 || live&0o100 != 0
@@ -441,43 +451,74 @@ func (s *Snapshot) CanOpen(enc model.EnclaveName) bool { return s.canOpen(enc) }
 // pipeline; diff and hook summaries use it. It writes nothing. A sealed
 // entry this machine cannot open fails with crypt.ErrNotMember.
 func (e *Engine) Render(ctx context.Context, snap *Snapshot, t model.Target, lv []byte) ([]byte, error) {
-	if snap == nil || snap.Plan == nil {
-		return nil, errors.New("render: no snapshot")
-	}
-	r, ok := snap.Plan.Targets[t]
-	if !ok {
-		return nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
-	}
-	if enc := r.Entry.Enclave; enc != "" && snap.IsOnDemand(enc) {
-		return nil, fmt.Errorf("%s is on demand on this machine and never delivered; yadm show %s prints it: %w", enc, model.ShellQuote(string(t)), crypt.ErrNotMember)
-	}
-	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
-		return nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
-	}
-	raw, _, err := e.readSource(ctx, snap, r.Source)
+	r, raw, err := e.planned(ctx, snap, t)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.Source, err)
+		return nil, err
 	}
 	out, _, err := e.produceFrom(snap, r, raw, lv)
 	return out, err
+}
+
+// OpenSource returns the source of target t at snap as its entry stores
+// it, before any render or rule: a whole sealed file opened, a template
+// unrendered, sealed values and regions left as their tokens. It refuses
+// what Render refuses and writes nothing.
+func (e *Engine) OpenSource(ctx context.Context, snap *Snapshot, t model.Target) ([]byte, error) {
+	r, raw, err := e.planned(ctx, snap, t)
+	if err != nil {
+		return nil, err
+	}
+	return openRaw(snap, r, raw)
+}
+
+// planned reads the raw source of a target that snap's plan produces,
+// after the checks Render and OpenSource share.
+func (e *Engine) planned(ctx context.Context, snap *Snapshot, t model.Target) (manifest.Resolved, []byte, error) {
+	if snap == nil || snap.Plan == nil {
+		return manifest.Resolved{}, nil, errors.New("render: no snapshot")
+	}
+	r, ok := snap.Plan.Targets[t]
+	if !ok {
+		return r, nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
+	}
+	if enc := r.Entry.Enclave; enc != "" && snap.IsOnDemand(enc) {
+		return r, nil, fmt.Errorf("%s is on demand on this machine and never delivered; yadm show %s prints it: %w", enc, model.ShellQuote(string(t)), crypt.ErrNotMember)
+	}
+	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
+		return r, nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
+	}
+	raw, _, err := e.readSource(ctx, snap, r.Source)
+	if err != nil {
+		return r, nil, fmt.Errorf("%s: %w", r.Source, err)
+	}
+	return r, raw, nil
+}
+
+// openRaw opens a whole sealed file in memory; other sources pass through.
+func openRaw(snap *Snapshot, r manifest.Resolved, raw []byte) ([]byte, error) {
+	if enc := r.Entry.Enclave; enc != "" {
+		if !snap.canOpen(enc) {
+			return nil, fmt.Errorf("%s: %w", r.Target, crypt.ErrNotMember)
+		}
+		p, err := snap.cr().OpenFile(enc, r.Source, raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: open: %w", r.Source, err)
+		}
+		return p, nil
+	}
+	if crypt.IsSealedFile(raw) {
+		return nil, fmt.Errorf("%s: sealed container in an entry without enclave", r.Source)
+	}
+	return raw, nil
 }
 
 // produceFrom runs the apply pipeline on raw source bytes: open the sealed
 // container, render the template, apply intra-file rules. It returns the
 // target bytes and, for templates, the hash of the render.
 func (e *Engine) produceFrom(snap *Snapshot, r manifest.Resolved, raw, lv []byte) ([]byte, string, error) {
-	plain := raw
-	if enc := r.Entry.Enclave; enc != "" {
-		if !snap.canOpen(enc) {
-			return nil, "", fmt.Errorf("%s: %w", r.Target, crypt.ErrNotMember)
-		}
-		p, err := snap.cr().OpenFile(enc, r.Source, raw)
-		if err != nil {
-			return nil, "", fmt.Errorf("%s: open: %w", r.Source, err)
-		}
-		plain = p
-	} else if crypt.IsSealedFile(raw) {
-		return nil, "", fmt.Errorf("%s: sealed container in an entry without enclave", r.Source)
+	plain, err := openRaw(snap, r, raw)
+	if err != nil {
+		return nil, "", err
 	}
 	var rh string
 	if r.Entry.Template {
@@ -726,21 +767,21 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 			if !have && adopt {
 				s.Kind = ActAdopt
 			}
-		case have && ts.want() == d.mode && ModeAccepted(liveMode, d.mode):
+		case have && ts.want() == d.mode && ModeAccepted(r.Target, liveMode, d.mode):
 			// Stricter than wanted, by the file's own tool or user: not
 			// drift, and apply never widens it.
 			s.Kind = ActSkip
 		case have && uint32(liveMode) == ts.Mode:
 			// The entry's mode changed and the file is as last recorded.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
-		case have && ModeAccepted(liveMode, d.mode):
+		case have && ModeAccepted(r.Target, liveMode, d.mode):
 			s.Kind = ActSkip
 		case !have && liveMode&0o222 == 0:
 			// A read-only render another tool left (0444): adopt, and apply
 			// for a target adopt could not open yet, take it over at the
 			// source's mode.
 			s.Kind, s.chmod, s.Reason = ActWrite, true, "mode"
-		case !have && ModeAccepted(liveMode, d.mode):
+		case !have && ModeAccepted(r.Target, liveMode, d.mode):
 			s.Kind = ActSkip
 			if adopt {
 				s.Kind = ActAdopt

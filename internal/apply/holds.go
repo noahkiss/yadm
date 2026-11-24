@@ -134,14 +134,26 @@ var settleReasons = map[model.HoldReason]bool{
 	model.HoldProtected:     true,
 }
 
+// goneReasons are the hold reasons on an unmanaged file that go with the
+// file: a new file in an owned root held as protected, and a commit-gate
+// hold from a track or commit the gate refused. Once the file is gone there
+// is nothing left to commit or check, and no command could settle them.
+var goneReasons = map[model.HoldReason]bool{
+	model.HoldProtected:     true,
+	model.HoldCheckFailed:   true,
+	model.HoldTaskUntrusted: true, // only a gate hold on a target
+}
+
 // SettleHolds drops the holds on managed targets whose cause is gone: drift
 // is the result of a complete scan (no named paths), and a managed target
 // it does not list equals what this machine last wrote or captured, so a
 // check that failed, a capture that failed or a drift no longer applies.
 // Conflict holds stay (they carry the incoming change), and so do holds
 // for a manifest that weakened protection (apply sets them again from the
-// plan). A protected hold on an unmanaged file (a new file in an owned
-// root) goes when the file is gone. It returns the number of holds dropped.
+// plan). A protected or commit-gate hold on an unmanaged file (a new file in
+// an owned root, or a file a refused track named) goes when the file is
+// gone. A gate hold on a file that still exists stays. It returns the
+// number of holds dropped.
 func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 	for _, d := range drift {
 		if d.Kind == DriftUnreadable {
@@ -164,7 +176,7 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 			n++
 			continue
 		}
-		if h.Target != "" && !managed && !drifting[h.Target] && h.Reason == model.HoldProtected && e.gone(h.Target) {
+		if h.Target != "" && !managed && !drifting[h.Target] && goneReasons[h.Reason] && e.gone(h.Target) {
 			n++
 			continue
 		}
