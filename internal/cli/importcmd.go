@@ -126,7 +126,9 @@ func (a *app) cmdImport(cmd *cobra.Command, args []string) (result, error) {
 		}
 		if opts.PasswordEnv != "" {
 			out, _ := filepath.Abs(opts.Output)
-			rec, _, err := recoveryMember(cmd, out, p.State, p.Source)
+			g := guardFor(p)
+			g.forbidden = append(g.forbidden, out)
+			rec, _, err := recoveryMember(cmd, g)
 			if err != nil {
 				return result{}, err
 			}

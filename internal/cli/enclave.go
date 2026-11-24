@@ -16,6 +16,7 @@ import (
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/crypt"
+	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
@@ -144,7 +145,7 @@ func addRecoveryFlags(c *cobra.Command) {
 
 // recoveryMember reads the recovery flags. With --new-recovery it generates
 // and saves a recovery identity.
-func recoveryMember(cmd *cobra.Command, forbidden ...string) (crypt.Member, string, error) {
+func recoveryMember(cmd *cobra.Command, g recoveryGuard) (crypt.Member, string, error) {
 	rr, _ := cmd.Flags().GetString("recovery-recipient")
 	rs, _ := cmd.Flags().GetString("recovery-sign-key")
 	dir, _ := cmd.Flags().GetString("new-recovery")
@@ -152,7 +153,7 @@ func recoveryMember(cmd *cobra.Command, forbidden ...string) (crypt.Member, stri
 	case dir != "" && (rr != "" || rs != ""):
 		return crypt.Member{}, "", usagef("give --new-recovery or --recovery-recipient with --recovery-sign-key, not both")
 	case dir != "":
-		mem, abs, err := newRecovery(dir, "--new-recovery", forbidden...)
+		mem, abs, err := newRecovery(dir, "--new-recovery", g)
 		return mem, abs, err
 	case rr == "" || rs == "":
 		return crypt.Member{}, "", usagef("the recovery identity is required: --recovery-recipient and --recovery-sign-key, or --new-recovery <dir>")
@@ -160,35 +161,118 @@ func recoveryMember(cmd *cobra.Command, forbidden ...string) (crypt.Member, stri
 	return crypt.Member{Machine: crypt.RecoveryMachine, Recipient: rr, SignKey: rs}, "", nil
 }
 
+// recoveryGuard says where a recovery identity must never be written: the
+// tool's own directories, ~/.local, and on an initialized machine any path
+// the manifest manages, an owned root or an applying glob, where the next
+// sync would capture the secret.
+type recoveryGuard struct {
+	forbidden []string
+	home      string
+	plan      *manifest.Plan
+}
+
+func guardFor(p Paths) recoveryGuard {
+	g := recoveryGuard{forbidden: []string{p.Source, p.State, p.Config}}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		g.home = home
+		g.forbidden = append(g.forbidden, filepath.Join(home, ".local"))
+	}
+	return g
+}
+
+func (m *machineEnv) recoveryGuard() recoveryGuard {
+	g := guardFor(m.paths)
+	if m.home != "" {
+		g.home = m.home
+		g.forbidden = append(g.forbidden, filepath.Join(m.home, ".local"))
+	}
+	if m.snap != nil {
+		g.plan = m.snap.Plan
+	}
+	return g
+}
+
+// check refuses dir when it lies inside a forbidden directory or names a
+// managed path. It compares existing ancestors by file identity, so a
+// symlink or a case-insensitive file system leads nowhere else, and also
+// lexically, for a forbidden directory that does not exist yet.
+func (g recoveryGuard) check(dir, what string) error {
+	real := resolveExisting(dir)
+	for _, f := range g.forbidden {
+		if f == "" {
+			continue
+		}
+		roots := []string{f, resolveExisting(f)}
+		for _, c := range []string{dir, real} {
+			for _, r := range roots {
+				if rel, err := filepath.Rel(r, c); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					return usagef("%s must be outside %s", what, f)
+				}
+			}
+		}
+		fi, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		for q := real; ; q = filepath.Dir(q) {
+			if qi, err := os.Stat(q); err == nil && os.SameFile(fi, qi) {
+				return usagef("%s must be outside %s", what, f)
+			}
+			if filepath.Dir(q) == q {
+				break
+			}
+		}
+	}
+	if g.plan == nil || g.home == "" {
+		return nil
+	}
+	homes := []string{g.home, resolveExisting(g.home)}
+	for _, c := range []string{dir, real} {
+		for _, h := range homes {
+			for _, f := range []string{crypt.AgeIdentityFile, crypt.SigningKeyFile} {
+				t, err := target(h, filepath.Join(c, f))
+				if err != nil {
+					continue
+				}
+				_, managed := g.plan.Targets[t]
+				_, globbed, _ := g.plan.GlobNew(t)
+				if managed || globbed || g.plan.Root(t) != nil || g.plan.Protected(t) {
+					return usagef("%s must not be a path yadm manages (%s): the next sync would capture the secret", what, t)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resolveExisting resolves the symlinks of p's deepest existing ancestor
+// and appends the rest of p unchanged.
+func resolveExisting(p string) string {
+	for q := p; ; q = filepath.Dir(q) {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			rel, err := filepath.Rel(q, p)
+			if err != nil {
+				return p
+			}
+			return filepath.Join(r, rel)
+		}
+		if filepath.Dir(q) == q {
+			return p
+		}
+	}
+}
+
 // newRecovery generates a recovery identity into dir, a new directory with
-// mode 0700 outside every forbidden directory, and returns its public half.
-// It refuses an existing dir, so it never overwrites a recovery identity.
-func newRecovery(dir, what string, forbidden ...string) (crypt.Member, string, error) {
+// mode 0700 that g allows, and returns its public half. It refuses an
+// existing dir, so it never overwrites a recovery identity, and checks the
+// created directory again before it writes a key into it.
+func newRecovery(dir, what string, g recoveryGuard) (crypt.Member, string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return crypt.Member{}, "", err
 	}
-	// Check the path as given and as it resolves: a symlinked parent must
-	// not lead into the source or state directory either.
-	check := []string{abs}
-	if real, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-		check = append(check, filepath.Join(real, filepath.Base(abs)))
-	}
-	for _, f := range forbidden {
-		if f == "" {
-			continue
-		}
-		roots := []string{f}
-		if real, err := filepath.EvalSymlinks(f); err == nil {
-			roots = append(roots, real)
-		}
-		for _, c := range check {
-			for _, f := range roots {
-				if rel, err := filepath.Rel(f, c); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					return crypt.Member{}, "", usagef("%s must be outside %s", what, f)
-				}
-			}
-		}
+	if err := g.check(abs, what); err != nil {
+		return crypt.Member{}, "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return crypt.Member{}, "", err
@@ -197,6 +281,11 @@ func newRecovery(dir, what string, forbidden ...string) (crypt.Member, string, e
 		if errors.Is(err, fs.ErrExist) {
 			return crypt.Member{}, "", usagef("%s %s already exists; give a new directory, so no recovery identity is overwritten", what, abs)
 		}
+		return crypt.Member{}, "", err
+	}
+	// A parent swapped for a symlink since the check lands here.
+	if err := g.check(abs, what); err != nil {
+		os.Remove(abs)
 		return crypt.Member{}, "", err
 	}
 	id, err := crypt.GenerateIdentity(crypt.RecoveryMachine)
@@ -214,8 +303,9 @@ const newRecoveryLong = `Generate an enclave's recovery identity on this machine
 another machine creates. Run it on a machine you trust with the secret, not on
 the creator. It needs no enclave membership and no "yadm init".
 
-The directory must not exist yet, and must be outside yadm's source, state
-and config directories. new-recovery creates it with mode 0700 and writes two
+The directory must not exist yet. It must be outside yadm's source, state
+and config directories and ~/.local, symlinks resolved, and on an initialized
+machine outside every path the manifest manages, owned roots included. new-recovery creates it with mode 0700 and writes two
 secret files with mode 0600:
 
   identity.age.key   the age identity every key-log entry wraps the keys to
@@ -231,16 +321,19 @@ the identity later ("set-recovery --recovery-dir"), restore the two files into
 a directory with mode 0700.`
 
 func (a *app) cmdEnclaveNewRecovery(cmd *cobra.Command, args []string) (result, error) {
-	p, err := DefaultPaths()
-	if err != nil {
-		return result{}, err
+	// It needs no init; on an initialized machine the guard also knows the
+	// manifest's managed paths and owned roots.
+	var g recoveryGuard
+	if m, err := openLoaded(cmd.Context()); err == nil {
+		g = m.recoveryGuard()
+	} else {
+		p, err := DefaultPaths()
+		if err != nil {
+			return result{}, err
+		}
+		g = guardFor(p)
 	}
-	home, _ := os.UserHomeDir()
-	forbidden := []string{p.Source, p.State, p.Config}
-	if home != "" {
-		forbidden = append(forbidden, filepath.Join(home, ".local"))
-	}
-	mem, dir, err := newRecovery(args[0], "the recovery directory", forbidden...)
+	mem, dir, err := newRecovery(args[0], "the recovery directory", g)
 	if err != nil {
 		return result{}, err
 	}
@@ -461,7 +554,7 @@ func (a *app) cmdEnclaveCreate(cmd *cobra.Command, args []string) (result, error
 	if p, _ := crypt.FilePins(m.paths.State).Get(e); p != nil {
 		return result{}, fmt.Errorf("%w: this machine already pins enclave %s", ErrRefused, e)
 	}
-	rec, dir, err := recoveryMember(cmd, m.paths.Source, m.paths.State, m.home+"/.local")
+	rec, dir, err := recoveryMember(cmd, m.recoveryGuard())
 	if err != nil {
 		return result{}, err
 	}
@@ -821,7 +914,7 @@ func (a *app) cmdEnclaveSetRecovery(cmd *cobra.Command, args []string) (result, 
 	if err != nil {
 		return result{}, fmt.Errorf("%w: recovery identity: %v", ErrRefused, err)
 	}
-	to, saved, err := recoveryMember(cmd, m.paths.Source, m.paths.State)
+	to, saved, err := recoveryMember(cmd, m.recoveryGuard())
 	if err != nil {
 		return result{}, err
 	}
