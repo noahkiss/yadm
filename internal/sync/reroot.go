@@ -441,13 +441,13 @@ func (s *Syncer) rerootReviewed(ctx context.Context, remote, newHead model.Commi
 }
 
 // rewritePending reports whether the fetched main no longer descends from
-// the accepted one: a rewrite this machine has not taken yet. Auto-commit
-// waits while it is pending, so a waking machine does not commit onto the
-// old history and then hold the re-root on its own new commit.
+// the accepted one: a rewrite this machine has not taken yet, fetched now
+// or by an earlier run. Auto-commit waits while it is pending, so a waking
+// machine does not commit onto the old history and then hold the re-root
+// on its own new commit.
 func (s *Syncer) rewritePending(ctx context.Context, f fetched) bool {
-	if f.err != nil {
-		return false
-	}
+	// A failed fetch leaves the last fetched main, which may be a rewrite
+	// this machine holds: it still waits.
 	base, err := s.startBase(ctx, f.base)
 	if err != nil || base == "" {
 		return false

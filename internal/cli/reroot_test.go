@@ -706,3 +706,38 @@ func TestRerootBackupFails(t *testing.T) {
 		t.Fatalf("%d backups", len(bs))
 	}
 }
+
+// TestRerootPendingOffline: a machine that fetched a rewrite and did not
+// switch (its source clone had local edits) does not auto-commit onto the
+// old history while it is offline; it commits on the new history later.
+func TestRerootPendingOffline(t *testing.T) {
+	root, remote, _, _, m := rerootFleet(t)
+	a, c := m[fixture.HostA], m[fixture.HostC]
+	on(t, root, fixture.HostA)
+	newHead := squash(t, a.Source, "new root")
+	yadmOK(t, "reroot", "--new-head", newHead, "--fold-unreviewed", "--no-wait")
+	yadmOK(t, "resume")
+
+	on(t, root, fixture.HostC)
+	old := trimmed(t, c.Source, "rev-parse", "main")
+	fl := filepath.Join(c.Source, "fleet.toml")
+	writeFile(t, fl, readFile(t, fl)+"\n")
+	yadm(t, "sync", "--full")
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != old {
+		t.Fatalf("host-c moved over a dirty clone: %s", got)
+	}
+	git(t, c.Source, "checkout", "-q", "--", "fleet.toml")
+	git(t, c.Source, "remote", "set-url", "origin", filepath.Join(root, "offline"))
+	osSh := filepath.Join(c.Home, ".config/shell/os.sh")
+	writeFile(t, osSh, readFile(t, osSh)+"# edited offline\n")
+	yadm(t, "sync", "--auto", "--full")
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != old {
+		t.Fatalf("host-c committed onto the old history while offline: main %s", got)
+	}
+	git(t, c.Source, "remote", "set-url", "origin", remote)
+	yadmOK(t, "sync", "--auto", "--full")
+	yadmOK(t, "sync", "--auto", "--full")
+	if trimmed(t, c.Source, "rev-parse", "main~1") != newHead {
+		t.Fatal("host-c's offline edit is not on the new history")
+	}
+}
