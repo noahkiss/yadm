@@ -58,7 +58,8 @@
 //     store.CheckWorktree passes, so the clone's index never falls behind
 //     HEAD; a commit over a dirty clone makes nothing.
 //  7. Publish the status record to this machine's status ref: holds, tasks,
-//     published facts, alerts and the pinned key-log head of each enclave.
+//     published facts, alerts, the pinned key-log head of each enclave, and
+//     this machine's home and user (read only by show --as).
 //  8. Release the sync lock; push main, the status ref and advanced
 //     reviewed refs atomically under the network lock. A rejection is not
 //     an error: go back to 4 (fetch, then 5 to 7 under the sync lock again),

@@ -449,43 +449,74 @@ func (s *Snapshot) CanOpen(enc model.EnclaveName) bool { return s.canOpen(enc) }
 // pipeline; diff and hook summaries use it. It writes nothing. A sealed
 // entry this machine cannot open fails with crypt.ErrNotMember.
 func (e *Engine) Render(ctx context.Context, snap *Snapshot, t model.Target, lv []byte) ([]byte, error) {
-	if snap == nil || snap.Plan == nil {
-		return nil, errors.New("render: no snapshot")
-	}
-	r, ok := snap.Plan.Targets[t]
-	if !ok {
-		return nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
-	}
-	if enc := r.Entry.Enclave; enc != "" && snap.IsOnDemand(enc) {
-		return nil, fmt.Errorf("%s is on demand on this machine and never delivered; yadm show %s prints it: %w", enc, model.ShellQuote(string(t)), crypt.ErrNotMember)
-	}
-	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
-		return nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
-	}
-	raw, _, err := e.readSource(ctx, snap, r.Source)
+	r, raw, err := e.planned(ctx, snap, t)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.Source, err)
+		return nil, err
 	}
 	out, _, err := e.produceFrom(snap, r, raw, lv)
 	return out, err
+}
+
+// OpenSource returns the source of target t at snap as its entry stores
+// it, before any render or rule: a whole sealed file opened, a template
+// unrendered, sealed values and regions left as their tokens. It refuses
+// what Render refuses and writes nothing.
+func (e *Engine) OpenSource(ctx context.Context, snap *Snapshot, t model.Target) ([]byte, error) {
+	r, raw, err := e.planned(ctx, snap, t)
+	if err != nil {
+		return nil, err
+	}
+	return openRaw(snap, r, raw)
+}
+
+// planned reads the raw source of a target that snap's plan produces,
+// after the checks Render and OpenSource share.
+func (e *Engine) planned(ctx context.Context, snap *Snapshot, t model.Target) (manifest.Resolved, []byte, error) {
+	if snap == nil || snap.Plan == nil {
+		return manifest.Resolved{}, nil, errors.New("render: no snapshot")
+	}
+	r, ok := snap.Plan.Targets[t]
+	if !ok {
+		return r, nil, fmt.Errorf("%s: %w", t, ErrNotPlanned)
+	}
+	if enc := r.Entry.Enclave; enc != "" && snap.IsOnDemand(enc) {
+		return r, nil, fmt.Errorf("%s is on demand on this machine and never delivered; yadm show %s prints it: %w", enc, model.ShellQuote(string(t)), crypt.ErrNotMember)
+	}
+	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
+		return r, nil, fmt.Errorf("sealed for %s; this machine cannot open it: %w", enc, crypt.ErrNotMember)
+	}
+	raw, _, err := e.readSource(ctx, snap, r.Source)
+	if err != nil {
+		return r, nil, fmt.Errorf("%s: %w", r.Source, err)
+	}
+	return r, raw, nil
+}
+
+// openRaw opens a whole sealed file in memory; other sources pass through.
+func openRaw(snap *Snapshot, r manifest.Resolved, raw []byte) ([]byte, error) {
+	if enc := r.Entry.Enclave; enc != "" {
+		if !snap.canOpen(enc) {
+			return nil, fmt.Errorf("%s: %w", r.Target, crypt.ErrNotMember)
+		}
+		p, err := snap.cr().OpenFile(enc, r.Source, raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: open: %w", r.Source, err)
+		}
+		return p, nil
+	}
+	if crypt.IsSealedFile(raw) {
+		return nil, fmt.Errorf("%s: sealed container in an entry without enclave", r.Source)
+	}
+	return raw, nil
 }
 
 // produceFrom runs the apply pipeline on raw source bytes: open the sealed
 // container, render the template, apply intra-file rules. It returns the
 // target bytes and, for templates, the hash of the render.
 func (e *Engine) produceFrom(snap *Snapshot, r manifest.Resolved, raw, lv []byte) ([]byte, string, error) {
-	plain := raw
-	if enc := r.Entry.Enclave; enc != "" {
-		if !snap.canOpen(enc) {
-			return nil, "", fmt.Errorf("%s: %w", r.Target, crypt.ErrNotMember)
-		}
-		p, err := snap.cr().OpenFile(enc, r.Source, raw)
-		if err != nil {
-			return nil, "", fmt.Errorf("%s: open: %w", r.Source, err)
-		}
-		plain = p
-	} else if crypt.IsSealedFile(raw) {
-		return nil, "", fmt.Errorf("%s: sealed container in an entry without enclave", r.Source)
+	plain, err := openRaw(snap, r, raw)
+	if err != nil {
+		return nil, "", err
 	}
 	var rh string
 	if r.Entry.Template {

@@ -217,7 +217,7 @@ The engine is deliberately tiny and strict.
 
 - A directive alone on a line consumes that line's newline.
 - Anything else inside `{{ }}` or `{% %}` fails the render with file, line and column. There are no filters, loops or includes.
-- A render reads only this machine's own Context: the source commit, its fleet entry, `$HOME`, the user, and its own observed facts from local state. It never reads another machine's status ref, so renders are reproducible and the capture round-trip check is sound.
+- A render reads only this machine's own Context: the source commit, its fleet entry, `$HOME`, the user, and its own observed facts from local state. Apply and capture never read another machine's status ref, so renders are reproducible and the capture round-trip check is sound. Only `yadm show --as`, which prints to stdout, renders with another machine's published `home` and `user` (section 7.6).
 
 ## 6. Intra-file rules
 
@@ -419,7 +419,7 @@ A machine can hold an enclave's keys without receiving its files. The fleet this
   - A target of it that an earlier apply delivered leaves `$HOME` as if it had left the plan: deleted when unchanged, held as `drifted` otherwise.
   - The commit gate and in-memory merges never open it.
 - The machine opens it only to print to stdout:
-  - `yadm show <path> [--as <machine>]` renders a target as a fleet machine receives it: that machine's plan and condition context, opened with the keys of every enclave it is a member of in the pinned key log. It refuses when that machine is a member of an enclave this machine cannot open. Without `--as` it renders for this machine as if every enclave it is a member of were delivered.
+  - `yadm show <path> [--as <machine>]` renders a target as a fleet machine receives it: that machine's plan and condition context, opened with the keys of every enclave it is a member of in the pinned key log. It refuses when that machine is a member of an enclave this machine cannot open. Without `--as` it renders for this machine as if every enclave it is a member of were delivered. With `--as`, `{{ home }}` and `{{ user }}` take the values that machine published in its status record (section 11); a machine that published none renders them as the literal `$HOME` and `$USER`, never as this machine's own. `home_from` in the output says which (`local`, `published` or `placeholder`), and text output notes a placeholder on stderr. `--source` prints the entry's source unrendered instead: a whole sealed file opened, a template as written, sealed values and regions as their tokens. It takes the same refusals.
   - `yadm review`, `yadm hold show` and review notes open it as for any member.
   - Sealed observed facts of the enclave (section 11) open as for any member, in `fleet list`, `fleet show`, `fleet diff`, `eval --as` and `manifest --as`.
   - `yadm diff` compares delivered targets with the source; it skips an on-demand target and points to `yadm show`.
@@ -771,6 +771,8 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "sealed": { "client": "<sealed observed facts>" },
   "tasks": [ { "task": "package-bundle", "trigger": "paths", "commit": "…", "exit_code": 0, "duration_ns": 1200000000 } ],
   "on_demand": ["work"],
+  "home": "/home/user",
+  "user": "user",
   "paused_until": "2030-01-01T12:30:00Z",
   "pause_id": "p-1a2b3c4d5e6f",
   "pause_verified": true,
@@ -783,6 +785,8 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
 `paused_until` and `pause_id` confirm a fleet pause the machine honours, `pause_verified` says a pinned key-log member signed it, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
 
 `reroot` is the last re-root the machine switched to, the confirmation `yadm reroot` waits for; `reroot_held` names the hold (`history-rewrite` or `reroot`) that keeps it from taking a rewritten remote (section 10.2). A change to either publishes a record at once.
+
+`home` and `user` are the machine's `$HOME` and user name, the values its templates render `{{ home }}` and `{{ user }}` with. Only `yadm show --as` reads them (section 7.6). A change to either publishes a record on the next sync. They are plain: every machine that fetches the remote sees each machine's account name.
 
 `on_demand` lists the enclaves the machine reads on demand only (section 7.6). It is self-reported: `yadm check` uses it to explain a key-log member without the enclave's type, and a change to it publishes a record on the next sync.
 
@@ -949,7 +953,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff, skipped?}]}` |
-| `show <path> [--as <m>]` | Print a target as machine `m` (default this one) receives it, to stdout only; opens on-demand enclaves (section 7.6) | `{machine, name, target, source, enclave?, content, encoding}`; without `--json`, the bytes alone |
+| `show <path> [--as <m>] [--source]` | Print a target as machine `m` (default this one) receives it, or with `--source` its source unrendered, to stdout only; opens on-demand enclaves (section 7.6) | `{machine, name, target, source, enclave?, content, encoding, home_from, view?}`; without `--json`, the bytes alone |
 | `commit [-m\|--why] [--no-push] [--dry-run] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?, planned[{scope, subject, paths[]}]?}`; `planned` only with `--dry-run` |
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?, paused?, pause?}` |
 | `pause [--for <d>] [--reason <r>] [--wait <d> \| --no-wait]` | Section 10.1: sign and push a fleet pause, or extend this machine's own, then wait for peers to confirm | `{id, initiator, reason?, created, until, requested, clamped?, extended?, pushed, push_error?, confirmed[], waiting[], ignored[]?}` |
@@ -1023,7 +1027,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - A writer chooses target names. Suggested commands shell-quote them, and names with control characters are held.
 - The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
-- An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
+- An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it, as it can the published `home` and `user` that `show --as` renders with; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
 - A writer can start or lift a fleet pause by writing an unverified record under the id of any machine in `fleet.toml`, unless `fleet.toml` sets `pause_requires = "member"` (section 10.1). It cannot forge a verified one, and an unverified record never extends a verified pause. A pause holds a machine at most 4 hours in a row, chained pauses included, and every machine resumes by its own clock. `check`, `status` and `fleet list` show an unverified pause. The pause reason is plain text every machine reads. A writer can also hide a pause: it can overwrite or delete a record on the ref before a machine fetches it, and that machine then never holds.
 - A writer can force-push a rewritten `main`. Every machine refuses it unless a re-root record verified by a pinned key-log member announces it (section 10.2), and even then a rewrite that changes a key-log file is held. A member key can therefore replace the history, but not the key logs, and a machine with unpushed commits never loses them. Re-root backups hold the old history, ciphertext included, outside the state directory.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.

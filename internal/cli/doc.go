@@ -30,8 +30,10 @@
 //	capture                        apply.Engine.Scan, Capture
 //	diff                           apply.Engine.Load, render + rules in memory, textmerge.Diff; an on-demand
 //	                               enclave's target is skipped with a pointer to show
-//	show <path> [--as]             apply.Engine.Render with the machine's plan and context and the keys of the
-//	                               enclaves it is a member of that this machine holds (Snapshot.Readable); stdout only
+//	show <path> [--as] [--source]  apply.Engine.Render (OpenSource with --source) with the machine's plan and
+//	                               context, its published home and user (else $HOME and $USER), and the keys of
+//	                               the enclaves it is a member of that this machine holds (Snapshot.Readable);
+//	                               stdout only
 //	commit                         refuses named paths no entry, applying glob (manifest.Plan.GlobNew) or owned root covers, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
 //	                               (fetch and push under sync.FileNetLock, never under the sync lock)
 //	sync                           sync.Syncer.Run (--auto implies the quick check and records the run);

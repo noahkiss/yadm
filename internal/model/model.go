@@ -203,6 +203,12 @@ type Status struct {
 	Tasks      []TaskResult            `json:"tasks,omitempty"`     // last result per task
 	Alerts     []Alert                 `json:"alerts,omitempty"`    // recent sync alerts, newest last
 	KeyHeads   map[EnclaveName]KeyHead `json:"key_heads,omitempty"` // the key-log head this machine has pinned, per enclave
+	// Home and User are this machine's $HOME and user name, the values its
+	// templates render {{ home }} and {{ user }} with. Only `yadm show
+	// --as` reads them, to print another machine's render; apply and
+	// capture never do. Self-reported, like the rest of the record.
+	Home string `json:"home,omitempty"`
+	User string `json:"user,omitempty"`
 	// OnDemand lists the enclaves this machine says it reads on demand
 	// only. It is self-reported: `yadm check` uses it to explain a key-log
 	// member without the enclave's type, never as proof.
