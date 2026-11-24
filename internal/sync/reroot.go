@@ -321,7 +321,7 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 			return out, err
 		}
 	}
-	if err := s.rerootReviewed(ctx, remote); err != nil {
+	if err := s.rerootReviewed(ctx, remote, r.NewHead); err != nil {
 		return out, err
 	}
 	// The accepted remote moves last: a run that stops before this point
@@ -384,10 +384,14 @@ func (s *Syncer) backupHistory(ctx context.Context, old model.CommitID, keep int
 }
 
 // rerootReviewed moves each local reviewed ref that points into the old
-// history: to the fetched reviewed ref when that is in the new history
-// (the initiator moved it there), else it is dropped, and every commit of
-// the scope counts as unreviewed.
-func (s *Syncer) rerootReviewed(ctx context.Context, remote model.CommitID) error {
+// history. It takes the fetched reviewed ref when that is in the new
+// history up to the signed new head, or past it by commits outside the
+// scope only; a fetched ref that skips commits of the scope after the new
+// head gets the new head instead, as sync never lets another machine's ref
+// hide a commit from this machine's queue. Without a fetched ref in the
+// new history it is dropped, and every commit of the scope counts as
+// unreviewed.
+func (s *Syncer) rerootReviewed(ctx context.Context, remote, newHead model.CommitID) error {
 	refs, err := s.Store.ListRefs(ctx, "refs/yadm/reviewed/")
 	if err != nil {
 		return err
@@ -401,12 +405,20 @@ func (s *Syncer) rerootReviewed(ctx context.Context, remote model.CommitID) erro
 		if err != nil {
 			return err
 		}
+		to := model.CommitID("")
 		if rv != "" && s.ancestor(ctx, rv, remote) {
-			err = s.Store.UpdateRef(ctx, ref, rv, id)
-		} else {
-			err = s.Store.UpdateRef(ctx, ref, "", id)
+			to = rv
+			if rv != newHead && s.ancestor(ctx, newHead, rv) {
+				n, err := skippedInScope(ctx, s.Store, sc, newHead, rv)
+				if err != nil {
+					return err
+				}
+				if n > 0 {
+					to = newHead
+				}
+			}
 		}
-		if err != nil {
+		if err := s.Store.UpdateRef(ctx, ref, to, id); err != nil {
 			return err
 		}
 	}

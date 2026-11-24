@@ -609,3 +609,36 @@ func TestRerootRewind(t *testing.T) {
 		t.Fatalf("a refused reroot started a pause: %+v", ps)
 	}
 }
+
+// TestRerootReviewedSmuggle: a writer pushes a commit on top of the new
+// head and moves the fetched reviewed ref onto it. A switching peer takes
+// the new head as reviewed, never the writer's commit.
+func TestRerootReviewedSmuggle(t *testing.T) {
+	root, _, _, _, m := rerootFleet(t)
+	a, b := m[fixture.HostA], m[fixture.HostB]
+	// host-b reviewed everything in the old history.
+	git(t, b.Source, "update-ref", store.RefReviewed(model.ScopeShared), "main")
+	on(t, root, fixture.HostA)
+	newHead := squash(t, a.Source, "new root")
+	yadmOK(t, "reroot", "--new-head", newHead, "--fold-unreviewed", "--no-wait")
+	yadmOK(t, "resume")
+
+	work := filepath.Join(root, "work-writer")
+	git(t, root, "clone", "-q", a.Source, work)
+	git(t, work, "checkout", "-q", "-B", "w", newHead)
+	writeFile(t, filepath.Join(work, "writer-note.txt"), "planted\n")
+	git(t, work, "add", "writer-note.txt")
+	git(t, work, "-c", "user.name=w", "-c", "user.email=w@example.invalid", "commit", "-q", "-m", "writer")
+	w := trimmed(t, work, "rev-parse", "HEAD")
+	git(t, a.Source, "fetch", "-q", work, "w:refs/heads/w")
+	git(t, a.Source, "push", "-q", "--force", "origin", w+":refs/heads/main", w+":"+store.RefReviewed(model.ScopeShared))
+
+	on(t, root, fixture.HostB)
+	yadm(t, "sync", "--full")
+	if got := trimmed(t, b.Source, "rev-parse", "main"); got != newHead && got != w {
+		t.Fatalf("host-b main %s", got)
+	}
+	if got := trimmed(t, b.Source, "rev-parse", store.RefReviewed(model.ScopeShared)); got != newHead {
+		t.Fatalf("host-b reviewed ref %s, want the new head %s (writer's %s)", got, newHead, w)
+	}
+}
