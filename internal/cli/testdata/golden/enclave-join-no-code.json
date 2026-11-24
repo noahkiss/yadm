@@ -1,0 +1,13 @@
+{
+  "command": "enclave join",
+  "data": null,
+  "error": {
+    "code": "usage",
+    "message": "usage: --code is required: the join code printed by `yadm enclave add` on a member, received out of band (or --expect <fingerprint>)"
+  },
+  "next": [
+    "yadm enclave join vault --code <code>"
+  ],
+  "ok": false,
+  "schema": 1
+}

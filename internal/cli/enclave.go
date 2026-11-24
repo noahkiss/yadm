@@ -21,6 +21,7 @@ import (
 
 func (a *app) registerEnclave(root *cobra.Command) {
 	en := a.group(root, "enclave", "Enclave keys and membership")
+	en.Long = enclaveLong
 	leaf := a.leaf
 	leaf(en, "list", "List enclaves, epochs and members", a.cmdEnclaveList)
 	cr := leaf(en, "create <type>", "Create an enclave key log for a type", a.cmdEnclaveCreate)
@@ -28,16 +29,19 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	addRecoveryFlags(cr)
 	ad := leaf(en, "add <machine>", "Wrap the enclave keys to a machine (members only)", a.cmdEnclaveAdd)
 	ad.Args = cobra.ExactArgs(1)
+	ad.Long = enclaveAddLong
 	ad.Flags().String("enclave", "", "enclave to add the machine to (default: the only enclave this machine opens)")
-	ad.Flags().String("recipient", "", "the new machine's age recipient, from its `yadm init`")
-	ad.Flags().String("sign-key", "", "the new machine's signing key, from its `yadm init`")
+	ad.Flags().String("recipient", "", "the new machine's age recipient, from its \"yadm init\"")
+	ad.Flags().String("sign-key", "", "the new machine's signing key, from its \"yadm init\"")
 	rm := leaf(en, "remove <machine>", "Remove a member and start a new epoch", a.cmdEnclaveRemove)
 	rm.Args = cobra.ExactArgs(1)
 	rm.Flags().String("enclave", "", "enclave to remove the machine from (default: the only enclave this machine opens)")
 	rm.Flags().Bool("confirm", false, "required: removal is not reversible")
 	jn := leaf(en, "join <enclave>", "Pin an enclave's key log on this machine", a.cmdEnclaveJoin)
 	jn.Args = cobra.ExactArgs(1)
-	jn.Flags().String("expect", "", "required: fingerprint of the key-log entry that added this machine, received out of band")
+	jn.Long = enclaveJoinLong
+	jn.Flags().String("code", "", "join code XXXX-XXXX that \"yadm enclave add\" printed on the member, received out of band")
+	jn.Flags().String("expect", "", "fingerprint of the key-log entry that added this machine, received out of band (instead of --code)")
 	leaf(en, "verify", "Verify every key log against the local pins", a.cmdEnclaveVerify)
 	od := leaf(en, "on-demand <enclave>", "Read an enclave on demand only on this machine: never apply, capture or back it up", a.cmdEnclaveOnDemand)
 	od.Args = cobra.ExactArgs(1)
@@ -49,6 +53,62 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	sr.Flags().String("recovery-dir", "", "required: directory holding the current recovery identity")
 	addRecoveryFlags(sr)
 }
+
+const enclaveLong = `An enclave is a set of files only its member machines can read. Members hold
+its keys; the key log under keys/<enclave>/ records who they are.
+
+Add a machine to an enclave (host-b joins enclave "personal", host-a is a member):
+
+  1. On host-b (the new machine): run "yadm init <remote>". It prints the
+     machine id, its age recipient, its signing key, and the exact
+     "enclave add" command for step 3. If host-b is not in fleet.toml yet,
+     add it there and commit, as init's output says.
+  2. On host-b, only if it should read the enclave on demand (never write its
+     files into $HOME): run "yadm enclave on-demand personal" now, before join.
+  3. On host-a (a member), with host-b's fleet name or its machine id:
+       yadm enclave add host-b --enclave personal --recipient <age1...> --sign-key <key>
+       yadm sync
+     add prints a join code, such as 7K3M-Q9TD.
+  4. Carry the code to host-b yourself: read it off host-a's screen. Never copy
+     it from the repository or from host-b's own output.
+  5. On host-b:
+       yadm sync
+       yadm enclave join personal --code 7K3M-Q9TD
+       yadm apply
+     join pins the key log only when the code matches; otherwise it pins nothing.
+
+"yadm enclave add --help" and "yadm enclave join --help" give the details.`
+
+const enclaveAddLong = `Run on a machine that is already a member. add appends an "add" entry to the
+enclave's key log, wraps the enclave keys to the new machine, commits and
+pushes the entry, and prints two values for the new machine:
+
+  join code    XXXX-XXXX, 8 characters; type it on the new machine:
+               yadm enclave join <enclave> --code XXXX-XXXX
+  fingerprint  the full entry hash, for "join --expect" instead of the code
+
+Pass the code to the new machine out of band: read it off this screen. The
+repository is the channel the code protects against. Computing the code takes
+about a second on purpose.
+
+The new machine's --recipient and --sign-key come from its "yadm init".`
+
+const enclaveJoinLong = `Run on the new machine, after a member ran "yadm enclave add" for it and this
+machine fetched the entry ("yadm sync"). join verifies the enclave's key log
+and pins it on this machine. Without a pin, this machine never opens the
+enclave's keys.
+
+Give the value the member's "enclave add" printed, received out of band:
+
+  yadm enclave join <enclave> --code XXXX-XXXX     (case and dash optional)
+  yadm enclave join <enclave> --expect <fingerprint>
+
+With --code, join recomputes the code from the newest entry that adds this
+machine and pins only on a match. A wrong code pins nothing. Never copy the
+code or fingerprint from this machine's own copy of the log.
+
+For a machine that should read the enclave on demand only, run
+"yadm enclave on-demand <enclave>" before join.`
 
 func addRecoveryFlags(c *cobra.Command) {
 	c.Flags().String("recovery-recipient", "", "age recipient of the offline recovery identity")
@@ -185,6 +245,7 @@ type entryData struct {
 	Epoch       model.Epoch       `json:"epoch"`
 	Subject     model.MachineID   `json:"subject,omitempty"`
 	Fingerprint string            `json:"fingerprint"`
+	JoinCode    string            `json:"join_code,omitempty"` // add only: the short form of the fingerprint
 	Members     []model.MachineID `json:"members"`
 	Commit      model.CommitID    `json:"commit"`
 	Recovery    string            `json:"recovery_dir,omitempty"`
@@ -327,8 +388,17 @@ func (a *app) cmdEnclaveAdd(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	d, err := m.writeEntry(ctx, a.version, entry, nil, fmt.Sprintf("enclave %s: add %s", e, who))
-	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --expect %s", who, model.ShellQuote(string(e)), model.ShellQuote(d.Fingerprint))}
-	return result{data: d, next: next, text: "fingerprint " + d.Fingerprint}, err
+	if d.Commit == "" {
+		return result{data: d}, err
+	}
+	code, cerr := crypt.JoinCode(d.Fingerprint)
+	if cerr != nil {
+		return result{data: d}, errors.Join(err, cerr)
+	}
+	d.JoinCode = code
+	next := []string{"yadm sync", fmt.Sprintf("on %s, after it fetches: yadm enclave join %s --code %s", who, model.ShellQuote(string(e)), code)}
+	text := fmt.Sprintf("join code   %s\nfingerprint %s\n", code, d.Fingerprint)
+	return result{data: d, next: next, text: text}, err
 }
 
 // ringFor returns this machine's keyring and the verified head of an enclave.
@@ -533,9 +603,17 @@ func (a *app) cmdEnclaveSetRecovery(cmd *cobra.Command, args []string) (result, 
 func (a *app) cmdEnclaveJoin(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	expect, _ := cmd.Flags().GetString("expect")
-	if expect == "" {
-		return result{next: []string{"yadm enclave join " + model.ShellQuote(args[0]) + " --expect <fingerprint>"}},
-			usagef("--expect is required: the fingerprint printed by `yadm enclave add` on a member, received out of band")
+	code, _ := cmd.Flags().GetString("code")
+	switch {
+	case expect == "" && code == "":
+		return result{next: []string{"yadm enclave join " + model.ShellQuote(args[0]) + " --code <code>"}},
+			usagef("--code is required: the join code printed by `yadm enclave add` on a member, received out of band (or --expect <fingerprint>)")
+	case expect != "" && code != "":
+		return result{}, usagef("give --code or --expect, not both")
+	case code != "":
+		if _, err := crypt.ParseJoinCode(code); err != nil {
+			return result{}, usagef("%v", err)
+		}
 	}
 	m, err := open(ctx)
 	if err != nil {
@@ -553,7 +631,12 @@ func (a *app) cmdEnclaveJoin(cmd *cobra.Command, args []string) (result, error) 
 	if len(logs[e]) == 0 {
 		return result{next: []string{"yadm sync"}}, fmt.Errorf("enclave %s has no key log at main", e)
 	}
-	head, err := crypt.Join(logs[e], expect, crypt.FilePins(m.paths.State))
+	var head crypt.LogEntry
+	if code != "" {
+		head, err = crypt.JoinWithCode(logs[e], code, m.local.Machine, crypt.FilePins(m.paths.State))
+	} else {
+		head, err = crypt.Join(logs[e], expect, crypt.FilePins(m.paths.State))
+	}
 	if err != nil {
 		return result{}, fmt.Errorf("enclave %s: %w", e, err)
 	}

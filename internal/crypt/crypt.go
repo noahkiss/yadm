@@ -121,7 +121,8 @@ func LogPath(e model.EnclaveName, seq uint64) model.SourcePath {
 
 // Pin is the key-log head a machine has verified. Stored in the state
 // directory under pins/<enclave>. A new member gets its first pin from
-// `yadm enclave join --expect <fingerprint>`, given to it out of band.
+// `yadm enclave join --code <code>` (or `--expect <fingerprint>`), given to
+// it out of band.
 type Pin struct {
 	Seq  uint64 `json:"seq"`
 	Hash string `json:"hash"`

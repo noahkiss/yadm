@@ -792,7 +792,7 @@ func TestWritesPin(t *testing.T) {
 	// hostB is listed but never pinned: the error names the enclave and the join step.
 	_, loads, _ = LoadSet(map[model.EnclaveName][]LogEntry{"personal": {e1, e2, e3}}, FilePins(t.TempDir()), b)
 	msg := loads["personal"].Err.Error()
-	if !errors.Is(loads["personal"].Err, ErrNotPinned) || !strings.Contains(msg, "yadm enclave join personal --expect") || !strings.Contains(msg, "enclave personal") {
+	if !errors.Is(loads["personal"].Err, ErrNotPinned) || !strings.Contains(msg, "yadm enclave join personal --code <code>") || !strings.Contains(msg, "enclave personal") {
 		t.Fatalf("not actionable: %v", msg)
 	}
 }

@@ -48,6 +48,10 @@
 //	func Fingerprint(e LogEntry) (string, error); func PinOf(e LogEntry) (Pin, error)
 //	func VerifyLog(entries []LogEntry, pin *Pin) (head LogEntry, err error)
 //	func Join(entries []LogEntry, expect string, pins PinStore) (head LogEntry, err error) // enclave join --expect
+//	func JoinCode(fingerprint string) (string, error) // XXXX-XXXX: argon2id over the fingerprint, Crockford base32
+//	func ParseJoinCode(s string) (string, error)      // normalize a typed code
+//	func JoinWithCode(entries []LogEntry, code string, self model.MachineID, pins PinStore) (head LogEntry, err error) // enclave join --code
+//	func SetJoinCodeCostForTest(JoinCodeCost) (restore func()) // test hook only
 //	// Every write takes the signer's PinStore and pins the entry it writes.
 //	func Create(enclave, by *Identity, recovery Member, pins PinStore) (LogEntry, *Keyring, error)
 //	func (*Keyring) Add(head LogEntry, m Member, by *Identity, pins PinStore) (LogEntry, error)

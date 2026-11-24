@@ -18,7 +18,7 @@
   "error": null,
   "next": [
     "on a member machine: yadm enclave add <machine-id> --enclave <enclave> --recipient <recipient> --sign-key <sign_key>",
-    "then here: yadm enclave join <enclave> --expect <fingerprint>",
+    "then here: yadm enclave join <enclave> --code <code>, with the join code add printed",
     "yadm adopt --dry-run",
     "yadm apply"
   ],

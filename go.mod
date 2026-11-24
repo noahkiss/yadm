@@ -8,6 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/tidwall/sjson v1.2.10
 	github.com/tink-crypto/tink-go/v2 v2.9.0
+	golang.org/x/crypto v0.55.0
 )
 
 require (
@@ -17,6 +18,5 @@ require (
 	github.com/tidwall/gjson v1.20.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.3.0 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 )

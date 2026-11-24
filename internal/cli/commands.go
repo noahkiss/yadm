@@ -305,7 +305,7 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 	}
 	if fl != nil && len(fl.Enclaves()) > 0 {
 		next = append(next, fmt.Sprintf("on a member machine: yadm enclave add %s --enclave <enclave> --recipient %s --sign-key %s", model.ShellQuote(string(d.Machine)), model.ShellQuote(d.Recipient), model.ShellQuote(d.SignKey)),
-			"then here: yadm enclave join <enclave> --expect <fingerprint>")
+			"then here: yadm enclave join <enclave> --code <code>, with the join code add printed")
 	}
 	next = append(next, "yadm adopt --dry-run", "yadm apply")
 	if !d.Schedule.Installed && !d.Schedule.Skipped {

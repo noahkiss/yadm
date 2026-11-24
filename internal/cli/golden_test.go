@@ -235,7 +235,7 @@ func TestGolden(t *testing.T) {
 	run("collect", ExitOK, "collect")
 	run("enclave-list", ExitOK, "enclave", "list")
 	run("enclave-verify", ExitOK, "enclave", "verify")
-	run("enclave-join-no-expect", ExitUsage, "enclave", "join", "vault")
+	run("enclave-join-no-code", ExitUsage, "enclave", "join", "vault")
 	run("enclave-create-no-recovery", ExitUsage, "enclave", "create", "vault")
 	run("enclave-create", ExitOK, "enclave", "create", "vault", "--new-recovery", filepath.Join(root, "recovery"))
 	run("enclave-list-created", ExitOK, "enclave", "list")

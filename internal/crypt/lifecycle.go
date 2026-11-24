@@ -467,13 +467,14 @@ func loadOne(name model.EnclaveName, entries []LogEntry, pins PinStore, id *Iden
 	return EnclaveLoad{Head: head, Member: true}
 }
 
-// notPinned names the enclave and the join step. The fingerprint to pass is
-// the one the adding member's `yadm enclave add` printed, received out of
-// band. The message shows no local fingerprint: the local log is what a
-// pusher controls, so a value read from it must never look like one to trust.
+// notPinned names the enclave and the join step. The join code (or
+// fingerprint) to pass is the one the adding member's `yadm enclave add`
+// printed, received out of band. The message shows no local code or
+// fingerprint: the local log is what a pusher controls, so a value read from
+// it must never look like one to trust.
 func notPinned(head LogEntry) error {
-	return fmt.Errorf("%w: enclave %s: get the fingerprint that `yadm enclave add` printed from the member who added this machine, "+
-		"then run `yadm enclave join %s --expect <fingerprint>`; never copy the fingerprint from this machine's own copy of the log",
+	return fmt.Errorf("%w: enclave %s: get the join code that `yadm enclave add` printed from the member who added this machine, "+
+		"then run `yadm enclave join %s --code <code>` (or `--expect <fingerprint>`); never copy either from this machine's own copy of the log",
 		ErrNotPinned, head.Enclave, model.ShellQuote(string(head.Enclave)))
 }
 

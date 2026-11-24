@@ -318,9 +318,28 @@ Pinning is strict; there is no trust on first use:
 
 - A machine opens an enclave's keys only when it holds a pin for that enclave.
 - The machine that writes an entry (create, add, remove, rotate, recover) pins it in the same step.
-- Every other machine gets its first pin only from `yadm enclave join <enclave> --expect <fingerprint>`, with the fingerprint received out of band.
-- A machine listed as a member without a pin is refused. The message names the enclave and the join step. It shows no fingerprint from the local log, which a writer controls.
+- Every other machine gets its first pin only from `yadm enclave join <enclave> --code <code>` or `--expect <fingerprint>`, with the join code or fingerprint received out of band.
+- A machine listed as a member without a pin is refused. The message names the enclave and the join step. It shows no code or fingerprint from the local log, which a writer controls.
 - Without this rule, a writer could replace an unpinned log with one that lists the machine. The machine would then seal new files under keys the writer holds.
+
+**Join code.** A human carries the out-of-band value from one screen to another, so `enclave add` prints a short join code beside the fingerprint:
+
+| Item | Choice |
+|---|---|
+| Input | The 32-byte entry fingerprint (SHA-256 of the signed bytes, so it covers enclave, seq, subject, members and keys). |
+| KDF | argon2id (`golang.org/x/crypto/argon2`), 3 passes, 256 MiB, 1 thread, salt `yadm v1 join code`. About 0.6 s on a current laptop. |
+| Output | 5 bytes (40 bits) as 8 Crockford base32 characters (`0-9A-Z` without `I`, `L`, `O`, `U`), shown as `XXXX-XXXX`. |
+| Parsing | Case, dashes and spaces are ignored; `O` reads as `0`, `I` and `L` as `1`. A malformed code is a usage error. |
+| Candidate | The newest `add` entry whose subject is the joining machine. Join derives that entry's code and pins only on a match. A wrong code, or the code of any other entry, pins nothing. |
+
+Why 40 bits is enough with the KDF:
+
+- The attack is a second preimage, not a collision. The attacker is a writer without a member key. To pass a forged log, it must build one whose `add` entry for the joining machine derives the same code as the honest entry. It cannot choose the honest entry, so a birthday search does not apply.
+- The target exists only once a member runs `enclave add`. The attacker must grind inside the window between that push and the human typing the code.
+- Each guess costs one full argon2id run: 256 MiB of memory and about 0.6 s of laptop time. A 50% chance needs 2^39 runs, about 10^4 core-years at that rate. Memory hardness limits how much GPU or ASIC parallelism buys.
+- Join checks one candidate entry, so a forged log gets one guess per join, not one per entry it holds. Each join also costs the joining machine only one KDF run.
+- The attacker must already hold repository write access. Without it, the attacker cannot place a forged log at all.
+- `--expect <fingerprint>` remains for a user who wants the full 256 bits, and for entries that are not an `add` of the joining machine (the import's `create` entries, section 15).
 
 ### 7.3 Lifecycle
 
@@ -328,8 +347,8 @@ Pinning is strict; there is no trust on first use:
 |---|---|---|
 | Create | Any machine of the type | `yadm enclave create <type>` writes entry 1, signed by the creator, wrapped to the creator and the recovery recipient. The recovery identity is generated offline and stored by the user outside the repository. |
 | Join request | New machine | `yadm init` prints its recipient, signing key and machine id. |
-| Add | A current member | `yadm enclave add <machine>` appends an `add` entry wrapped to the new member, and prints the entry fingerprint. |
-| Pin | New machine | `yadm enclave join <enclave> --expect <fingerprint>` pins that entry. The fingerprint travels out of band. |
+| Add | A current member | `yadm enclave add <machine>` appends an `add` entry wrapped to the new member, and prints its join code and fingerprint. |
+| Pin | New machine | `yadm enclave join <enclave> --code <code>` (or `--expect <fingerprint>`) pins that entry. The code travels out of band. A machine that reads the enclave on demand runs `yadm enclave on-demand <enclave>` first (section 7.6). |
 | Remove | A current member | `yadm enclave remove <machine> --confirm` appends a `remove` entry with a new epoch, wrapped to the rest, and reseals every sealed file, value and region of the enclave in one commit, templates and glob entries included. The entry and the reseal land together or not at all: when the commit gate holds any resealed file, remove commits nothing, names the held targets, and leaves the key log, pins and epoch unchanged. Remove retires the old epochs only after it finds every resealed file in its commit as written. The removed machine keeps every key up to the old epoch and every commit it already fetched. The output lists what else the user must do: revoke the machine's repository access, rotate real secrets stored in the enclave, and retire the old epoch once the reseal has landed. |
 | Retire | A current member | `retire` entry that sets `min_epoch` to the current epoch, after the reseal commit has landed. From then on no member opens ciphertext of an older epoch for delivery. Until then, sealed content that is new to a machine (a source blob it has not applied before) opens only under the current epoch, and anything older is held with `seal_guard`. A removed member therefore cannot plant content under the keys it kept. |
 | Recover | Recovery identity | `recover` entry signed by the recovery key, used when no member remains. |
@@ -786,7 +805,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
 | `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
-| `enclave list` / `create` / `add` / `remove --confirm` / `join --expect` / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
+| `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
 | `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
 | `protection allow <target>` / `root allow <path>` | Local allows (section 12.3), then apply | `{allowed, apply}` |
 | `review list` / `ok` / `revert` / `note <commit> --why <text> \| --paths-only [--seal <e>] [--no-push]` | Section 9.6 | `{items[{commit, scope, diff, note?}], deferred[]}`; note: `{note, pushed, push_error?}` |
@@ -817,7 +836,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 
 The output is one commit whose parent is the legacy head, with a `Legacy-Head:` trailer, so history stays reachable through `git log`. That also keeps the legacy ciphertext and old path names reachable. Any problem means no commit. The importer never pushes.
 
-Sealing creates each enclave's key log, signed by the importing machine, on top of that commit. Once it is committed, the importing machine pins it in its state directory, so it needs no `enclave join --expect`; the report still prints each fingerprint for the other machines. An existing different pin for that enclave is kept, and the report says to join after switching repositories. A failed import pins nothing.
+Sealing creates each enclave's key log, signed by the importing machine, on top of that commit. Once it is committed, the importing machine pins it in its state directory, so it needs no `enclave join`; the report still prints each fingerprint for the other machines, which join with `--expect`. An existing different pin for that enclave is kept, and the report says to join after switching repositories. A failed import pins nothing.
 
 ### 15.2 Adopt
 
@@ -834,6 +853,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 
 - Every machine can push. A non-member is a writer, not only a reader.
 - An enclave protects against reading. A non-member can still delete or roll back sealed files, edit shared scripts members run, or forge a `Machine:` trailer. The notify hook reports non-member commits that touch an enclave; members see them in review.
+- A machine's first pin comes from a value a human carries out of band. The short join code is 40 bits behind a memory-hard KDF; a writer that grinds a forged log against it pays one argon2id run per guess (section 7.2).
 - Key-log changes are signed and chained, so a writer cannot add itself or substitute a key. Key commitments stop a signer from swapping an earlier epoch's key. Key-log files are append-only in history, so a removed member cannot replace an entry for a machine that has not pinned the removal.
 - A writer can move or swap sealed blobs, values and regions; each is bound to its path and key, so a moved one fails to open and is held. Sealed observed facts are the exception: they are bound to their enclave and epoch, not to a machine, so a writer can copy them between status refs (section 11).
 - Task, check and collector definitions run only after a local allow. So do a manifest change that weakens a target's protection (enclave, seals, regions, an explicit mode, or the machine-local keys of `keep`, `drop` and `volatile`) and a new or changed owned root.
@@ -852,6 +872,7 @@ Pinned in `go.mod`; `go 1.25` minimum. Each was fetched and exercised (`internal
 |---|---|---|---|
 | `filippo.io/age` | v1.3.2 | Wrap epoch keys to member recipients | Reference implementation of age; X25519 recipients; stable. |
 | `github.com/tink-crypto/tink-go/v2` | v2.9.0 | AES-SIV (`daead/subtle`) | Maintained, audited deterministic AEAD; we do not implement SIV. Pulls `google.golang.org/protobuf` transitively. |
+| `golang.org/x/crypto` | v0.55.0 | argon2id for the join code (section 7.2); `internal/crypt/joincode_test.go` pins its output | Go-team maintained; already required by `age`. |
 | Go standard library | | HKDF (`crypto/hkdf`), Ed25519, SHA-256 | No extra dependency. |
 | `github.com/pelletier/go-toml/v2` | v2.4.3 | Parse fleet and manifest; `unstable` parser with comments for the TOML span editor | Only Go TOML parser that exposes a comment-preserving AST. Expression ranges are empty for key-values, so spans come from child nodes. |
 | `github.com/tidwall/sjson` (+ `gjson`) | v1.2.10 | Test only: `internal/rules/deps_test.go` records why rules does not use it | Its delete takes the comment above a key and it cannot expand `*`, so rules has its own JSON and JSONC editor. |

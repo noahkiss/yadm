@@ -233,7 +233,7 @@ func writeFile(p string, b []byte) error {
 }
 
 // PinAll writes a pin at each enclave's head into stateDir, as a machine has
-// after create, add or `enclave join --expect`. crypt.LoadSet opens no
+// after create, add or `enclave join`. crypt.LoadSet opens no
 // keyring for an unpinned enclave.
 func (f *Fixture) PinAll(stateDir string) error {
 	pins := crypt.FilePins(stateDir)
