@@ -35,6 +35,8 @@
 //	func LoadIdentity(stateDir string) (*Identity, error)
 //	func (*Identity) Save(stateDir string) error
 //	func (*Identity) Member() Member
+//	func (*Identity) SignStatement(kind string, body []byte) ([]byte, error) // domain-separated from key-log signatures
+//	func VerifyStatement(m Member, kind string, body, sig []byte) error // ErrBadStatement
 //	type Member struct{ Machine model.MachineID; Recipient, SignKey string }
 //	type LogEntry struct{ Enclave; Seq; Prev; Epoch; MinEpoch; Op; Subject; Members; Recovery; KeyCommits; Wrapped; Signer; Sig }
 //	const OpCreate, OpAdd, OpRemove, OpRotate, OpRetire, OpRecover, OpSetRecovery Op

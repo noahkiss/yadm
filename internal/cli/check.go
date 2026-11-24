@@ -142,6 +142,8 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		add("last_sync", age <= fleet.StaleAfter, "last sync %s ago", age.Truncate(time.Second))
 	}
 
+	checks = append(checks, m.pauseCheck(ctx))
+
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {
 		add("holds", false, "%v", err)

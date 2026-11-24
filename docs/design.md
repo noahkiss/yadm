@@ -564,7 +564,7 @@ Two locks in the state directory serialize the processes of one machine. No proc
 
 Each lock file holds its holder's record while held: pid, command (the binary name and subcommand words, no paths) and start time. The exit-4 error names the holder and how long it has held the lock. `yadm status` lists a lock held for more than 10 s and an active network backoff. A record whose pid is dead is ignored. No command waits without a bound; every git and external call has a timeout (3 min for a network call). Git runs in its own process group, and the whole group is killed at the deadline, so a stalled ssh child cannot keep a lock. Every commit goes through `sync.Commit`. `apply` and the local allows read `main` again once they hold the sync lock, since the process they waited for may have moved it.
 
-A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main` or a reviewed ref moved, a target drifted, the last full sync is 15 minutes old, or the last check is more than 3 minutes old (the machine slept or the timer stopped). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. The quick check also runs in full when local `main` is ahead of the remote (a hook's commit, or a push that was skipped or rejected, waits for the timer to push it). The stat scan runs under the sync lock and `git ls-remote` under the network lock; when another process holds the network lock, the check stops there, since that process is syncing already.
+A **quick sync** (`--quick`, and `--auto` unless `--full`) first runs a cheap check: a stat scan and `git ls-remote` of `main` and `refs/yadm/*`, compared with what the last full sync saw. It stops there unless the remote `main`, a reviewed ref or the pause ref moved, a target drifted, the last full sync is 15 minutes old, the last check is more than 3 minutes old (the machine slept or the timer stopped), or a fleet pause that held this machine has passed its deadline (section 10.1). The first run is always full. A tick where nothing moved costs one stat pass and one round trip. Peers' status refs move on every sync, so they do not trigger a full sync; the periodic one fetches them. When `git ls-remote` fails, the run stops and the quick check backs off: it does not reach the remote again for 1 minute, doubling per further failure up to 15 minutes. A remote that answers, or a full sync (wake, periodic, local drift), clears it. The quick check also runs in full when local `main` is ahead of the remote (a hook's commit, or a push that was skipped or rejected, waits for the timer to push it). The stat scan runs under the sync lock and `git ls-remote` under the network lock; when another process holds the network lock, the check stops there, since that process is syncing already.
 
 A sync runs in three phases:
 
@@ -587,7 +587,7 @@ The steps:
 6. Compare-and-swap local `main`. Move the source worktree; if it has local edits, stop with a `source_dirty` hold (the tool never stashes). `main` moves only over a clean clone, checked while `HEAD` still names the old `main`, so the clone's index never falls behind `HEAD`. A clean clone at a commit yadm reached (a `yadm git commit` on `main`, for example) counts as clean. The hold's advice returns the clone to `HEAD`.
 7. Apply.
 8. Publish this machine's status record (section 11).
-9. Release the sync lock. Under the network lock, push `main`, the status ref, the advanced reviewed refs and the notes ref atomically. The refspecs are computed in step 8, under the sync lock. A local commit made between steps 8 and 9 goes out too, since it descends from the replayed `main`. Never force. A rejection means the remote moved after the fetch; it is not an error. The run fetches, replays and pushes again, up to 5 more rounds with backoff, taking the sync lock again for each replay (when another process holds it, the run stops there and notes it); after that the next sync does it. When the network lock is held, the push is skipped and the next sync does it. After a push that moved `main`, run the nudge (section 12.5).
+9. Release the sync lock. Under the network lock, push `main`, the status ref, the advanced reviewed refs, the notes ref and a pause or resume record written here that has not gone out, atomically. The refspecs are computed in step 8, under the sync lock. A local commit made between steps 8 and 9 goes out too, since it descends from the replayed `main`. Never force. A rejection means the remote moved after the fetch; it is not an error. The run fetches, replays and pushes again, up to 5 more rounds with backoff, taking the sync lock again for each replay (when another process holds it, the run stops there and notes it); after that the next sync does it. When the network lock is held, the push is skipped and the next sync does it. After a push that moved `main`, run the nudge (section 12.5).
 
 `sync` reports a skipped or rejected network step in `network`. Only a sync that fetched and whose push went out, or had nothing to push, counts as a full sync for the quick check and clears its backoff, so local `main` stays ahead and the next tick runs in full.
 
@@ -604,6 +604,64 @@ A hold on a managed target settles by itself when a complete scan finds the targ
 A conflict hold is settled with `yadm hold resolve <id>`: `--take target` (or `--take <file>`, written to the target first) commits this machine's file over the current source and pushes it; `--take source` drops the hold and rewrites the target from the source, backing up the replaced bytes.
 
 A fetched commit that touches `sealed/<enclave>/` or `keys/<enclave>/` from a machine (by `Machine:` trailer) that is not a member of that enclave is applied and reported through the notify hook. The trailer is not authenticated; key-log changes are, by signature.
+
+### 10.1 Fleet pause
+
+`yadm pause` holds sync on every other machine for a bounded time, so one machine can make a change that touches the whole fleet while no peer commits, applies or pushes half of it.
+
+**Flow.**
+
+1. The initiator writes a signed pause record and pushes it: `yadm pause [--for 30m] [--reason R] [--wait 2m | --no-wait]`. It prints progress while peers confirm (`waiting… 1/2 confirmed (host-c not yet)`), then `paused fleet-wide until 22:41 (30m); resumes automatically`. A peer that has not confirmed when the wait ends does not block the initiator; it pauses on its next sync if the pause is still on.
+2. Every other machine's sync still fetches, so it sees a resume or an extension. It skips scan and capture, auto-commit, collectors, replay and apply, and pushes only its status ref. The status record carries `paused_until` and `pause_id`: that is the confirmation.
+3. On a held machine, `commit`, `apply`, `capture`, `hold resolve`, `protection allow`, `root allow` and every other command that commits through `sync.Commit` (track, retag, source mv, untrack, the enclave writes) refuse with exit 6. The message names the initiator, the reason and the deadline. A dry run still works. A harness hook leaves its paths recorded and returns a quiet verdict, and the timer commits them after the pause.
+4. The initiator is not held. Its commits proceed and push as usual; peers apply them when they resume.
+5. Every machine resumes by itself at the deadline, by its own clock, offline included. The quick check runs a full sync once a pause that held this machine has passed its deadline. A lost initiator can therefore hold the fleet at most 4 hours.
+
+`yadm resume [pause-id]` lifts a pause early. `yadm pause --for X` on the initiator while its pause holds extends it: the new deadline is the later of the current one and now + X. `yadm status`, `yadm check` and `yadm fleet list` show the pause.
+
+**Record.** The pause ref `refs/yadm/pause` is a chain of commits whose tree holds one `<id>.json` per pause, the latest record of that pause:
+
+```json
+{ "schema": 1, "op": "pause", "id": "p-1a2b3c4d5e6f", "initiator": "m-a1b2c3",
+  "reason": "rename shell config", "created": "2030-01-01T12:00:00Z",
+  "deadline": "2030-01-01T12:30:00Z", "signer": "m-a1b2c3", "sig": "<base64>" }
+```
+
+A resume is the same record with `op = "resume"` and its own signer. Why a dedicated ref, not a protected file in `main`:
+
+- Sync already fetches `refs/yadm/*`, so every machine sees it without a new fetch path.
+- It is not in `main`, so it never auto-commits, never passes the commit gate and is never applied. A held machine does not move `main`, yet it still reads the latest record.
+- A protected file in `main` would reach a held machine only through the replay and apply the pause stops.
+- One file per pause means a resume of one pause never hides another.
+
+The writer builds on the fetched ref and pushes fast-forward, never forced; a rejected push is redone on the new remote head. A write drops records that can hold no one for a day.
+
+**Trust.**
+
+| Item | Choice |
+|---|---|
+| Key | The machine's Ed25519 signing key, the one its key-log entries carry as `sign_key` |
+| Domain | The signed message is `"yadm v1 statement pause\n"` followed by the canonical JSON of the record with `sig` empty. A key-log entry is signed over its bare TOML, so no signature is valid as both. |
+| Trusted signers | The members of the head of each key log this machine has pinned and verified. An unpinned log gives no signer: a writer can replace it with one that lists its own key. |
+| Pause | Signed by its initiator (`signer = initiator`) |
+| Resume | Signed by any trusted signer, so a member can end a pause whose initiator is lost. A deadline needs no signature: each machine applies it by its own clock. |
+| Who may pause | `yadm pause` and `yadm resume` refuse on a machine that is not a trusted signer by its own pins: no peer would accept its record. |
+
+Why the pinned key logs and not `fleet.toml`: any writer edits `fleet.toml`, while a key-log entry is signed and chained from a pin a human carried out of band (section 7.2). A mere repo writer therefore cannot freeze the fleet or break an owner's pause. A machine verifies against the key logs at its local `main`; during a pause that is the state from before the pause.
+
+A record that fails any check is ignored. It appears in `pause_ignored` in the status record, in `yadm status`, and as a failing `pause` item in `yadm check`, until its claimed deadline passes. A machine that pins no key log cannot verify any pause and ignores every one; `yadm check` warns about it. A non-member pins an enclave's log with `yadm enclave join <enclave> --expect <fingerprint>`.
+
+**Bounds.** Local state in the state directory (`pause.json`) is the authority. Each accepted record merges into it: the first time this machine saw the pause, the latest signed deadline, and whether a signed resume lifted it. A machine resumes at
+
+```
+min(signed deadline, created + 4h, first seen here + 4h)
+```
+
+- The 4-hour cap holds whatever the record asks; `yadm pause` itself clamps a longer request and says so. An extension keeps `created`, so it never passes the cap.
+- `first seen + 4h` bounds a record whose `created` lies in the future (a skewed clock).
+- A pause whose window ended before this machine saw it is a no-op: a machine that slept through it never holds.
+- A lifted pause stays lifted, so a replayed pause record does not hold the machine again. A shorter deadline for a known pause is ignored. A ref that a writer rewinds, deletes or fills with garbage changes nothing already accepted.
+- A writer can replay a signed record a machine has not seen yet. It holds that machine at most until the cap from the record's creation.
 
 ## 11. Status refs and observed facts
 
@@ -624,9 +682,14 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "observed": { "packages": { "collector": "packages", "items": ["tool-one", "tool-two"], "collected_at": "…" } },
   "sealed": { "client": "<sealed observed facts>" },
   "tasks": [ { "task": "package-bundle", "trigger": "paths", "commit": "…", "exit_code": 0, "duration_ns": 1200000000 } ],
-  "on_demand": ["work"]
+  "on_demand": ["work"],
+  "paused_until": "2030-01-01T12:30:00Z",
+  "pause_id": "p-1a2b3c4d5e6f",
+  "pause_ignored": [ { "id": "p-…", "why": "signer is not a member of a key log this machine has pinned: m-…" } ]
 }
 ```
+
+`paused_until` and `pause_id` confirm a fleet pause the machine honours, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
 
 `on_demand` lists the enclaves the machine reads on demand only (section 7.6). It is self-reported: `yadm check` uses it to explain a key-log member without the enclave's type, and a change to it publishes a record on the next sync.
 
@@ -760,7 +823,7 @@ On failure, `ok` is false and `error` is `{ "code": "…", "message": "…", "de
 | 3 | `attention` | The command succeeded, but holds or conflicts exist; `data` lists them |
 | 4 | `locked` | Another yadm process has held the sync lock past the wait (section 10); the message names its pid, command and age. Retry later |
 | 5 | `not_implemented` | |
-| 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition |
+| 6 | `refused` | Refused for secrecy or trust: not a member, a key log that fails verification, an untrusted definition, a write while another machine's fleet pause holds this one (section 10.1) |
 
 `yadm hook <event>` has its own contract, for harnesses: it prints one verdict object (not an envelope) or nothing, and exits 0 (allow), 2 (a decision blocks) or 1 (the hook failed; harnesses go on). See `docs/hooks.md`.
 
@@ -789,13 +852,15 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `managed <path>` | Is it managed here | `{target, managed, scope, source}` |
 | `explain <command>` | Steps the command would take here | `{steps[]}` |
 | `init <remote> --machine <m>` | Clone, write `machine.toml`, create identity, install schedule | `{machine, recipient, sign_key, source}` |
-| `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?}` |
+| `status` | Drift, holds, ahead/behind, last sync, locks held over 10 s, network backoff, fleet pause | `{machine, applied, ahead, behind, drift[], holds[], last_sync, generated[]?, locks[{lock, holder{pid, command, since}}]?, net_backoff_until?, pause?{held?, own?, ignored[]?, confirmations?}}` |
 | `apply [--dry-run] [path…]` | Write changed targets | `{commit, actions[], holds[], tasks[]}` |
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff, skipped?}]}` |
 | `show <path> [--as <m>]` | Print a target as machine `m` (default this one) receives it, to stdout only; opens on-demand enclaves (section 7.6) | `{machine, name, target, source, enclave?, content, encoding}`; without `--json`, the bytes alone |
 | `commit [-m\|--why] [--no-push] [--dry-run] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?, planned[{scope, subject, paths[]}]?}`; `planned` only with `--dry-run` |
-| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?}` |
+| `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?, paused?, pause?}` |
+| `pause [--for <d>] [--reason <r>] [--wait <d> \| --no-wait]` | Section 10.1: sign and push a fleet pause, or extend this machine's own, then wait for peers to confirm | `{id, initiator, reason?, created, until, requested, clamped?, extended?, pushed, push_error?, confirmed[], waiting[], ignored[]?}` |
+| `resume [pause-id]` | Section 10.1: sign and push a resume | the same, with `resumed`; `{resumed: false}` when no pause holds |
 | `log [path]` | History, plaintext where openable; each commit's review note | `{commits[{…, note?}]}` |
 | `retag <path> <types> [--enclave <e>] [--source <s>] [--dry-run]` | Section 8.5; commits through the gate and pushes | `{commit, source, when, removed_on[], holds[]}` |
 | `track <path> [--when <cond>] [--enclave <e>] [--no-push]` | Section 8.6; commits through the gate and pushes | `{target, source, scope, commit, pushed, holds[], push_error?, glob?}`; `glob` names the entry a new file was captured under |
@@ -803,7 +868,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `untrack <path> [--source <s>] [--dry-run] [--no-push]` | Section 8.8; commits and pushes; the file stays here | `{target, source, scope, source_kept, commit, pushed, push_error?}` |
 | `bisect --as <m> -- <cmd>` | Sandbox bisect | `{first_bad}` |
 | `collect` | Run collectors now | `{observed{}, skipped[]}` |
-| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, holds, secrecy config. `warn` marks a check that passes but needs a look. |
+| `check` | Self-check | `{checks[{name, ok, warn?, detail}]}`: identity keys and modes, key logs vs pins, fleet vs key-log membership with each member's role (section 7.6), on-demand names, manifest collisions, schedule loaded and runnable (section 13), last sync age, the fleet pause (failed for an ignored pause record, warned while held or with no pinned key log), holds, secrecy config. `warn` marks a check that passes but needs a look. |
 | `fleet list` / `show <m>` / `diff <collector>` | Section 11 | statuses / one machine / `ObservedDiff`; rows carry `sealed_observed` on a member |
 | `enclave list` / `create` / `add` / `remove --confirm` / `join --code` (or `--expect`) / `verify` / `retire` / `set-recovery` | Section 7.3; `remove` also retires old epochs once its reseal commit lands | key-log heads and members; `list` rows carry `on_demand`; `remove` is refused for an on-demand enclave (section 7.6) |
 | `enclave on-demand <enclave> [--off]` | Section 7.6: edits `on_demand` in `machine.toml`; the next apply takes effect | `{enclave, on_demand, machine_toml}` |
@@ -862,6 +927,7 @@ Adopt runs path tasks only: each allowed `on` task that matches a target adopt t
 - The recovery identity signs only `recover` and `set-recovery`. A leaked recovery key is replaced with `set-recovery`.
 - A 0600 key file is readable by every process of the user. An enclave separates machines, not processes on one machine. The tool loads identity files only as regular files (no symlink) owned by the user, in a state directory with no group or other access.
 - An on-demand member (section 7.6) holds the enclave's keys like any member. The setting keeps plaintext off its disk; it does not limit what the machine can read or seal. A compromised on-demand member exposes the enclave as any member would, and its removal follows the same steps. Its `on_demand` claim in the status record is self-reported, and a writer can forge it; `yadm check` treats it as an explanation for a missing type, never as proof. The pinned key log is what proves which machines hold an enclave's keys.
+- A writer cannot start, extend or lift a fleet pause: pause and resume records count only when a member of a pinned key log signed them (section 10.1). A trusted member can hold the fleet for at most 4 hours per pause, and every machine resumes by its own clock. The pause reason is plain text every machine reads.
 - A removed machine keeps everything up to its removal. It cannot plant content under its old keys: new sealed content opens only under the current epoch, and `retire` refuses old epochs for delivery for good. Its local backups of the enclave are deleted on the first apply after the removal.
 
 ## 17. Dependencies

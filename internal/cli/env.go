@@ -39,9 +39,10 @@ var hooks = struct {
 	exec      func() extexec.Runner
 	units     func() tasks.UnitReloader
 	binary    func() string
-	nudge     func() []string // argv run after a push that moved main
-	lockWait  time.Duration   // how long a command waits for the lock
-	hookWait  time.Duration   // how long a harness hook waits for the lock
+	nudge     func() []string                                  // argv run after a push that moved main
+	lockWait  time.Duration                                    // how long a command waits for the lock
+	sleep     func(ctx context.Context, d time.Duration) error // `yadm pause` between polls
+	hookWait  time.Duration                                    // how long a harness hook waits for the lock
 	stdin     func() io.Reader
 }{
 	// The CLI changes the real schedule: init, adopt and `schedule install`
@@ -70,6 +71,14 @@ var hooks = struct {
 		return nil
 	},
 	lockWait: sync.LockTimeout,
+	sleep: func(ctx context.Context, d time.Duration) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+			return nil
+		}
+	},
 	hookWait: 3 * time.Second,
 	stdin:    func() io.Reader { return os.Stdin },
 }

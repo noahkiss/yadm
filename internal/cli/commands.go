@@ -103,6 +103,7 @@ func (a *app) register(root *cobra.Command) {
 
 	a.registerEnclave(root)
 	a.registerHooks(root)
+	a.registerPause(root)
 
 	pr := a.group(root, "protection", "Local allows for weakened protection of a target")
 	exact(leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow), 1)
@@ -406,6 +407,9 @@ type statusData struct {
 	// NetBackoff is when the quick check reaches the remote again after
 	// repeated failures, while that is still ahead.
 	NetBackoff *time.Time `json:"net_backoff_until,omitempty"`
+	// Pause is the fleet pause that holds this machine or that it started,
+	// and pause records it ignored.
+	Pause *pauseStatus `json:"pause,omitempty"`
 }
 
 // LockShowAfter is how long a lock is held before `yadm status` shows it.
@@ -457,6 +461,9 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	if until, ok := sync.NetBackoff(m.paths.State, hooks.now()); ok {
 		d.NetBackoff = &until
 	}
+	_, _ = m.load(ctx)
+	ps, pauseText := m.statusPause(ctx)
+	d.Pause = ps
 	var next []string
 	if len(d.Drift) > 0 {
 		next = append(next, "yadm diff", "yadm commit")
@@ -472,6 +479,7 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 	if d.NetBackoff != nil {
 		fmt.Fprintf(&b, "  network backoff: the remote failed; next check after %s\n", d.NetBackoff.Format(time.RFC3339))
 	}
+	b.WriteString(pauseText)
 	for _, x := range d.Drift {
 		fmt.Fprintf(&b, "  %-10s %s\n", x.Kind, x.Target)
 	}
@@ -532,6 +540,11 @@ func (a *app) cmdApply(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	if !dry {
+		if res, err := m.refuseHeld(ctx); err != nil {
+			return res, err
+		}
+	}
 	var res apply.Result
 	run := func() error {
 		var err error
@@ -564,6 +577,9 @@ func (a *app) cmdCapture(cmd *cobra.Command, args []string) (result, error) {
 	paths, err := targets(m.home, args)
 	if err != nil {
 		return result{}, err
+	}
+	if res, err := m.refuseHeld(ctx); err != nil {
+		return res, err
 	}
 	var c apply.Capture
 	if err := m.locked(ctx, func() error {
@@ -1140,6 +1156,9 @@ func (a *app) allowOne(cmd *cobra.Command, arg string, allow func(*machineEnv, m
 	m, err := openLoaded(ctx)
 	if err != nil {
 		return notInit(err), err
+	}
+	if res, err := m.refuseHeld(ctx); err != nil {
+		return res, err
 	}
 	t, err := target(m.home, arg)
 	if err != nil {

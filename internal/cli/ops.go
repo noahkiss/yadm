@@ -54,7 +54,11 @@ func (a *app) cmdFleetList(cmd *cobra.Command, args []string) (result, error) {
 		if r.Stale {
 			stale = " STALE"
 		}
-		fmt.Fprintf(&b, "%-10s %-14s last %s held %d%s\n", r.Machine.ID, r.Machine.Name, last, held, stale)
+		paused := ""
+		if r.Status != nil && r.Status.PausedUntil != nil && r.Status.PausedUntil.After(hooks.now()) {
+			paused = " paused until " + clock(*r.Status.PausedUntil)
+		}
+		fmt.Fprintf(&b, "%-10s %-14s last %s held %d%s%s\n", r.Machine.ID, r.Machine.Name, last, held, stale, paused)
 	}
 	return result{data: map[string]any{"machines": rows}, text: b.String()}, nil
 }
@@ -395,6 +399,9 @@ func (a *app) cmdHoldResolve(cmd *cobra.Command, args []string) (result, error) 
 	m, err := open(ctx)
 	if err != nil {
 		return notInit(err), err
+	}
+	if res, err := m.refuseHeld(ctx); err != nil {
+		return res, err
 	}
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {

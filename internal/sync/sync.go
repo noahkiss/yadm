@@ -14,6 +14,7 @@ import (
 	"github.com/noahkiss/yadm/internal/extexec"
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/tasks"
 )
@@ -66,6 +67,11 @@ type Report struct {
 	Network string `json:"network,omitempty"`
 	// Planned lists the commits a dry-run Commit would make.
 	Planned []DryCommit `json:"planned,omitempty"`
+	// Paused says another machine's fleet pause holds this one: the run
+	// fetched and published its status record, and did nothing else.
+	Paused bool `json:"paused,omitempty"`
+	// Pause is the pause state this run saw.
+	Pause *pause.View `json:"pause,omitempty"`
 
 	deferred bool // the push was left to the next sync
 }
@@ -174,12 +180,14 @@ type Syncer struct {
 	// commit touched, so a full apply is still due before the run ends.
 	applied model.CommitID
 	partial model.CommitID
+
+	pauseView *pause.View // the pause state this run evaluated; publish reports it
 }
 
 // begin resets the per-run caches; the returned func clears them again.
 func (s *Syncer) begin() func() {
-	s.snaps, s.applied, s.partial = nil, "", ""
-	return func() { s.snaps, s.applied, s.partial = nil, "", "" }
+	s.snaps, s.applied, s.partial, s.pauseView = nil, "", "", nil
+	return func() { s.snaps, s.applied, s.partial, s.pauseView = nil, "", "", nil }
 }
 
 // load returns the snapshot of a commit id, loading each commit once per run.
@@ -397,6 +405,16 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 		return rep, err
 	}
 
+	// A fleet pause another machine started holds this one: fetch only.
+	pv, err := s.evalPause(ctx, start, !opts.DryRun)
+	if err != nil {
+		return rep, err
+	}
+	rep.Pause = &pv
+	if pv.Holding(s.self()) != nil {
+		return s.pausedRun(ctx, rep, lk, f, start, opts)
+	}
+
 	// 1. Scan and capture.
 	drift, err := s.Apply.Scan(ctx, apply.ScanOptions{})
 	if err != nil {
@@ -538,6 +556,18 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 	var publishedTip model.CommitID
 	published := false
 	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// A pause fetched in this round holds the rest: what this run
+			// committed stays local until the pause ends.
+			pv, err := s.evalPause(ctx, local0(ctx, s), true)
+			if err != nil {
+				return s.settle(ctx, rep, captured, committed, err)
+			}
+			rep.Pause = &pv
+			if pv.Holding(s.self()) != nil {
+				return s.pausedRun(ctx, rep, lk, f, local0(ctx, s), opts)
+			}
+		}
 		// 5-8. Replay onto the fetched origin/main, apply, publish.
 		base, err := s.startBase(ctx, f.base)
 		if err != nil {
@@ -898,26 +928,49 @@ func (s *Syncer) backoff(ctx context.Context, attempt int) error {
 	}
 }
 
+// local0 is local main, or "" when it does not resolve.
+func local0(ctx context.Context, s *Syncer) model.CommitID {
+	id, _ := s.Store.ResolveRef(ctx, store.RefMain)
+	return id
+}
+
+// statusSpec is the refspec of this machine's status ref when it moved past
+// the pushed copy, or "".
+func (s *Syncer) statusSpec(ctx context.Context) (string, error) {
+	sref := fleet.StatusRef(s.self())
+	local, err := s.Store.ResolveRef(ctx, sref)
+	if err != nil {
+		return "", err
+	}
+	pushed, err := s.Store.ResolveRef(ctx, "refs/remotes/origin/yadm/status/"+string(s.self()))
+	if err != nil {
+		return "", err
+	}
+	if local != "" && local != pushed {
+		return sref + ":" + sref, nil
+	}
+	return "", nil
+}
+
 // pushSpecs lists what to push: main when it moved past the remote, this
-// machine's status ref, reviewed refs this machine advanced, and the review
-// notes ref when it holds notes the remote lacks. A reviewed
+// machine's status ref, reviewed refs this machine advanced, the review
+// notes ref when it holds notes the remote lacks, and the pause ref when a
+// pause or resume written here has not gone out. A reviewed
 // ref the remote advanced further is fast-forwarded locally instead.
 func (s *Syncer) pushSpecs(ctx context.Context, tip, remote model.CommitID) ([]string, error) {
 	var specs []string
 	if tip != "" && tip != remote {
 		specs = append(specs, store.RefMain+":"+store.RefMain)
 	}
-	sref := fleet.StatusRef(s.self())
-	local, err := s.Store.ResolveRef(ctx, sref)
-	if err != nil {
+	if sp, err := s.statusSpec(ctx); err != nil {
 		return nil, err
+	} else if sp != "" {
+		specs = append(specs, sp)
 	}
-	pushed, err := s.Store.ResolveRef(ctx, "refs/remotes/origin/yadm/status/"+string(s.self()))
-	if err != nil {
+	if ps, err := pause.Spec(ctx, s.Store); err != nil {
 		return nil, err
-	}
-	if local != "" && local != pushed {
-		specs = append(specs, sref+":"+sref)
+	} else if ps != "" {
+		specs = append(specs, ps)
 	}
 	more, err := s.reviewedSpecs(ctx)
 	if err != nil {

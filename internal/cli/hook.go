@@ -21,6 +21,7 @@ import (
 	"github.com/noahkiss/yadm/internal/cond"
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 )
@@ -459,8 +460,8 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		Paths: []model.Target{t}, Unattended: true, Trigger: sync.TriggerHook,
 		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: false,
 	}, hooks.hookWait)
-	if errors.Is(err, sync.ErrLocked) {
-		return Verdict{}, nil // a sync is running; the path is recorded for stop
+	if errors.Is(err, sync.ErrLocked) || errors.Is(err, pause.ErrHeld) {
+		return Verdict{}, nil // a sync is running, or a fleet pause holds this machine; the path is recorded for stop and the timer
 	}
 	if err != nil {
 		return Verdict{}, err
@@ -511,6 +512,9 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
 		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil
+	}
+	if errors.Is(err, pause.ErrHeld) {
+		return Verdict{Context: "yadm: " + err.Error() + "; the timer commits this session's edits after the pause"}, nil
 	}
 	if err != nil {
 		return Verdict{}, err

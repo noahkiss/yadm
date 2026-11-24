@@ -15,6 +15,7 @@ import (
 
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/sync"
 )
 
@@ -29,7 +30,7 @@ const (
 	ExitAttention      = 3 // the command succeeded but holds or conflicts exist (Data lists them)
 	ExitLocked         = 4 // another yadm process holds the lock; retry later
 	ExitNotImplemented = 5
-	ExitRefused        = 6 // refused for secrecy or trust: non-member, unsigned key change, untrusted task
+	ExitRefused        = 6 // refused for secrecy or trust: non-member, unsigned key change, untrusted task, another machine's fleet pause
 )
 
 // Error codes in ErrorBody.Code.
@@ -76,6 +77,7 @@ var refusals = []error{
 	crypt.ErrBadSignature,
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
+	pause.ErrHeld,
 }
 
 // classify maps an error to an exit code and an error code.

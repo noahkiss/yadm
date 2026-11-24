@@ -41,6 +41,10 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if last != nil && !slices.Equal(last.OnDemand, onDemand) {
 		changed = true // peers' check reads it; do not wait for the hourly record
 	}
+	pausedUntil, pauseID, pauseIgnored := s.pauseFields()
+	if !samePause(last, pausedUntil, pauseID, pauseIgnored) {
+		changed = true // the confirmation the initiator waits for
+	}
 	if !fleet.PublishDue(last, changed, now) {
 		return nil
 	}
@@ -116,6 +120,7 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if len(onDemand) > 0 {
 		rec.OnDemand = onDemand
 	}
+	rec.PausedUntil, rec.PauseID, rec.PauseIgnored = pausedUntil, pauseID, pauseIgnored
 	return s.Status.Publish(ctx, rec)
 }
 
