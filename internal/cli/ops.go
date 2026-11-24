@@ -591,10 +591,14 @@ func (a *app) cmdLeaseRelease(cmd *cobra.Command, args []string) (result, error)
 	if err != nil {
 		return result{}, err
 	}
-	if err := sync.FileLeases(p.State).Release(args[0]); err != nil {
+	if err := sync.FileLeases(p.State).Release(args[0], args[1:]...); err != nil {
 		return result{}, err
 	}
-	return result{data: map[string]any{"released": args[0]}}, nil
+	data := map[string]any{"released": args[0]}
+	if len(args) > 1 {
+		data["paths"] = args[1:]
+	}
+	return result{data: data}, nil
 }
 
 func (a *app) cmdLeaseList(cmd *cobra.Command, args []string) (result, error) {

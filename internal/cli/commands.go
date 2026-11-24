@@ -133,11 +133,12 @@ func (a *app) register(root *cobra.Command) {
 	leaf(root, "conflicts", "List conflict holds (same as hold list --reason conflict)", a.cmdHoldList(model.HoldConflict))
 
 	ls := a.group(root, "lease", "Agent leases that pause auto-commit for paths")
-	tk := leaf(ls, "take <path...>", "Take a lease", a.cmdLeaseTake)
+	tk := leaf(ls, "take <path...>", "Take a lease; a holder's repeat take adds its paths and refreshes the TTL of all", a.cmdLeaseTake)
 	tk.Args = cobra.MinimumNArgs(1)
 	tk.Flags().String("holder", "", "lease holder name")
 	tk.Flags().Duration("ttl", time.Hour, "lease lifetime")
-	exact(leaf(ls, "release <holder>", "Release a holder's leases", a.cmdLeaseRelease), 1)
+	rel := leaf(ls, "release <holder> [path...]", "Release a holder's lease, or only the named paths of it", a.cmdLeaseRelease)
+	rel.Args = cobra.MinimumNArgs(1)
 	leaf(ls, "list", "List leases", a.cmdLeaseList)
 
 	ts := a.group(root, "task", "On-change tasks, checks and collectors")

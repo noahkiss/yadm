@@ -68,8 +68,9 @@ func (l fileLeases) List() ([]Lease, error) {
 	return out, nil
 }
 
-// Take records a lease and replaces any lease of the same holder. A lease
-// must expire.
+// Take records a lease. A holder with a live lease keeps its earlier paths:
+// Take adds the new ones and moves the expiry of all of them to x.Expires.
+// An expired lease's paths are not carried over. A lease must expire.
 func (l fileLeases) Take(x Lease) error {
 	if strings.TrimSpace(x.Holder) == "" {
 		return fmt.Errorf("lease: empty holder")
@@ -85,6 +86,23 @@ func (l fileLeases) Take(x Lease) error {
 	if err := os.MkdirAll(l.dir, 0o700); err != nil {
 		return err
 	}
+	if old, ok := l.read(x.Holder); ok && l.now().Before(old.Expires) {
+		x.Paths = unionPaths(old.Paths, x.Paths)
+	}
+	return l.write(x)
+}
+
+// read returns the holder's stored lease, expired or not.
+func (l fileLeases) read(holder string) (Lease, bool) {
+	var x Lease
+	b, err := os.ReadFile(l.file(holder))
+	if err != nil || json.Unmarshal(b, &x) != nil {
+		return Lease{}, false
+	}
+	return x, true
+}
+
+func (l fileLeases) write(x Lease) error {
 	b, err := json.Marshal(x)
 	if err != nil {
 		return err
@@ -97,8 +115,42 @@ func (l fileLeases) Take(x Lease) error {
 	return os.Rename(tmp, p)
 }
 
-// Release removes the holder's lease. Releasing a missing lease is not an error.
-func (l fileLeases) Release(holder string) error {
+// unionPaths returns a's paths, then b's that a lacks.
+func unionPaths(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range append(append([]string{}, a...), b...) {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Release removes the holder's lease. With paths, it removes only those
+// paths, as given to Take, and keeps the rest with their expiry; the lease
+// goes when no path is left. Releasing a missing lease or path is not an
+// error.
+func (l fileLeases) Release(holder string, paths ...string) error {
+	if len(paths) > 0 {
+		if old, ok := l.read(holder); ok {
+			drop := map[string]bool{}
+			for _, p := range paths {
+				drop[p] = true
+			}
+			var keep []string
+			for _, p := range old.Paths {
+				if !drop[p] {
+					keep = append(keep, p)
+				}
+			}
+			if len(keep) > 0 {
+				old.Paths = keep
+				return l.write(old)
+			}
+		}
+	}
 	err := os.Remove(l.file(holder))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil

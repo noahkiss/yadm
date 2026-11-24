@@ -146,3 +146,38 @@ func TestLeaseNewFileRaisesNoDecision(t *testing.T) {
 		t.Fatalf("stop after release: exit %d\n%s", code, stderr)
 	}
 }
+
+// TestLeaseRepeatTakeKeepsEarlierPaths: a second take by the same holder
+// adds to its lease, so the stop hook still leaves the first path alone.
+func TestLeaseRepeatTakeKeepsEarlierPaths(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	yadmOK(t, "lease", "take", ".config/tool/config", "--holder", "agent-x", "--ttl", "60m")
+	yadmOK(t, "lease", "take", ".config/tool/new.conf", "--holder", "agent-x", "--ttl", "60m")
+	before := git(t, a.Source, "rev-parse", "main")
+	file := filepath.Join(a.Home, ".config/tool/config")
+	writeFile(t, file, "color = red\n")
+	hookRun(t, payload(payloadEdit, "session-p", a.Home, file), HookPostEdit)
+	if code, stdout, _ := hookRun(t, payload(payloadStop, "session-p", a.Home, ""), HookStop); code != HookAllow || !strings.Contains(stdout, "leased by agent-x") {
+		t.Fatalf("stop: exit %d %s", code, stdout)
+	}
+	if git(t, a.Source, "rev-parse", "main") != before {
+		t.Fatal("a repeat take dropped the first path's protection")
+	}
+
+	// Releasing one path leaves the other leased; that one commits.
+	yadmOK(t, "lease", "release", "agent-x", ".config/tool/config")
+	if code, _, _ := hookRun(t, payload(payloadStop, "session-p", a.Home, ""), HookStop); code != HookAllow {
+		t.Fatalf("stop after a path release: exit %d", code)
+	}
+	if msg := git(t, a.Source, "log", "-1", "--format=%B", "main"); !strings.Contains(msg, "update .config/tool/config") {
+		t.Fatalf("the released path did not commit:\n%s", msg)
+	}
+	env := yadmOK(t, "lease", "list")
+	if s := mustJSON(t, env.Data); !strings.Contains(s, "new.conf") || strings.Contains(s, "tool/config") {
+		t.Fatalf("lease list after a path release: %s", s)
+	}
+}
