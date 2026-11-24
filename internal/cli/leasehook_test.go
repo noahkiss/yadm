@@ -230,3 +230,25 @@ func TestLeaseRaisesConflict(t *testing.T) {
 		t.Fatalf("post-edit verdict: %+v", v)
 	}
 }
+
+// TestLeaseTTLCapped: a lease never outlives LeaseMax, so a crashed holder
+// cannot keep a path uncommitted for long.
+func TestLeaseTTLCapped(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	hookMachine(t, root, remote, "a", "host-a")
+
+	start := time.Now()
+	yadmOK(t, "lease", "take", ".config/tool", "--holder", "agent-x", "--ttl", "876000h")
+	env := yadmOK(t, "lease", "list")
+	ls := decode[struct {
+		Leases []struct {
+			Holder  string
+			Expires time.Time
+		}
+	}](t, env.Data).Leases
+	if len(ls) != 1 || ls[0].Expires.After(start.Add(LeaseMax+time.Minute)) {
+		t.Fatalf("leases: %+v", ls)
+	}
+}

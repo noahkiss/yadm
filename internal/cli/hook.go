@@ -337,6 +337,24 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 	return out
 }
 
+// ---- leases ----
+
+// LeaseMax caps a lease's TTL. A repeat take by a live holder renews it.
+const LeaseMax = 24 * time.Hour
+
+const leaseHelp = `A lease says an agent is mid-edit on some paths and commits them itself.
+A lease path is a glob or a directory, relative to $HOME. While a live
+lease names a path, the post-edit and stop hooks of every session (the
+holder's own included) and the timer leave it uncommitted and raise no
+decision on it, except a conflict or a secrecy hold. The holder commits
+by name: yadm commit -m <subject> <path...>, which bypasses leases.
+
+A lease lasts --ttl, at most 24h (a longer --ttl is capped). A repeat take
+by the same holder adds its paths and renews the expiry of all of them.
+yadm lease release <holder> ends the lease; with paths it drops only those.
+When a lease ends, pending paths commit as usual: through the next hook
+or the timer.`
+
 // ---- deferred decisions ----
 
 // DeferredFile holds the decisions agents moved to the review queue.
