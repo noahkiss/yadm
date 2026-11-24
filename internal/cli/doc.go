@@ -56,7 +56,7 @@
 //	                               alone when the picked entry does not apply here)
 //	source mv                      apply.Engine.MoveSource, committed through sync.Commit (Changes, Atomic)
 //	untrack                        apply.Engine.Untrack, committed through sync.Commit (Changes, Atomic, Forget)
-//	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`
+//	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`; --variant adds an entry beside existing ones (ErrBadRequest exits 2)
 //	bisect                         store.Log + apply.Engine.Load + render into a sandbox
 //	collect                        fleet.Collect with tasks.FileAllowList
 //	check                          store.CheckSecrecyConfig, crypt.LoadSet, manifest.Resolve, schedule.Status

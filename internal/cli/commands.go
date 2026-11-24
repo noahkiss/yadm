@@ -83,7 +83,14 @@ func (a *app) register(root *cobra.Command) {
 	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry or owned root covers yet; capture a new file under a glob entry", a.cmdTrack), 1)
 	tr.Flags().String("when", "", "condition for the new entry; empty sends it to every machine")
 	tr.Flags().String("enclave", "", "seal for this enclave (this machine must be a member); empty stores plaintext")
+	tr.Flags().String("variant", "", "add a variant of a path entries already name: source <target>.<name> (before the extension), --when required and true here")
 	tr.Flags().Bool("no-push", false, "commit only; the next sync pushes")
+	tr.Long = "Start syncing a file no entry or owned root covers yet; capture a new file under a glob entry.\n\n" +
+		"With --variant <name>, add one more entry for a path entries already name: its source is\n" +
+		"files/<target> (or sealed/<enclave>/<target>) with .<name> before the extension, e.g.\n" +
+		"route.toml becomes route.<name>.toml. --when is required, must be true on this machine\n" +
+		"(the variant captures this file), and must not select a machine another entry for the\n" +
+		"path already applies to. untrack and retag pick a variant with --source."
 	ut := exact(leaf(root, "untrack <path>", "Stop syncing a file: remove its manifest entry and source in one commit; the file stays here", a.cmdUntrack), 1)
 	ut.Flags().String("source", "", "pick one of several entries for the path by its source (files/... or sealed/<enclave>/...)")
 	ut.Flags().Bool("dry-run", false, "plan only")
@@ -1040,6 +1047,7 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	ctx := cmd.Context()
 	when, _ := cmd.Flags().GetString("when")
 	enclave, _ := cmd.Flags().GetString("enclave")
+	variant, _ := cmd.Flags().GetString("variant")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	m, err := openLoaded(ctx)
 	if err != nil {
@@ -1049,7 +1057,7 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
-	if when == "" && enclave == "" && m.snap != nil {
+	if when == "" && enclave == "" && variant == "" && m.snap != nil {
 		r, ok, err := m.snap.Plan.GlobNew(t)
 		if err != nil {
 			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("track %s: %v", t, err)
@@ -1061,10 +1069,12 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	var c apply.Capture
 	if err := m.locked(ctx, func() error {
 		var err error
-		c, err = m.eng.Track(ctx, t, apply.TrackOptions{When: when, Enclave: model.EnclaveName(enclave)})
+		c, err = m.eng.Track(ctx, t, apply.TrackOptions{When: when, Enclave: model.EnclaveName(enclave), Variant: variant})
 		return err
 	}); err != nil {
 		switch {
+		case errors.Is(err, apply.ErrBadRequest):
+			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
 		case errors.Is(err, apply.ErrCovered):
 			return result{next: []string{"yadm why " + model.ShellQuote(string(t))}}, usagef("%v", err)
 		case errors.Is(err, apply.ErrNotFile):
@@ -1082,8 +1092,12 @@ func (a *app) cmdTrack(cmd *cobra.Command, args []string) (result, error) {
 	last := len(c.Changes) - 1
 	data["source"] = c.Changes[last].Path
 	src := apply.Capture{Changes: c.Changes[last:], Paths: c.Paths, Scopes: c.Scopes}
+	msg := "track " + string(t)
+	if variant != "" {
+		msg += " variant " + variant
+	}
 	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{
-		Message: "track " + string(t), Capture: &src,
+		Message: msg, Capture: &src,
 		Changes: c.Changes[:last], ChangesScope: scope, Atomic: true, Push: !noPush,
 	})
 	if pushErr != nil {
