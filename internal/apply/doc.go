@@ -90,7 +90,7 @@
 //	type Snapshot struct{ Commit; Fleet; Manifest; Plan; Context; Keys; ReadKeys; OnDemand; Enclaves; Render; Crypto; Tree }
 //	type Crypto interface{ rules.Sealer; SealFile(e, path, pt); OpenFile(e, path, ct) }; func SetCrypto(*crypt.Set) Crypto
 //	const KindProtection, KindMode, KindRoot extexec.Kind // allow-list kinds
-//	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode is not drift, unless it drops the owner's execute bit
+//	func ModeAccepted(live, want fs.FileMode) bool // a stricter live mode, or group write the group may read, is not drift, unless it drops the owner's execute bit
 //	func InsideHome(home, p string) error; var ErrOutsideHome // p's real parent directory stays under $HOME
 //	func (e *Engine) AllowProtection(ctx, rev model.CommitID, t model.Target) error
 //	func (e *Engine) AllowRoot(ctx, rev model.CommitID, path model.Target) error

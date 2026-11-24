@@ -293,10 +293,18 @@ func modeOf(snap *Snapshot, r manifest.Resolved) fs.FileMode {
 // the mode its entry wants: it grants no bit outside want (a stricter mode,
 // such as 0640 from a tool writing under umask 027 where 0644 is wanted),
 // and keeps the owner's execute bit when want has it, since a script that
-// loses it stops working.
+// loses it stops working. One wider bit is noise, not drift: group write on
+// a file whose group may already read it (0664 from a tool writing under
+// umask 002 where 0644 is wanted). Git does not record it, so no capture
+// could settle it. An owner-only want (0600, 0700) and other write stay
+// strict.
 func ModeAccepted(live, want fs.FileMode) bool {
 	live, want = live.Perm(), want.Perm()
-	if live&^want != 0 {
+	extra := live &^ want
+	if want&0o040 != 0 {
+		extra &^= 0o020
+	}
+	if extra != 0 {
 		return false
 	}
 	return want&0o100 == 0 || live&0o100 != 0
