@@ -52,8 +52,9 @@
 //     that contains a new file captures it, never a shallower one, and not
 //     when its ignore globs match the file, a deeper enclave root of another
 //     enclave (not accepted or not applying here) contains it, or a manifest
-//     entry names it. Track and retag refuse to take a file under an
-//     enclave root out of that enclave.
+//     entry names it. Track (a variant too) and retag (an existing entry
+//     too) refuse to take a file under an enclave root out of that enclave
+//     (ErrRootRefused).
 //   - A target whose parent directory resolves outside $HOME (InsideHome,
 //     ErrOutsideHome), or whose name holds a control character, is held:
 //     never read, written or captured.
