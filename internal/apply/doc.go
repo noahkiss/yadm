@@ -119,7 +119,7 @@
 //	func (e *Engine) Adopt(ctx, rev model.CommitID, opts AdoptOptions) (Result, error)
 //	func (e *Engine) Retag(ctx, t model.Target, opts RetagOptions) (Retagged, error) // opts.Source picks a variant (ErrVariants); when keeps non-type terms (cond.Retype)
 //	func (e *Engine) RetagAll(ctx, ts []model.Target, opts RetagOptions) (RetaggedAll, error) // several targets as one change, one manifest; any refusal fails all (ErrBadRequest for a repeat or a shared source)
-//	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember
+//	func (e *Engine) Track(ctx, t model.Target, opts TrackOptions) (Capture, error) // ErrCovered, ErrNotFile, crypt.ErrNotMember; opts.Variant adds a variant (source <target>.<name> before the extension, when true here, no overlap on any fleet machine; ErrBadRequest)
 //	func (e *Engine) DropEntries(ctx, rev model.CommitID, targets []model.Target) (*store.Change, error) // manifest edit for committed deletions; nil when none needed
 //	func (e *Engine) MoveSource(ctx, from, to model.SourcePath) (SourceMove, error) // rename within a scope, resealed in memory; ErrBadRequest, crypt.ErrNotMember
 //	func (e *Engine) Untrack(ctx, t model.Target, opts UntrackOptions) (Untracked, error) // drop one entry and its source unless shared; ErrBadRequest, ErrVariants, crypt.ErrNotMember

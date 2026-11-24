@@ -360,6 +360,10 @@ type RetagOptions struct {
 type TrackOptions struct {
 	When    string            // condition for the new entry; empty means every machine
 	Enclave model.EnclaveName // seal for this enclave; empty stores plaintext
+	// Variant adds one more entry for a target that entries already name,
+	// with the variant name before the source's extension; When is then
+	// required and must apply on this machine.
+	Variant string
 }
 
 // ResolveOptions says how to resolve a hold.

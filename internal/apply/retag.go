@@ -558,7 +558,8 @@ func checkRetagTypes(snap *Snapshot, opts RetagOptions) error {
 // entry's source, sealed under sealed/<enclave>/ for an enclave, in one
 // change. It refuses a path an entry, a glob or an owned root covers
 // (naming which), a directory, and an enclave this machine is not a member
-// of (crypt.ErrNotMember).
+// of (crypt.ErrNotMember). With opts.Variant it adds a variant of a target
+// entries already name instead (trackVariant).
 func (e *Engine) Track(ctx context.Context, t model.Target, opts TrackOptions) (Capture, error) {
 	head, err := e.Store.Head(ctx)
 	if err != nil {
@@ -570,6 +571,9 @@ func (e *Engine) Track(ctx context.Context, t model.Target, opts TrackOptions) (
 	}
 	if snap.Manifest == nil {
 		return Capture{}, errors.New("track: snapshot has no manifest")
+	}
+	if opts.Variant != "" {
+		return e.trackVariant(ctx, head, snap, t, opts)
 	}
 	for _, en := range snap.Manifest.Entries {
 		if en.Target == t {

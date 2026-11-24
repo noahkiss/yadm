@@ -56,7 +56,7 @@
 //	                               (Capture + Changes; Changes alone when the picked entry does not apply here)
 //	source mv                      apply.Engine.MoveSource, committed through sync.Commit (Changes, Atomic)
 //	untrack                        apply.Engine.Untrack, committed through sync.Commit (Changes, Atomic, Forget)
-//	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`
+//	track                          apply.Engine.Track, committed through sync.Commit (Capture + Changes); a new file under an applying glob (no --when, --enclave) commits as `commit <path>`; --variant adds an entry beside existing ones (ErrBadRequest exits 2)
 //	                               retag, track, untrack, source mv and the enclave writes (writeEntry) check
 //	                               their change, then compute it again in CommitOptions.Build, on the main the
 //	                               commit lands on; writeEntry refuses a key-log seq the source holds
