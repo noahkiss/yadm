@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -202,18 +201,18 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 	switched := local != "" && s.ancestor(ctx, r.NewHead, local)
 	// Local commits that are not in the old head: unpushed work.
 	var unpushed []store.Commit
+	from := base
+	if oldKnown {
+		from = r.OldHead
+	}
 	if !switched && local != "" && local != base {
-		from := base
-		if oldKnown {
-			from = r.OldHead
-		}
 		if unpushed, err = s.Store.Log(ctx, string(from)+".."+string(local), nil); err != nil {
 			return out, err
 		}
 	}
 	if len(unpushed) > 0 && !carry {
 		return held(fmt.Sprintf("this machine has %d local commit(s) that are not in the old head (newest %s); they are kept, and nothing moves until they are carried over: `yadm reroot carry` replays them onto the new history (a conflict becomes a hold) and keeps the originals on %s", len(unpushed), short(unpushed[0].ID), RefCarry(r.ID)),
-			"yadm git log --oneline "+string(short(r.NewHead))+"..main", "yadm reroot carry")
+			"yadm git log --oneline "+short(from)+"..main", "yadm reroot carry")
 	}
 
 	// A rewrite never changes a key-log file.
@@ -326,10 +325,17 @@ func (s *Syncer) backupHistory(ctx context.Context, old model.CommitID, keep int
 	if err := reroot.EnsureDir(s.Backups); err != nil {
 		return "", err
 	}
-	p := filepath.Join(s.Backups, reroot.BundleName(s.now(), old))
-	if _, err := os.Stat(p); err == nil {
-		return p, nil // a run that stopped after its backup
+	// A run that stopped after its backup reuses it.
+	have, err := reroot.List(s.Backups)
+	if err != nil {
+		return "", err
 	}
+	for _, x := range have {
+		if strings.HasPrefix(string(old), x.OldHead) {
+			return x.Path, nil
+		}
+	}
+	p := filepath.Join(s.Backups, reroot.BundleName(s.now(), old))
 	if err := b.Bundle(ctx, p); err != nil {
 		return "", err
 	}
@@ -367,6 +373,26 @@ func (s *Syncer) rerootReviewed(ctx context.Context, remote model.CommitID) erro
 		}
 	}
 	return nil
+}
+
+// rewritePending reports whether the fetched main no longer descends from
+// the accepted one: a rewrite this machine has not taken yet. Auto-commit
+// waits while it is pending, so a waking machine does not commit onto the
+// old history and then hold the re-root on its own new commit.
+func (s *Syncer) rewritePending(ctx context.Context, f fetched) bool {
+	if f.err != nil {
+		return false
+	}
+	base, err := s.startBase(ctx, f.base)
+	if err != nil || base == "" {
+		return false
+	}
+	remote, err := s.Store.ResolveRef(ctx, store.RemoteMain)
+	if err != nil || remote == "" || remote == base {
+		return false
+	}
+	ok, err := s.Store.IsAncestor(ctx, base, remote)
+	return err == nil && !ok
 }
 
 // RerootRequest is what `yadm reroot` asks of the initiator.

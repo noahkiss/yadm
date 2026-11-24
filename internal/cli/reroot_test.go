@@ -222,12 +222,32 @@ func TestRerootSquash(t *testing.T) {
 	if bs, _ := reroot.List(reroot.BackupDir(b.Source)); len(bs) != 0 {
 		t.Fatalf("host-b took a backup: %+v", bs)
 	}
+	for _, al := range selfStatus(t, fixture.HostB).Alerts {
+		if al.Kind == sync.AlertReviewedSkip {
+			t.Fatalf("host-b refused a reviewed ref after the switch: %+v", al)
+		}
+	}
 	if it := checkItemNamed(t, "reroot"); !it.OK || !strings.Contains(it.Detail, id) {
 		t.Fatalf("host-b reroot check: %+v", it)
 	}
 
-	// host-a sees host-b switched, then resumes.
+	// host-a sees host-b switched, then resumes. A run that stopped
+	// before it recorded the new head as accepted goes on where it
+	// stopped: no hold, no second backup.
 	on(t, root, fixture.HostA)
+	if err := os.WriteFile(filepath.Join(a.State, sync.AcceptedFile), []byte(old+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	yadmOK(t, "sync", "--full")
+	if h := holdTask(t, sync.HoldTaskReroot); h != nil {
+		t.Fatalf("re-entered switch holds: %+v", h)
+	}
+	if acc, _ := sync.ReadAccepted(a.State); string(acc) != newHead {
+		t.Fatalf("accepted %s after the re-entered switch", acc)
+	}
+	if bs, _ := reroot.List(reroot.BackupDir(a.Source)); len(bs) != 1 {
+		t.Fatalf("%d backups after the re-entered switch", len(bs))
+	}
 	if out, _, _ := yadmRaw(t, "fleet", "list"); !strings.Contains(out, "rerooted "+id) {
 		t.Fatalf("fleet list does not show the switch:\n%s", out)
 	}
@@ -246,13 +266,26 @@ func TestRerootSquash(t *testing.T) {
 	}
 	yadmOK(t, "review", "ok", "shared", afterCommit)
 
-	// host-c was offline the whole time; days later it switches and takes
-	// host-b's commit.
+	// host-c was offline the whole time and edited a file meanwhile; days
+	// later it switches, takes host-b's commit, and commits its edit on
+	// the new history, not the old one.
 	clk.Add(72 * time.Hour)
 	on(t, root, fixture.HostC)
+	osSh := filepath.Join(c.Home, ".config/shell/os.sh")
+	writeFile(t, osSh, readFile(t, osSh)+"# edited on host-c while offline\n")
 	s = decode[syncOut](t, yadmOK(t, "sync", "--auto").Data)
-	if s.Paused || string(s.Applied) != afterCommit {
+	if s.Paused || string(s.Applied) != afterCommit || len(s.Committed) != 0 {
 		t.Fatalf("host-c sync: %+v", s)
+	}
+	if h := holdTask(t, sync.HoldTaskReroot); h != nil {
+		t.Fatalf("host-c holds the re-root: %+v", h)
+	}
+	clk.Add(5 * time.Minute)
+	if s = decode[syncOut](t, yadmOK(t, "sync", "--auto", "--full").Data); len(s.Committed) != 1 {
+		t.Fatalf("host-c did not commit its edit after the switch: %+v", s)
+	}
+	if trimmed(t, c.Source, "rev-parse", "main~1") != afterCommit {
+		t.Fatal("host-c's edit is not on the new history")
 	}
 	if got := readFile(t, filepath.Join(c.Home, shared)); got != "# after the re-root\n" {
 		t.Fatalf("host-c %s: %q", shared, got)
@@ -301,8 +334,9 @@ func TestRerootSquash(t *testing.T) {
 }
 
 // writeRecord signs rec with id (nil leaves it unsigned) and writes it on
-// the re-root ref of the clone at dir.
-func writeRecord(t *testing.T, dir, state string, rec reroot.Record, id *crypt.Identity) {
+// the re-root ref of the clone at dir. With forgeAs, the signed record then
+// claims that machine as initiator and signer, keeping id's signature.
+func writeRecord(t *testing.T, dir, state string, rec reroot.Record, id *crypt.Identity, forgeAs ...model.MachineID) {
 	t.Helper()
 	ctx := context.Background()
 	repo, err := store.Open(dir, state)
@@ -321,6 +355,9 @@ func writeRecord(t *testing.T, dir, state string, rec reroot.Record, id *crypt.I
 		}
 	} else {
 		rec.Schema, rec.Signer = reroot.Schema, rec.Initiator
+	}
+	for _, f := range forgeAs {
+		rec.Initiator, rec.Signer = f, f
 	}
 	if _, _, err := reroot.Write(ctx, repo, rec); err != nil {
 		t.Fatal(err)
@@ -399,9 +436,11 @@ func TestRerootRefused(t *testing.T) {
 	sq = squash(t, a.Source, "unverified")
 	writeRecord(t, a.Source, a.State, reroot.Record{Initiator: fixture.HostA, Created: clk.Now(), OldHead: model.CommitID(old), NewHead: model.CommitID(sq)}, nil)
 	writeRecord(t, a.Source, a.State, reroot.Record{Initiator: fixture.HostB, Created: clk.Now(), OldHead: model.CommitID(old), NewHead: model.CommitID(sq)}, fx.Identities[fixture.HostB])
+	writeRecord(t, a.Source, a.State, reroot.Record{Initiator: fixture.HostB, Created: clk.Now(), OldHead: model.CommitID(old), NewHead: model.CommitID(sq)}, fx.Identities[fixture.HostB], fixture.HostA)
 	forcePush(t, a.Source, sq)
 	refused(fixture.HostC, sync.HoldTaskRewrite, "carries no signature")
 	refused(fixture.HostC, sync.HoldTaskRewrite, "no key log this machine pinned lists "+string(fixture.HostB))
+	refused(fixture.HostC, sync.HoldTaskRewrite, "signature fails under every pinned key of "+string(fixture.HostA))
 	restore()
 
 	// A rewrite that changes a key-log file: an orphan commit whose

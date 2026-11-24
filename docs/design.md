@@ -686,13 +686,14 @@ min(signed deadline, created + 4h, first seen here + min(deadline - created, 4h)
 
 **Flow on the initiator.**
 
-1. Review the queue (`yadm review list`). The re-root marks the new head reviewed for every scope, so it refuses while commits are unreviewed, unless `--fold-unreviewed` is given.
-2. Pause the fleet (section 10.1). `yadm reroot` starts a pause when this machine runs none.
-3. Sync, so local `main` is the remote `main` and this machine accepted it.
-4. Prepare the rewritten history in the source clone and leave `keys/` untouched: a squash (`yadm git commit-tree -m "new root" "main^{tree}"`) or a `git filter-repo` run on a copy, fetched back as a branch.
-5. `yadm reroot --new-head <commit-or-ref> [--reason R]`. It checks, before any pause starts, that every key-log file is byte-identical between the old and the new head, that the new manifest passes the guard of section 10 against the old one, and that this machine is a member of a key log it pinned. It signs a re-root record and pushes, in one atomic push, `main` to the new head with a lease on the old one, every reviewed ref to the new head with a lease on its remote value, and the record. Then it switches this machine through a normal sync and waits for peers (`--wait`, `--no-wait`).
-6. Wait until `yadm fleet list` shows every machine `rerooted <id>`. A held peer switches during the pause; an offline one on its next sync.
-7. `yadm resume`.
+1. Decide which machines back up the old history: set `reroot_keep` on their types in `fleet.toml` and let every machine sync. Without it no machine backs up.
+2. Review the queue (`yadm review list`). The re-root marks the new head reviewed for every scope, so it refuses while commits are unreviewed, unless `--fold-unreviewed` is given.
+3. Pause the fleet (section 10.1). `yadm reroot` starts a pause when this machine runs none.
+4. Sync, so local `main` is the remote `main` and this machine accepted it.
+5. Prepare the rewritten history in the source clone and leave `keys/` untouched: a squash (`yadm git commit-tree -m "new root" "main^{tree}"`) or a `git filter-repo` run on a copy, fetched back as a branch.
+6. `yadm reroot --new-head <commit-or-ref> [--reason R]`. It checks, before any pause starts, that every key-log file is byte-identical between the old and the new head, that the new manifest passes the guard of section 10 against the old one, and that this machine is a member of a key log it pinned. It signs a re-root record and pushes, in one atomic push, `main` to the new head with a lease on the old one, every reviewed ref to the new head with a lease on its remote value, and the record. Then it switches this machine through a normal sync and waits for peers (`--wait`, `--no-wait`).
+7. Wait until `yadm fleet list` shows every machine `rerooted <id>`. A held peer switches during the pause; an offline one on its next sync.
+8. `yadm resume`.
 
 **Record.** The re-root ref `refs/yadm/reroot` is a chain of commits whose tree holds one `<id>.json` per re-root, the newest 16 kept:
 
@@ -717,10 +718,10 @@ Why a re-root requires what a pause does not:
 1. Local commits that are not in the old head (or, without that commit, not in the accepted `main`) block the switch with a `reroot` hold. Nothing is dropped. `yadm reroot carry` keeps them on the local-only ref `refs/yadm/carry/<id>`, replays them onto the new head as step 5 of section 10 replays any local commit (a conflict becomes a hold), switches and pushes.
 2. Every key-log file of the old head must be byte-identical at the new head, with none added, and every entry the accepted `main` had must be there unchanged. Otherwise the switch is held. After the switch, the key logs load against the pins as on every sync.
 3. The manifest guard of section 10 judges the new head against local `main`.
-4. A machine whose types set `reroot_keep` (the largest value among its types, read from the `fleet.toml` it ran before the switch; absent or 0 means none) writes `git bundle create --all` of its source clone to `$XDG_DATA_HOME/yadm/backups/<UTC time>-<old head>.bundle`, mode 0600 in a 0700 directory, and keeps the newest `reroot_keep`. A failed backup holds the switch. `yadm backups list` and `yadm backups prune [--keep N]` manage them.
+4. A machine whose types set `reroot_keep` (the largest value among its types, read from the `fleet.toml` it ran before the switch; absent or 0 means none) writes `git bundle create --all` of its source clone to `$XDG_DATA_HOME/yadm/backups/<UTC time>-<old head>.bundle`, mode 0600 in a 0700 directory, and keeps the newest `reroot_keep`. A failed backup holds the switch; a run that stopped after its backup reuses it. `yadm backups list` and `yadm backups prune [--keep N]` manage them.
 5. Local `main` moves to the new head over a clean clone (step 6 of section 10). A local reviewed ref that points into the old history takes the fetched one when it is in the new history, and is dropped otherwise.
 6. The new head becomes the accepted remote `main`, last, so a run that stops halfway finds the same record and goes on. `reroot.json` records the switch; the status record carries its id as `reroot`.
-7. The normal guards run on the commits after the new head, and apply follows. When the new tree equals the old one (a squash), no target changes; otherwise apply writes the difference as for any fetch.
+7. The normal guards run on the commits after the new head, and apply follows. While a rewrite is pending, auto-commit waits, so a machine that wakes with local edits does not commit them onto the old history; it captures them again after the switch and commits them on the new one. When the new tree equals the old one (a squash), no target changes; otherwise apply writes the difference as for any fetch.
 
 **What a backup holds.** A bundle is the old history as this machine's clone held it, refs and objects. It holds no enclave plaintext beyond what that history held: sealed files there are ciphertext. If the rewrite purged plaintext that the old history stored, the bundle still holds it; keep `reroot_keep` at 0 on machines that must not keep it, and prune or delete bundles once they are not needed. The old objects also stay in each clone's object store until git's reflog expiry and garbage collection remove them.
 

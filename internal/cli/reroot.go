@@ -28,26 +28,29 @@ machine that finds the remote main rewritten without one refuses it, and
 the receiving machine pinned; an unverified record is refused.
 
 The procedure:
-  1. Review what is waiting (yadm review list). The re-root marks the new
+  1. Decide which machines keep a backup of the old history: set
+     reroot_keep in fleet.toml ([types.<name>] reroot_keep = 3), commit it
+     and let every machine sync. Without it no machine backs up.
+  2. Review what is waiting (yadm review list). The re-root marks the new
      head reviewed for every scope; it refuses while commits are unreviewed
      unless --fold-unreviewed is given.
-  2. Pause the fleet: yadm pause --for 1h --reason "re-root". (reroot starts
+  3. Pause the fleet: yadm pause --for 1h --reason "re-root". (reroot starts
      a 30m pause by itself when this machine runs none.)
-  3. Sync this machine (yadm sync), so local main is the remote main.
-  4. Prepare the rewritten history in the source clone (yadm where shows
+  4. Sync this machine (yadm sync), so local main is the remote main.
+  5. Prepare the rewritten history in the source clone (yadm where shows
      it). Leave keys/ untouched: a rewrite that changes any key-log file is
      refused. Either
        - squash: yadm git commit-tree -m "new root" "main^{tree}"
          prints the id of one commit with today's tree and no parent; or
        - purge: run git filter-repo on a copy of the clone, then fetch its
          main into the source clone as a branch.
-  5. Run: yadm reroot --new-head <commit-or-ref> --reason "<why>"
+  6. Run: yadm reroot --new-head <commit-or-ref> --reason "<why>"
      It checks the rewrite, signs the record, and pushes the new main (with
      a lease on the old one), the reviewed refs and the record in one
      atomic push. Then it switches this machine and waits for the others.
-  6. Wait until every machine switched (yadm fleet list shows "rerooted").
+  7. Wait until every machine switched (yadm fleet list shows "rerooted").
      A machine that is offline switches when it next syncs.
-  7. Resume: yadm resume.
+  8. Resume: yadm resume.
 
 On each machine the switch backs up the old history first when its types
 set reroot_keep in fleet.toml ([types.<name>] reroot_keep = 3): a git bundle
