@@ -83,7 +83,8 @@ type Root struct {
 }
 
 // Ignored reports whether t, a path inside the root, matches one of its
-// ignore globs. An ignored file is never reported as new.
+// ignore globs. An ignored file is never reported as new, and the root
+// never captures it, even by name.
 func (r Root) Ignored(t model.Target) bool {
 	rel, ok := strings.CutPrefix(string(t), string(r.Path)+"/")
 	if !ok {

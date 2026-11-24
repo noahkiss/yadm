@@ -198,6 +198,7 @@ func (e *Engine) scanOne(ctx context.Context, t model.Target, ts TargetState, fu
 func (e *Engine) scanNamedNew(ctx context.Context, st *State, paths []model.Target, now time.Time) []Drift {
 	var out []Drift
 	var plan *manifest.Plan
+	var man *manifest.Manifest
 	loaded := false
 	for _, t := range paths {
 		if _, managed := st.Targets[t]; managed {
@@ -207,7 +208,7 @@ func (e *Engine) scanNamedNew(ctx context.Context, st *State, paths []model.Targ
 			loaded = true
 			if st.Applied != "" {
 				if snap, err := e.snapshot(ctx, st.Applied); err == nil {
-					plan = snap.Plan
+					plan, man = snap.Plan, snap.Manifest
 				}
 			}
 		}
@@ -216,11 +217,13 @@ func (e *Engine) scanNamedNew(ctx context.Context, st *State, paths []model.Targ
 			continue
 		} else if ok {
 			scope = r.Entry.Scope()
-		} else if root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, t); ok {
+		} else if root, ok, err := captureRoot(st, man, plan, t); ok && err == nil {
 			if root.Enclave != "" {
 				scope = model.Scope(root.Enclave)
 			}
 		} else {
+			// Outside every accepted root, or a root may not capture it
+			// here (CheckNew says why): not new.
 			continue
 		}
 		abs, err := e.abs(t)
@@ -263,8 +266,22 @@ func (e *Engine) scanRoots(ctx context.Context, st *State, deadline time.Time) (
 			ok = false
 		}
 	}
+	// A file the deepest root may not capture, and no applying glob takes,
+	// is not new, even when a shallower root's walk found it.
+	var man *manifest.Manifest
+	var plan *manifest.Plan
+	if len(best) > 0 && st.Applied != "" {
+		if snap, err := e.snapshot(ctx, st.Applied); err == nil {
+			man, plan = snap.Manifest, snap.Plan
+		}
+	}
 	out := make([]Drift, 0, len(best))
 	for _, d := range best {
+		if _, glob, gerr := plan.GlobNew(d.Target); !glob && gerr == nil {
+			if _, _, err := captureRoot(st, man, plan, d.Target); err != nil {
+				continue
+			}
+		}
 		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Target < out[j].Target })

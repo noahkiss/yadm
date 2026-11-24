@@ -386,14 +386,23 @@ func (e *Engine) prevSource(ctx context.Context, snap *Snapshot, ts TargetState,
 // accepted (st.Roots) count, never the manifest's own list: a pusher who
 // adds a root or strips its enclave changes nothing here until the user
 // allows it. A file that predates its root (st.Baseline) is captured only
-// when the caller named it (Drift.Named).
+// when the caller named it (Drift.Named). captureRoot picks the root and
+// refuses what no root may capture here; such a file is skipped.
 func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Drift) (*store.Change, *model.Hold, error) {
 	now := e.Now()
 	if inBaseline(st, d.Target) && !d.Named {
 		return nil, nil, nil
 	}
-	root, ok := rootOf(&manifest.Plan{Roots: st.Roots}, d.Target)
-	if !ok {
+	// Only the deepest accepted root decides, and a root never captures a
+	// file it ignores or one a deeper enclave root or an entry claims:
+	// named or not, such a file is skipped here (CheckNew says why).
+	var plan *manifest.Plan
+	var man *manifest.Manifest
+	if snap != nil {
+		plan, man = snap.Plan, snap.Manifest
+	}
+	root, ok, rerr := captureRoot(st, man, plan, d.Target)
+	if !ok || rerr != nil {
 		return nil, nil, nil
 	}
 	abs, err := e.abs(d.Target)

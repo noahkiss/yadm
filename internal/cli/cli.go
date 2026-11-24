@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
 	"github.com/noahkiss/yadm/internal/pause"
@@ -78,6 +79,7 @@ var refusals = []error{
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
 	sync.ErrRerootRefused,
+	apply.ErrRootRefused,
 }
 
 // classify maps an error to an exit code and an error code.

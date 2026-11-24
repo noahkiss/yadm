@@ -473,6 +473,9 @@ func (e *Engine) Track(ctx context.Context, t model.Target, opts TrackOptions) (
 		}
 	}
 	if root != nil {
+		if err := e.CheckNew(ctx, t); errors.Is(err, ErrRootRefused) {
+			return Capture{}, fmt.Errorf("track %s: %w: owned root %q covers it, but %v; give it its own entry with yadm retag", t, ErrCovered, root.Path, err)
+		}
 		return Capture{}, fmt.Errorf("track %s: %w: owned root %q covers it; commit it with yadm commit, or give it its own entry with yadm retag", t, ErrCovered, root.Path)
 	}
 	if opts.Enclave != "" && snap.Fleet != nil {
@@ -499,6 +502,9 @@ func (e *Engine) track(ctx context.Context, head model.CommitID, snap *Snapshot,
 	}
 	if snap.Manifest.Generated(t) {
 		return Capture{}, fmt.Errorf("%s %s: a task generates it (outputs); it is never tracked", verb, t)
+	}
+	if r, ok := e.enclaveRoot(snap, t); ok && r.Enclave != enc {
+		return Capture{}, fmt.Errorf("%s %s: %w: enclave root %s (enclave %s) covers it, so its plaintext stays in that enclave; pass --enclave %s", verb, t, ErrRootRefused, r.Path, r.Enclave, r.Enclave)
 	}
 	if enc != "" && !snap.canOpen(enc) {
 		return Capture{}, fmt.Errorf("%s %s: %w", verb, t, snap.notOpen(enc))
@@ -725,4 +731,29 @@ func trailingComment(line string) string {
 func tomlQuote(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
 	return `"` + r.Replace(s) + `"`
+}
+
+// enclaveRoot returns the deepest owned root with an enclave that contains
+// t: in the snapshot's manifest, whether or not it applies or is accepted
+// here, or among the roots this machine accepted. A file under it is that
+// enclave's plaintext, so an entry for it must carry the same enclave.
+func (e *Engine) enclaveRoot(snap *Snapshot, t model.Target) (manifest.Root, bool) {
+	var roots []manifest.Root
+	if snap != nil && snap.Manifest != nil {
+		roots = append(roots, snap.Manifest.Roots...)
+	}
+	if st, err := e.loadState(); err == nil {
+		roots = append(roots, st.Roots...)
+	}
+	var best manifest.Root
+	found := false
+	for _, r := range roots {
+		if r.Enclave == "" || !strings.HasPrefix(string(t), string(r.Path)+"/") {
+			continue
+		}
+		if !found || len(r.Path) > len(best.Path) {
+			best, found = r, true
+		}
+	}
+	return best, found
 }
