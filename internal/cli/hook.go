@@ -156,9 +156,11 @@ func (a *app) registerHooks(root *cobra.Command) {
 	}
 	root.AddCommand(h)
 
-	d := a.leaf(root, "defer <hold-id>", "Move an open decision to the review queue so an agent session can end", a.cmdDefer)
+	d := a.leaf(root, "defer <hold-id>", "Move an open decision to the review queue for a short wait so an agent session can end", a.cmdDefer)
+	d.Long = "Move an open decision to the review queue so an agent session can end.\n\n" + deferHelp
 	d.Args = cobra.ExactArgs(1)
 	d.Flags().String("reason", "", "required: why the decision waits")
+	d.Flags().Duration("for", DeferDefault, fmt.Sprintf("how long the decision waits (at most %s)", shortDuration(DeferMax)))
 	d.Flags().String("session", "", "the harness session that defers it (default $YADM_SESSION)")
 }
 
@@ -340,14 +342,35 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 // DeferredFile holds the decisions agents moved to the review queue.
 const DeferredFile = "deferred.json"
 
-// Deferred is one decision moved to the review queue.
+// A defer is a short wait: DeferDefault unless --for says otherwise, and
+// never longer than DeferMax.
+const (
+	DeferDefault = 6 * time.Hour
+	DeferMax     = 48 * time.Hour
+)
+
+const deferHelp = `Defers are for short waits (default 6h, at most 48h; --for sets it). The
+agent that defers stays responsible for settling the decision soon: commit
+the file by name, retag it, ignore it with yadm hold ignore, or remove it.
+While deferred, the hold stays, the file stays uncommitted and the stop hook
+does not block on it. When the defer expires the decision is open again:
+the stop hook and session start raise it, and yadm check warns. The timer
+never commits it, expired or not.`
+
+// Deferred is one decision moved to the review queue. A new file's
+// decision (Kind "new_file") covers its path, so an edit that raises the
+// hold again under a new id stays deferred; other decisions cover their
+// hold id. Scan and unattended commits skip a deferred target while its
+// hold is open.
 type Deferred struct {
 	ID      string           `json:"id"`
 	Target  model.Target     `json:"target,omitempty"`
 	Reason  model.HoldReason `json:"reason"`
+	Kind    string           `json:"kind,omitempty"`
 	Why     string           `json:"why"`
 	Session string           `json:"session,omitempty"`
 	At      time.Time        `json:"at"`
+	Until   time.Time        `json:"until,omitempty"`
 }
 
 func loadDeferred(stateDir string) map[string]Deferred {
@@ -370,21 +393,113 @@ func saveDeferred(stateDir string, d map[string]Deferred) error {
 	return os.Rename(p+".tmp", p)
 }
 
+// Expires returns when the defer stops holding back the decision. A record
+// from before defers expired lasts DeferDefault from its creation.
+func (x Deferred) Expires() time.Time {
+	if !x.Until.IsZero() {
+		return x.Until
+	}
+	return x.At.Add(DeferDefault)
+}
+
+// Expired reports whether the defer has run out at now.
+func (x Deferred) Expired(now time.Time) bool { return !now.Before(x.Expires()) }
+
+// running returns the defers in d that have not expired at now.
+func running(d map[string]Deferred, now time.Time) map[string]Deferred {
+	out := map[string]Deferred{}
+	for k, x := range d {
+		if !x.Expired(now) {
+			out[k] = x
+		}
+	}
+	return out
+}
+
+// clockOn formats t in local time, with the date when it is not today.
+func clockOn(t, now time.Time) string {
+	t, now = t.Local(), now.Local()
+	if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
+		return t.Format("15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
+// shortDuration prints d without trailing zero units: 6h, 90m, 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	s = strings.TrimSuffix(s, "0s")
+	s = strings.TrimSuffix(s, "0m")
+	if s == "" {
+		return "0s"
+	}
+	return s
+}
+
+// newFileKey is the deferred.json key of a new file's decision: its path.
+func newFileKey(t model.Target) string { return "new_file:" + string(t) }
+
+// deferredHold reports whether hold h is deferred in d. A new file's
+// decision covers a protected hold on its path only while nothing manages
+// the path (managed is this machine's state targets).
+func deferredHold(d map[string]Deferred, h model.Hold, managed map[model.Target]bool) bool {
+	if _, ok := d[h.ID]; ok {
+		return true
+	}
+	return newFileHold(h, managed) && d[newFileKey(h.Target)].Kind == "new_file"
+}
+
+// newFileHold reports whether h is a protected hold on a path nothing
+// manages here: the hold a new file's decision covers.
+func newFileHold(h model.Hold, managed map[model.Target]bool) bool {
+	return h.Target != "" && h.Reason == model.HoldProtected && !managed[h.Target]
+}
+
+// managedTargets returns the targets this machine's state records.
+func (m *machineEnv) managedTargets() map[model.Target]bool {
+	out := map[model.Target]bool{}
+	if st, err := m.eng.State.Load(); err == nil {
+		for t := range st.Targets {
+			out[t] = true
+		}
+	}
+	return out
+}
+
+// deferrals returns the deferred decisions for sync.Deps.Deferred.
+func deferrals(stateDir string) []sync.Deferral {
+	var out []sync.Deferral
+	for _, x := range loadDeferred(stateDir) {
+		out = append(out, sync.Deferral{HoldID: x.ID, Target: x.Target, NewFile: x.Kind == "new_file"})
+	}
+	return out
+}
+
 // openDeferred returns the deferred decisions whose holds are still open,
-// and drops the rest from the file.
-func openDeferred(stateDir string, holds []model.Hold) []Deferred {
+// and drops the rest from the file. A new file's decision takes the id of
+// its current hold.
+func openDeferred(stateDir string, holds []model.Hold, managed map[model.Target]bool) []Deferred {
 	d := loadDeferred(stateDir)
-	open := map[string]bool{}
+	open := map[string]string{}
 	for _, h := range withHoldNext(holds) {
-		open[h.ID] = true
+		open[h.ID] = h.ID
+		if newFileHold(h, managed) {
+			open[newFileKey(h.Target)] = h.ID
+		}
 	}
 	out := []Deferred{}
 	changed := false
-	for id, x := range d {
-		if !open[id] {
-			delete(d, id)
+	for k, x := range d {
+		id, ok := open[k]
+		if !ok {
+			delete(d, k)
 			changed = true
 			continue
+		}
+		if x.ID != id {
+			x.ID = id
+			d[k] = x
+			changed = true
 		}
 		out = append(out, x)
 	}
@@ -417,13 +532,38 @@ func (a *app) cmdDefer(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	wait, _ := cmd.Flags().GetDuration("for")
+	if wait <= 0 {
+		return result{}, usagef("--for must be a positive duration, such as 2h")
+	}
+	capped := wait > DeferMax
+	if capped {
+		wait = DeferMax
+	}
+	now := hooks.now()
 	d := loadDeferred(m.paths.State)
-	x := Deferred{ID: h.ID, Target: h.Target, Reason: h.Reason, Why: strings.TrimSpace(why), Session: session, At: hooks.now().UTC()}
-	d[h.ID] = x
+	x := Deferred{ID: h.ID, Target: h.Target, Reason: h.Reason, Why: strings.TrimSpace(why), Session: session, At: now.UTC(), Until: now.Add(wait).UTC()}
+	key := h.ID
+	if newFileHold(h, m.managedTargets()) {
+		// An earlier version keyed this decision by hold id.
+		delete(d, h.ID)
+		x.Kind, key = "new_file", newFileKey(h.Target)
+	}
+	d[key] = x
 	if err := saveDeferred(m.paths.State, d); err != nil {
 		return result{}, err
 	}
-	return result{data: x, next: []string{"yadm review list"}, text: "deferred " + h.ID[:min(12, len(h.ID))] + " to the review queue"}, nil
+	until := clockOn(x.Until, now)
+	note := fmt.Sprintf("Defers are for short waits (default %s, this one until %s). You are still responsible for settling this decision: commit it, ignore it, or remove the file soon. After %s it comes back as an open decision.", shortDuration(DeferDefault), until, until)
+	if capped {
+		note = fmt.Sprintf("--for is capped at %s. ", shortDuration(DeferMax)) + note
+	}
+	data := struct {
+		Deferred
+		Note string `json:"note"`
+	}{x, note}
+	text := "deferred " + h.ID[:min(12, len(h.ID))] + " to the review queue until " + until + "\n" + note + "\n"
+	return result{data: data, next: []string{"yadm review list", "yadm hold show " + h.ID}, text: text}, nil
 }
 
 // ---- events ----
@@ -471,7 +611,7 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	hs = append(hs, rep.Holds...)
-	packets := m.packets(ctx, decisionsFor(hs, []model.Target{t}, loadDeferred(m.paths.State)))
+	packets := m.packets(ctx, decisionsFor(hs, []model.Target{t}, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
 	if len(packets) == 0 {
 		return Verdict{}, nil
 	}
@@ -523,7 +663,7 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	packets := m.packets(ctx, decisionsFor(hs, ts, loadDeferred(m.paths.State)))
+	packets := m.packets(ctx, decisionsFor(hs, ts, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
 	if len(packets) == 0 {
 		return Verdict{}, nil
 	}
@@ -557,9 +697,14 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	m.snap = nil
 	snap, _ := m.load(ctx)
 	hs, _ := m.eng.Holds(ctx)
-	deferred := openDeferred(m.paths.State, hs)
+	deferred := openDeferred(m.paths.State, hs, m.managedTargets())
 	skip := map[string]bool{}
+	expired := 0
 	for _, d := range deferred {
+		if d.Expired(hooks.now()) {
+			expired++ // an open decision again
+			continue
+		}
 		skip[d.ID] = true
 	}
 	rel := ""
@@ -590,7 +735,7 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 		lines = append(lines, fmt.Sprintf("yadm: %d open decision(s) elsewhere: yadm hold list", n))
 	}
 	if n := len(deferred); n > 0 {
-		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) wait in the review queue: yadm review list", n))
+		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) still waiting, %d expired and open again: yadm review list", n-expired, expired))
 	}
 	if s := m.fleetDrift(ctx, snap); s != "" {
 		lines = append(lines, s)
@@ -642,14 +787,14 @@ func managedOrRooted(snap *apply.Snapshot, t model.Target) bool {
 // decisionsFor returns the open holds on targets (or on the owned roots that
 // contain them) that are not deferred. A plain drift is pending work, not a
 // decision; the timer commits it.
-func decisionsFor(hs []model.Hold, targets []model.Target, deferred map[string]Deferred) []model.Hold {
+func decisionsFor(hs []model.Hold, targets []model.Target, deferred map[string]Deferred, managed map[model.Target]bool) []model.Hold {
 	seen := map[string]bool{}
 	var out []model.Hold
 	for _, h := range withHoldNext(hs) {
 		if h.Target == "" || h.Reason == model.HoldDrifted || seen[h.ID] {
 			continue
 		}
-		if _, ok := deferred[h.ID]; ok {
+		if deferredHold(deferred, h, managed) {
 			continue
 		}
 		for _, t := range targets {

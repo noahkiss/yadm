@@ -156,6 +156,16 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		}
 		add("holds", len(hs) == 0, "%d held, %d conflicts", len(hs), conflicts)
 	}
+	if err == nil {
+		// An expired defer is an open decision again; nothing commits it.
+		now := hooks.now()
+		for _, x := range openDeferred(m.paths.State, hs, m.managedTargets()) {
+			if x.Expired(now) {
+				checks = append(checks, checkItem{Name: "deferred", OK: true, Warn: true,
+					Detail: fmt.Sprintf("%s: defer expired %s (%s); settle it: yadm hold show %s", x.Target, clockOn(x.Expires(), now), oneLine(x.Why), x.ID)})
+			}
+		}
+	}
 
 	if err := m.repo.CheckSecrecyConfig(ctx); err != nil {
 		add("secrecy_config", false, "%v", err)

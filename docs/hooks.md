@@ -84,7 +84,7 @@ Packet `kind` is `new_file` or a hold reason: `protected`, `rendered_edit`, `che
 
 With `--format text`, stdout carries the context as plain text instead of the verdict, and nothing on a block; a block still exits 2 with the reason on stderr.
 
-`yadm defer <hold id> --reason <why>` settles a packet for now: the hold stays, `yadm review list` shows it under `deferred`, and `stop` no longer blocks on it.
+`yadm defer <hold id> --reason <why> [--for <duration>]` settles a packet for a short wait, 6h by default and at most 48h: the hold stays, `yadm review list` shows it under `deferred` with its `until`, and `stop` no longer blocks on it. Its output carries a `note` that the agent stays responsible for the decision. When the defer expires unsettled, `stop` and `session-start` raise the decision again and `yadm check` warns; the timer still never commits it. The file stays uncommitted, through edits and timer scans, until the decision is settled: `yadm commit <path>` names it, `yadm retag` tracks it, `yadm hold ignore` ignores it, or the file is removed. A new file in an owned root that nobody decides on or defers is shared by the timer after its quiet period.
 
 ## Example: Claude Code
 

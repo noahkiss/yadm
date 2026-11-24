@@ -517,6 +517,10 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 			drift = append(drift, d)
 		}
 		sort.Slice(drift, func(i, j int) bool { return drift[i].Target < drift[j].Target })
+		// A deferred decision waits for an attended commit that names it.
+		drift = s.withoutDeferred(drift, func(t model.Target) bool {
+			return !opts.Unattended && named(opts.Paths, t)
+		})
 		if cp, err = s.Apply.Capture(ctx, drift); err != nil {
 			return rep, fmt.Errorf("capture: %w", err)
 		}
