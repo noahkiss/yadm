@@ -321,18 +321,33 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 			return out, err
 		}
 	}
+	if switched {
+		// A run that stopped after main moved: find what it left.
+		if have, err := reroot.List(s.Backups); err == nil && s.Backups != "" {
+			for _, x := range have {
+				if strings.HasPrefix(string(base), x.OldHead) {
+					acc.Backup = x.Path
+					break
+				}
+			}
+		}
+		if cur, err := s.Store.ResolveRef(ctx, RefCarry(r.ID)); err == nil && cur != "" {
+			acc.Carried = RefCarry(r.ID)
+		}
+	}
 	if err := s.rerootReviewed(ctx, remote, r.NewHead); err != nil {
 		return out, err
 	}
-	// The accepted remote moves last: a run that stops before this point
-	// finds the same record next time and goes on from where it stopped.
-	if err := s.setAccepted(r.NewHead); err != nil {
-		return out, err
-	}
+	// reroot.json records the switch before the accepted remote moves,
+	// last: a run that stops before that point finds the same record next
+	// time and goes on from where it stopped.
 	if l := reroot.Load(s.Apply.StateDir).Last(); l == nil || l.ID != r.ID {
 		if err := reroot.RecordAccepted(s.Apply.StateDir, acc); err != nil {
 			return out, err
 		}
+	}
+	if err := s.setAccepted(r.NewHead); err != nil {
+		return out, err
 	}
 	out.switched, out.local = true, tip
 	return out, nil

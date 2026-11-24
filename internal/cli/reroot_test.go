@@ -238,7 +238,13 @@ func TestRerootSquash(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(a.State, sync.AcceptedFile), []byte(old+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(a.State, reroot.StateFile)); err != nil {
+		t.Fatal(err)
+	}
 	yadmOK(t, "sync", "--full")
+	if l := reroot.Load(a.State).Last(); l == nil || l.ID != id || l.Backup != d.Backup {
+		t.Fatalf("re-entered switch recorded %+v, want %s with backup %s", l, id, d.Backup)
+	}
 	if h := holdTask(t, sync.HoldTaskReroot); h != nil {
 		t.Fatalf("re-entered switch holds: %+v", h)
 	}
