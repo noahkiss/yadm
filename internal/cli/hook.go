@@ -592,9 +592,6 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	if n := len(deferred); n > 0 {
 		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) wait in the review queue: yadm review list", n))
 	}
-	if n := m.unreviewedAuto(ctx, snap); n > 0 {
-		lines = append(lines, fmt.Sprintf("yadm: %d auto-commit(s) not reviewed: yadm review list", n))
-	}
 	if s := m.fleetDrift(ctx, snap); s != "" {
 		lines = append(lines, s)
 	}
@@ -935,38 +932,6 @@ func indent(s, pre string) string {
 		lines[i] = pre + l
 	}
 	return strings.Join(lines, "\n")
-}
-
-// unreviewedAuto counts tool commits on main past each scope's reviewed ref.
-func (m *machineEnv) unreviewedAuto(ctx context.Context, snap *apply.Snapshot) int {
-	main, err := m.head(ctx)
-	if err != nil || main == "" {
-		return 0
-	}
-	scopes := []model.Scope{model.ScopeShared}
-	if snap != nil && snap.Fleet != nil {
-		for _, e := range snap.Fleet.Enclaves() {
-			scopes = append(scopes, model.Scope(e))
-		}
-	}
-	seen := map[model.CommitID]bool{}
-	for _, sc := range scopes {
-		rng := string(main)
-		// The local reviewed ref only: a fetched one may skip commits.
-		if base, _ := m.repo.ResolveRef(ctx, store.RefReviewed(sc)); base != "" {
-			rng = string(base) + ".." + string(main)
-		}
-		cs, err := m.repo.Log(ctx, rng, nil)
-		if err != nil {
-			continue
-		}
-		for _, c := range cs {
-			if auto := trailerOf(c.Message, store.TrailerAuto); auto != "" && auto != sync.TriggerManual && trailerOf(c.Message, store.TrailerScope) == string(sc) {
-				seen[c.ID] = true
-			}
-		}
-	}
-	return len(seen)
 }
 
 func trailerOf(msg store.Message, key string) string {

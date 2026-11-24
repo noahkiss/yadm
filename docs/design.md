@@ -546,7 +546,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 |---|---|---|
 | `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, locally; the next timer tick pushes it. Silent when clean; otherwise a decision packet. |
 | `stop` | the agent (or a subagent) ends its turn | Commits the session's recorded paths locally; the next timer tick pushes them. Blocks the stop while a decision this session caused is open, including a conflict the timer met while pushing them. |
-| `session-start` | a session starts | A quick sync and a repair of a broken schedule (section 13), then at most 10 lines: the repair first, holds near the cwd, deferred decisions, unreviewed auto-commits, fleet drift. |
+| `session-start` | a session starts | A quick sync and a repair of a broken schedule (section 13), then at most 10 lines: the repair first, holds near the cwd, deferred decisions, fleet drift. Unreviewed auto-commits are not counted there; `yadm review list` shows them on request. |
 
 A hook commit is unattended: naming the path does not lift protection, and a new file in an owned root is held (`protected`) for a decision, since which machines get it is the user's choice. A hook waits at most a few seconds for the sync lock; if another process holds it, the path stays recorded and `stop` or the timer commits it.
 
