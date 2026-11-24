@@ -360,6 +360,9 @@ type Accepted struct {
 
 // Local is StateFile.
 type Local struct {
+	// Since is when this machine joined (init). No record created before
+	// it can lead anywhere new: the clone already held that history.
+	Since    time.Time  `json:"since,omitempty"`
 	Accepted []Accepted `json:"accepted,omitempty"` // newest last
 }
 
@@ -393,6 +396,24 @@ func RecordAccepted(stateDir string, a Accepted) error {
 	if n := len(l.Accepted); n > keepAccepted {
 		l.Accepted = l.Accepted[n-keepAccepted:]
 	}
+	return save(stateDir, l)
+}
+
+// SeedSince records at as Local.Since in stateDir, unless a time is
+// recorded already. init calls it when it clones.
+func SeedSince(stateDir string, at time.Time) error {
+	if stateDir == "" {
+		return nil
+	}
+	l := Load(stateDir)
+	if !l.Since.IsZero() {
+		return nil
+	}
+	l.Since = at.UTC().Truncate(time.Second)
+	return save(stateDir, l)
+}
+
+func save(stateDir string, l Local) error {
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
 		return err

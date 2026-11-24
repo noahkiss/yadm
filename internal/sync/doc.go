@@ -90,7 +90,8 @@
 // A re-root (design §10.2, package reroot) replaces the remote's history.
 // When the fetched main does not descend from the accepted one, the run
 // looks for a re-root record that leads there, verified by a pinned
-// key-log member's signature. Without one it refuses the fetch with a
+// key-log member's signature and newer than this machine's floor (its
+// join time and the newest re-root it runs). Without one it refuses the fetch with a
 // HoldTaskRewrite hold. With one it holds (HoldTaskReroot) while this
 // machine has commits the old history lacks (unless Options.Carry replays
 // them), or the rewrite changes a key-log file or fails the RemoteGuard;
@@ -99,7 +100,8 @@
 // into the old history, records the new head as accepted last, and goes on
 // with the normal checks on new..remote. A machine held by a pause switches
 // only for the pause's initiator, during the pause. Reroot is the
-// initiator side: checks, a signed record and one atomic, leased push.
+// initiator side: checks, its own backup, a signed record and one
+// atomic, leased push.
 //
 // Fetched commits that touch an enclave and whose Machine trailer names no
 // member of its key log are applied, alerted through the notify hook and

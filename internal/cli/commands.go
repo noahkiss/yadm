@@ -21,6 +21,7 @@ import (
 	"github.com/noahkiss/yadm/internal/fleet"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/reroot"
 	"github.com/noahkiss/yadm/internal/store"
 	"github.com/noahkiss/yadm/internal/sync"
 	"github.com/noahkiss/yadm/internal/textmerge"
@@ -236,6 +237,10 @@ func (a *app) cmdInit(cmd *cobra.Command, args []string) (result, error) {
 		return result{}, err
 	}
 	if err := sync.SeedAccepted(p.State, start); err != nil {
+		return result{}, err
+	}
+	// A re-root record created before the clone cannot lead anywhere new.
+	if err := reroot.SeedSince(p.State, hooks.now()); err != nil {
 		return result{}, err
 	}
 	head, err := repo.ResolveRef(ctx, store.RefMain)

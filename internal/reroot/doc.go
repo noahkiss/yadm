@@ -14,7 +14,8 @@
 // that member's key. Read bounds what it takes from the ref and never
 // fails a sync over it. Write keeps the newest records only.
 //
-// Local state (StateFile) records the re-roots this machine switched to.
+// Local state (StateFile) records when this machine joined and the
+// re-roots it switched to; a record not newer than both is a replay.
 // Backups are git bundles of the old history in BackupDir, beside the
 // source clone, named by time and old head; List and Prune manage them.
 //
@@ -29,10 +30,11 @@
 //	func Read(ctx, st store.Store) ([]Record, []Ignored, error) // newest first
 //	func Write(ctx, st store.Store, rec Record) (prev, next model.CommitID, err error)
 //	func Unwrite(ctx, st store.Store, prev, next model.CommitID) error
-//	type Accepted struct{ ID; By; OldHead; NewHead; At; Backup; Carried }
-//	type Local struct{ Accepted []Accepted }; func (Local) Last() *Accepted
+//	type Accepted struct{ ID; By; OldHead; NewHead; Created; At; Backup; Carried }
+//	type Local struct{ Since; Accepted []Accepted }; func (Local) Last() *Accepted
 //	func Load(stateDir string) Local; func RecordAccepted(stateDir string, a Accepted) error
+//	func SeedSince(stateDir string, at time.Time) error // init; never replaces a time
 //	func BackupDir(source string) string; func BundleName(at time.Time, old model.CommitID) string
 //	type Bundle struct{ Path; Name; Taken; OldHead; Size }
-//	func List(dir string) ([]Bundle, error); func Prune(dir string, keep int) ([]Bundle, error); func EnsureDir(dir string) error
+//	func List(dir string) ([]Bundle, error); func Prune(dir string, keep int, pin ...string) ([]Bundle, error); func EnsureDir(dir string) error
 package reroot

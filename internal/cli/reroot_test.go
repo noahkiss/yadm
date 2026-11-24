@@ -563,6 +563,7 @@ func TestRerootReplay(t *testing.T) {
 	first := squash(t, a.Source, "first root")
 	yadmOK(t, "reroot", "--new-head", first, "--fold-unreviewed", "--no-wait")
 	yadmOK(t, "resume")
+	refAfterFirst := trimmed(t, a.Source, "rev-parse", reroot.Ref)
 
 	on(t, root, fixture.HostC)
 	yadmOK(t, "sync", "--full")
@@ -595,6 +596,45 @@ func TestRerootReplay(t *testing.T) {
 	}
 	if h := holdTask(t, sync.HoldTaskRewrite); h == nil || !strings.Contains(h.Detail, "older than") {
 		t.Fatalf("host-c: no history-rewrite hold naming the stale record: %+v", h)
+	}
+
+	// The writer also strips the second record from the re-root ref, and
+	// host-c is a machine that joined after the second re-root: its join
+	// time still refuses the first record.
+	on(t, root, fixture.HostA)
+	git(t, a.Source, "push", "-q", "--force", "origin", refAfterFirst+":"+reroot.Ref)
+	on(t, root, fixture.HostC)
+	since := clk.Now().UTC().Format(time.RFC3339)
+	writeFile(t, filepath.Join(c.State, reroot.StateFile), `{"since": "`+since+`"}`+"\n")
+	if _, code, _ := yadm(t, "sync", "--full"); code != ExitAttention {
+		t.Fatalf("host-c sync over a replay with a stripped ref: exit %d", code)
+	}
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != second {
+		t.Fatalf("host-c moved main back to %s with the ref stripped", got)
+	}
+	if h := holdTask(t, sync.HoldTaskRewrite); h == nil || !strings.Contains(h.Detail, "joined") {
+		t.Fatalf("host-c: no hold naming its join time: %+v", h)
+	}
+}
+
+// TestRerootClockBehind: an initiator whose clock is not after the newest
+// re-root would sign a record every machine refuses; it refuses first.
+func TestRerootClockBehind(t *testing.T) {
+	root, remote, _, clk, m := rerootFleet(t)
+	a := m[fixture.HostA]
+	on(t, root, fixture.HostA)
+	clk.Add(time.Hour)
+	yadmOK(t, "reroot", "--new-head", squash(t, a.Source, "first root"), "--fold-unreviewed", "--no-wait")
+	yadmOK(t, "resume")
+	yadmOK(t, "sync", "--full")
+	clk.Add(-2 * time.Hour)
+	before := trimmed(t, remote, "rev-parse", "main")
+	env, code, _ := yadm(t, "reroot", "--new-head", squash(t, a.Source, "second root"), "--fold-unreviewed", "--no-wait")
+	if code == ExitOK || !strings.Contains(env.Error.Message, "clock") {
+		t.Fatalf("reroot with the clock behind: exit %d %+v", code, env.Error)
+	}
+	if got := trimmed(t, remote, "rev-parse", "main"); got != before {
+		t.Fatalf("remote main moved to %s", got)
 	}
 }
 

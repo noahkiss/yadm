@@ -45,7 +45,9 @@ The procedure:
        - purge: run git filter-repo on a copy of the clone, then fetch its
          main into the source clone as a branch.
   6. Run: yadm reroot --new-head <commit-or-ref> --reason "<why>"
-     It checks the rewrite, signs the record, and pushes the new main (with
+     The new head must be a rewritten commit, not one main already holds.
+     It checks the rewrite, backs up this machine's old history first
+     (when reroot_keep is set), signs the record, and pushes the new main (with
      a lease on the old one), the reviewed refs and the record in one
      atomic push. Then it switches this machine and waits for the others.
   7. Wait until every machine switched (yadm fleet list shows "rerooted").

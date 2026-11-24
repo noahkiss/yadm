@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/noahkiss/yadm/internal/crypt"
 	"github.com/noahkiss/yadm/internal/model"
+	"github.com/noahkiss/yadm/internal/pause"
 	"github.com/noahkiss/yadm/internal/reroot"
 	"github.com/noahkiss/yadm/internal/store"
 )
@@ -145,31 +147,9 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 	for _, x := range bad {
 		ignored = append(ignored, x.ID+": "+x.Why)
 	}
-	// The floor: the newest re-root this machine already runs, from its
-	// own record of switches and from the verified records whose new head
-	// the accepted history holds. An older record is a replay, even when
-	// this machine lacks its old head and cannot check that it descends
-	// from the accepted main.
-	var floor reroot.Record
-	raise := func(r reroot.Record) {
-		if r.Created.After(floor.Created) {
-			floor = r
-		}
-	}
-	for _, a := range reroot.Load(s.Apply.StateDir).Accepted {
-		raise(reroot.Record{ID: a.ID, Created: a.Created})
-	}
-	for _, r := range recs {
-		if !s.exists(ctx, r.NewHead) {
-			continue
-		}
-		in, err := s.Store.IsAncestor(ctx, r.NewHead, base)
-		if err != nil {
-			return out, err
-		}
-		if in && reroot.Verify(trust, r) == nil {
-			raise(r)
-		}
+	floor, err := s.rerootFloor(ctx, trust, base, recs)
+	if err != nil {
+		return out, err
 	}
 	var pick *reroot.Record
 	oldKnown := false
@@ -190,8 +170,8 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 			ignored = append(ignored, r.ID+": "+err.Error())
 			continue
 		}
-		if floor.ID != "" && floor.ID != r.ID && !r.Created.After(floor.Created) {
-			ignored = append(ignored, fmt.Sprintf("%s: it is older than re-root %s, which this machine already runs", r.ID, floor.ID))
+		if floor.id != r.ID && !r.Created.After(floor.at) {
+			ignored = append(ignored, fmt.Sprintf("%s: it is older than %s", r.ID, floor.what))
 			continue
 		}
 		known := s.exists(ctx, r.OldHead)
@@ -353,6 +333,47 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 	return out, nil
 }
 
+// floor is the newest point in time this machine's history already
+// covers: a re-root record not created after it is a replay.
+type floor struct {
+	at   time.Time
+	id   string // the re-root that set it, or ""
+	what string
+}
+
+// rerootFloor is the floor at base: the time this machine joined, the
+// re-roots it switched to, and the verified records whose new head base
+// holds. A writer controls the fetched re-root ref and can strip records
+// from it, but not reroot.json.
+func (s *Syncer) rerootFloor(ctx context.Context, trust pause.Trust, base model.CommitID, recs []reroot.Record) (floor, error) {
+	var f floor
+	l := reroot.Load(s.Apply.StateDir)
+	if !l.Since.IsZero() {
+		f = floor{at: l.Since, what: "the time this machine joined (" + l.Since.UTC().Format(time.RFC3339) + ")"}
+	}
+	raise := func(id string, at time.Time) {
+		if at.After(f.at) {
+			f = floor{at: at, id: id, what: "re-root " + id + ", which this machine already runs"}
+		}
+	}
+	for _, a := range l.Accepted {
+		raise(a.ID, a.Created)
+	}
+	for _, r := range recs {
+		if reroot.Verify(trust, r) != nil || !s.exists(ctx, r.NewHead) || base == "" {
+			continue
+		}
+		in, err := s.Store.IsAncestor(ctx, r.NewHead, base)
+		if err != nil {
+			return f, err
+		}
+		if in {
+			raise(r.ID, r.Created)
+		}
+	}
+	return f, nil
+}
+
 // rerootKeep is how many backups this machine keeps, from the fleet file
 // it ran before the switch.
 func (s *Syncer) rerootKeep(ctx context.Context, rev model.CommitID) int {
@@ -423,13 +444,19 @@ func (s *Syncer) rerootReviewed(ctx context.Context, remote, newHead model.Commi
 		to := model.CommitID("")
 		if rv != "" && s.ancestor(ctx, rv, remote) {
 			to = rv
-			if rv != newHead && s.ancestor(ctx, newHead, rv) {
-				n, err := skippedInScope(ctx, s.Store, sc, newHead, rv)
+			if rv != newHead {
+				past, err := s.Store.IsAncestor(ctx, newHead, rv)
 				if err != nil {
 					return err
 				}
-				if n > 0 {
-					to = newHead
+				if past {
+					n, err := skippedInScope(ctx, s.Store, sc, newHead, rv)
+					if err != nil {
+						return err
+					}
+					if n > 0 {
+						to = newHead
+					}
 				}
 			}
 		}
@@ -598,8 +625,11 @@ func (s *Syncer) prepareReroot(ctx context.Context, req RerootRequest, out *Rero
 		return rec, nil, "", "", fmt.Errorf("%w: --new-head is the remote main already", ErrRerootState)
 	case s.ancestor(ctx, remote, newID):
 		return rec, nil, "", "", fmt.Errorf("%w: --new-head descends from the remote main; that is an ordinary push, not a rewrite: commit and sync instead", ErrRerootState)
-	case s.ancestor(ctx, newID, remote):
-		// Every machine already holds it, so none would take the record.
+	}
+	// A new head every machine already holds is a rewind none would take.
+	if in, err := s.Store.IsAncestor(ctx, newID, remote); err != nil {
+		return rec, nil, "", "", err
+	} else if in {
 		return rec, nil, "", "", fmt.Errorf("%w: --new-head is already in the remote main's history; a re-root needs a rewritten commit (to drop recent commits, revert them instead)", ErrRerootState)
 	}
 	if v, err := s.keyDiff(ctx, remote, newID, true); err != nil {
@@ -681,6 +711,19 @@ func (s *Syncer) prepareReroot(ctx context.Context, req RerootRequest, out *Rero
 	}
 	if len(out.Unreviewed) == 0 {
 		out.Unreviewed = nil
+	}
+	// Every machine refuses a record not newer than the newest re-root it
+	// runs; with a clock behind that, refuse here, before any push.
+	recs, _, err := reroot.Read(ctx, s.Store)
+	if err != nil {
+		return rec, nil, "", "", err
+	}
+	fl, err := s.rerootFloor(ctx, trust, remote, recs)
+	if err != nil {
+		return rec, nil, "", "", err
+	}
+	if now := s.now().UTC().Truncate(time.Second); !now.After(fl.at) {
+		return rec, nil, "", "", fmt.Errorf("%w: this machine's clock (%s) is not after %s; every machine would refuse the record", ErrRerootState, now.Format(time.RFC3339), fl.what)
 	}
 	if dry {
 		return rec, nil, "", "", nil
