@@ -90,6 +90,12 @@ func TestDeferNewFileSurvivesEdit(t *testing.T) {
 	yadmOK(t, "defer", p.ID, "--reason", "decide with the owner")
 	before := git(t, a.Source, "rev-parse", "main")
 
+	// A timer scan inside the quiet period commits nothing and keeps the
+	// hold, so the review queue keeps the defer.
+	yadmOK(t, "sync", "--auto", "--full")
+	if ds := deferredOf(t); len(ds) != 1 {
+		t.Fatalf("deferred after a quiet scan: %+v", ds)
+	}
 	hooks.now = func() time.Time { return time.Now().Add(time.Hour) }
 	// An edit raises no new packet, and the stop hook stays clear.
 	writeFile(t, file, "fresh = 2\n")
@@ -120,12 +126,36 @@ func TestDeferNewFileSurvivesEdit(t *testing.T) {
 
 }
 
-// TestDeferDriftedHoldsAgainstScan: a deferred drifted hold is not taken by
-// the timer's scan; the live file stays uncommitted.
+// TestDeferDriftedHoldsAgainstScan: a local edit meets an incoming change
+// and apply holds it as drifted. Deferred, the timer's scan neither
+// captures nor commits the edit.
 func TestDeferDriftedHoldsAgainstScan(t *testing.T) {
 	hermetic(t)
-	live := "{\n  \"theme\": \"light\",\n  \"window\": 7\n}\n"
-	a, _, h := takeTargetMachine(t, live, "adopt", model.HoldDrifted)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	b := hookMachine(t, root, remote, "b", "host-b")
+	writeFile(t, filepath.Join(b.Home, ".config/tool/config"), "color = red\n")
+	yadmOK(t, "commit", ".config/tool/config")
+
+	a := hookMachine(t, root, remote, "a", "host-a")
+	_ = a
+	useMachine(t, root, "b")
+	writeFile(t, filepath.Join(b.Home, ".config/tool/config"), "color = green\n")
+	yadmOK(t, "commit", ".config/tool/config")
+
+	useMachine(t, root, "a")
+	file := filepath.Join(a.Home, ".config/tool/config")
+	writeFile(t, file, "color = local\n")
+	yadm(t, "sync")
+	var h model.Hold
+	for _, x := range decode[holdsOnly](t, yadmOK(t, "hold", "list").Data).Holds {
+		if x.Target == ".config/tool/config" && x.Reason == model.HoldDrifted {
+			h = x
+		}
+	}
+	if h.ID == "" {
+		t.Fatalf("no drifted hold: %+v", decode[holdsOnly](t, yadmOK(t, "hold", "list").Data).Holds)
+	}
 	yadmOK(t, "defer", h.ID, "--reason", "decide with the owner")
 
 	before := git(t, a.Source, "rev-parse", "main")
@@ -136,7 +166,49 @@ func TestDeferDriftedHoldsAgainstScan(t *testing.T) {
 	if ds := deferredOf(t); len(ds) != 1 || ds[0].ID != h.ID {
 		t.Fatalf("deferred after the scan: %+v", ds)
 	}
-	if got := readFile(t, filepath.Join(a.Home, ".config/app/settings.json")); got != live {
+	if got := readFile(t, file); got != "color = local\n" {
 		t.Fatalf("live file changed: %q", got)
+	}
+}
+
+// TestDeferNewFileSettles: ignoring or retagging a deferred new file
+// settles its defer.
+func TestDeferNewFileSettles(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	for _, name := range []string{"ignored.conf", "retagged.conf"} {
+		file := filepath.Join(a.Home, ".config/tool", name)
+		writeFile(t, file, "fresh = 1\n")
+		code, stdout, _ := hookRun(t, payload(payloadWrite, "session-s", a.Home, file), HookPostEdit)
+		if code != HookBlock {
+			t.Fatalf("post-edit on %s: exit %d", name, code)
+		}
+		yadmOK(t, "defer", verdictOf(t, stdout).Packets[0].ID, "--reason", "decide with the owner")
+	}
+	if ds := deferredOf(t); len(ds) != 2 {
+		t.Fatalf("deferred: %+v", ds)
+	}
+
+	var ignore string
+	for _, h := range decode[holdsOnly](t, yadmOK(t, "hold", "list").Data).Holds {
+		if h.Target == ".config/tool/ignored.conf" {
+			ignore = h.ID
+		}
+	}
+	yadmOK(t, "hold", "ignore", ignore)
+	yadmOK(t, "retag", ".config/tool/retagged.conf", "work")
+	if got := git(t, a.Source, "show", "main:files/.config/tool/retagged.conf"); got != "fresh = 1" {
+		t.Fatalf("retag did not commit: %q", got)
+	}
+	if ds := deferredOf(t); len(ds) != 0 {
+		t.Fatalf("deferred after ignore and retag: %+v", ds)
+	}
+	before := git(t, a.Source, "rev-parse", "main")
+	timerSyncs(t)
+	if git(t, a.Source, "rev-parse", "main") != before {
+		t.Fatal("the scan committed an ignored file")
 	}
 }
