@@ -339,11 +339,16 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 // DeferredFile holds the decisions agents moved to the review queue.
 const DeferredFile = "deferred.json"
 
-// Deferred is one decision moved to the review queue.
+// Deferred is one decision moved to the review queue. A new file's
+// decision (Kind "new_file") covers its path, so an edit that raises the
+// hold again under a new id stays deferred; other decisions cover their
+// hold id. Scan and unattended commits skip a deferred target while its
+// hold is open.
 type Deferred struct {
 	ID      string           `json:"id"`
 	Target  model.Target     `json:"target,omitempty"`
 	Reason  model.HoldReason `json:"reason"`
+	Kind    string           `json:"kind,omitempty"`
 	Why     string           `json:"why"`
 	Session string           `json:"session,omitempty"`
 	At      time.Time        `json:"at"`
@@ -369,21 +374,54 @@ func saveDeferred(stateDir string, d map[string]Deferred) error {
 	return os.Rename(p+".tmp", p)
 }
 
+// newFileKey is the deferred.json key of a new file's decision: its path.
+func newFileKey(t model.Target) string { return "new_file:" + string(t) }
+
+// deferredHold reports whether hold h is deferred in d.
+func deferredHold(d map[string]Deferred, h model.Hold) bool {
+	if _, ok := d[h.ID]; ok {
+		return true
+	}
+	_, ok := d[newFileKey(h.Target)]
+	return ok && h.Target != "" && h.Reason == model.HoldProtected
+}
+
+// deferredTargets returns the targets with a deferred decision.
+func deferredTargets(stateDir string) map[model.Target]bool {
+	out := map[model.Target]bool{}
+	for _, x := range loadDeferred(stateDir) {
+		if x.Target != "" {
+			out[x.Target] = true
+		}
+	}
+	return out
+}
+
 // openDeferred returns the deferred decisions whose holds are still open,
-// and drops the rest from the file.
+// and drops the rest from the file. A new file's decision takes the id of
+// its current hold.
 func openDeferred(stateDir string, holds []model.Hold) []Deferred {
 	d := loadDeferred(stateDir)
-	open := map[string]bool{}
+	open := map[string]string{}
 	for _, h := range withHoldNext(holds) {
-		open[h.ID] = true
+		open[h.ID] = h.ID
+		if h.Target != "" && h.Reason == model.HoldProtected {
+			open[newFileKey(h.Target)] = h.ID
+		}
 	}
 	out := []Deferred{}
 	changed := false
-	for id, x := range d {
-		if !open[id] {
-			delete(d, id)
+	for k, x := range d {
+		id, ok := open[k]
+		if !ok {
+			delete(d, k)
 			changed = true
 			continue
+		}
+		if x.ID != id {
+			x.ID = id
+			d[k] = x
+			changed = true
 		}
 		out = append(out, x)
 	}
@@ -416,9 +454,14 @@ func (a *app) cmdDefer(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	snap, _ := m.load(ctx)
 	d := loadDeferred(m.paths.State)
 	x := Deferred{ID: h.ID, Target: h.Target, Reason: h.Reason, Why: strings.TrimSpace(why), Session: session, At: hooks.now().UTC()}
-	d[h.ID] = x
+	key := h.ID
+	if h.Reason == model.HoldProtected && h.Target != "" && !managedHere(snap, h.Target) {
+		x.Kind, key = "new_file", newFileKey(h.Target)
+	}
+	d[key] = x
 	if err := saveDeferred(m.paths.State, d); err != nil {
 		return result{}, err
 	}
@@ -638,6 +681,15 @@ func managedOrRooted(snap *apply.Snapshot, t model.Target) bool {
 	return snap.Plan.Root(t) != nil
 }
 
+// managedHere reports whether the plan names t as a target.
+func managedHere(snap *apply.Snapshot, t model.Target) bool {
+	if snap == nil || snap.Plan == nil {
+		return false
+	}
+	_, ok := snap.Plan.Targets[t]
+	return ok
+}
+
 // decisionsFor returns the open holds on targets (or on the owned roots that
 // contain them) that are not deferred. A plain drift is pending work, not a
 // decision; the timer commits it.
@@ -648,7 +700,7 @@ func decisionsFor(hs []model.Hold, targets []model.Target, deferred map[string]D
 		if h.Target == "" || h.Reason == model.HoldDrifted || seen[h.ID] {
 			continue
 		}
-		if _, ok := deferred[h.ID]; ok {
+		if deferredHold(deferred, h) {
 			continue
 		}
 		for _, t := range targets {

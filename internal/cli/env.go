@@ -309,6 +309,7 @@ func (m *machineEnv) syncer(version string) *sync.Syncer {
 		Version:  version,
 		Now:      hooks.now,
 		Nudge:    hooks.nudge(),
+		Deferred: func() map[model.Target]bool { return deferredTargets(m.paths.State) },
 
 		Structural: rules.Structural{},
 		Guard:      &apply.Guard{List: m.allow},

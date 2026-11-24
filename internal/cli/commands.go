@@ -706,6 +706,12 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	if !dry {
+		// A deferred decision this commit settled leaves the review queue.
+		if hs, err := m.eng.Holds(ctx); err == nil {
+			openDeferred(m.paths.State, hs)
+		}
+	}
 	rep = reportData(rep)
 	data := map[string]any{"commits": rep.Committed, "holds": rep.Holds, "pushed": rep.Pushed}
 	if dry {

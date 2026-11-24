@@ -84,7 +84,7 @@ Packet `kind` is `new_file` or a hold reason: `protected`, `rendered_edit`, `che
 
 With `--format text`, stdout carries the context as plain text instead of the verdict, and nothing on a block; a block still exits 2 with the reason on stderr.
 
-`yadm defer <hold id> --reason <why>` settles a packet for now: the hold stays, `yadm review list` shows it under `deferred`, and `stop` no longer blocks on it.
+`yadm defer <hold id> --reason <why>` settles a packet for now: the hold stays, `yadm review list` shows it under `deferred`, and `stop` no longer blocks on it. The file stays uncommitted, through edits and timer scans, until `yadm commit <path>` names it.
 
 ## Example: Claude Code
 

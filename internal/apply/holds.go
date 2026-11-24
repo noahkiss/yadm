@@ -2,7 +2,9 @@ package apply
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -138,7 +140,8 @@ var settleReasons = map[model.HoldReason]bool{
 // check that failed, a capture that failed or a drift no longer applies.
 // Conflict holds stay (they carry the incoming change), and so do holds
 // for a manifest that weakened protection (apply sets them again from the
-// plan). It returns the number of holds dropped.
+// plan). A protected hold on an unmanaged file (a new file in an owned
+// root) goes when the file is gone. It returns the number of holds dropped.
 func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 	for _, d := range drift {
 		if d.Kind == DriftUnreadable {
@@ -161,6 +164,10 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 			n++
 			continue
 		}
+		if h.Target != "" && !managed && !drifting[h.Target] && h.Reason == model.HoldProtected && e.gone(h.Target) {
+			n++
+			continue
+		}
 		out = append(out, h)
 	}
 	st.Holds = out
@@ -168,6 +175,16 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 		return 0, nil
 	}
 	return n, e.State.Save(st)
+}
+
+// gone reports whether nothing is at target t in $HOME.
+func (e *Engine) gone(t model.Target) bool {
+	abs, err := e.abs(t)
+	if err != nil {
+		return false
+	}
+	_, err = e.fs.Lstat(abs)
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 func weakenedHold(h model.Hold) bool {

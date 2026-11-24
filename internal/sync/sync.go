@@ -162,6 +162,12 @@ type Deps struct {
 	// so peers sync now instead of on their next timer tick (they run
 	// `yadm sync --quick`). Its failure never fails the sync.
 	Nudge []string
+
+	// Deferred returns the targets an agent deferred a decision on. While
+	// such a target still has an open hold, scan and unattended commits
+	// neither capture nor commit it; only an attended commit that names
+	// it does. nil: none.
+	Deferred func() map[model.Target]bool
 }
 
 // Syncer runs the sync loop.
@@ -402,7 +408,7 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return rep, fmt.Errorf("scan: %w", err)
 	}
-	cp, err := s.Apply.Capture(ctx, drift)
+	cp, err := s.Apply.Capture(ctx, s.withoutDeferred(drift, nil))
 	if err != nil {
 		return rep, fmt.Errorf("capture: %w", err)
 	}
@@ -481,6 +487,37 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 	}
 
 	return s.exchange(ctx, rep, lk, f, start, cp.Paths, committed, opts)
+}
+
+// withoutDeferred drops the drift of targets with a deferred decision whose
+// hold is still open, except those keep approves. A dropped target is not
+// captured, so its hold stays and it stays uncommitted.
+func (s *Syncer) withoutDeferred(drift []apply.Drift, keep func(model.Target) bool) []apply.Drift {
+	if s.Deferred == nil || len(drift) == 0 {
+		return drift
+	}
+	def := s.Deferred()
+	if len(def) == 0 {
+		return drift
+	}
+	st, err := s.Apply.State.Load()
+	if err != nil {
+		return drift
+	}
+	held := map[model.Target]bool{}
+	for _, h := range st.Holds {
+		if h.Target != "" && def[h.Target] {
+			held[h.Target] = true
+		}
+	}
+	out := make([]apply.Drift, 0, len(drift))
+	for _, d := range drift {
+		if held[d.Target] && (keep == nil || !keep(d.Target)) {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // settle runs the full apply a run still owes: a commit applied only the

@@ -15,6 +15,8 @@
 // sync lock is released.
 //
 //  1. Scan and capture drift (package apply). Unreadable drift never commits.
+//     A target with a deferred decision (Deps.Deferred) and an open hold is
+//     not captured; only an attended Commit that names it captures it.
 //  2. With Options.Auto, auto-commit captured paths whose quiet period has
 //     passed, that no lease or busy probe names, that hold no open conflict
 //     and that are not protected (built-in and manifest globs, review
