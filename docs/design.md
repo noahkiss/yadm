@@ -335,7 +335,7 @@ Pinning is strict; there is no trust on first use:
 Why 40 bits is enough with the KDF:
 
 - The attack is a second preimage, not a collision. The attacker is a writer without a member key. To pass a forged log, it must build one whose `add` entry for the joining machine derives the same code as the honest entry. It cannot choose the honest entry, so a birthday search does not apply.
-- The target exists only once a member runs `enclave add`. The attacker must grind inside the window between that push and the human typing the code.
+- No window bounds the work. A forged log is the attacker's own `create` and an `add` of the joining machine, which needs only the machine id that `yadm init` prints. The attacker can grind a table of codes before the honest `add` exists, and a code does not expire. The cost per guess is what bounds the attack.
 - Each guess costs one full argon2id run: 256 MiB of memory and about 0.6 s of laptop time. A 50% chance needs 2^39 runs, about 10^4 core-years at that rate. Memory hardness limits how much GPU or ASIC parallelism buys.
 - Join checks one candidate entry, so a forged log gets one guess per join, not one per entry it holds. Each join also costs the joining machine only one KDF run.
 - The attacker must already hold repository write access. Without it, the attacker cannot place a forged log at all.
