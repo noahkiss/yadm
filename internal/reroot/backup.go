@@ -76,7 +76,9 @@ func List(dir string) ([]Bundle, error) {
 
 // Prune deletes all but the keep newest bundles in dir and returns the
 // deleted ones. keep below 1 is refused: prune never deletes every backup.
-func Prune(dir string, keep int) ([]Bundle, error) {
+// A bundle at a path in pin counts as newest whatever its name, so a clock
+// that went back never prunes the bundle just written.
+func Prune(dir string, keep int, pin ...string) ([]Bundle, error) {
 	if keep < 1 {
 		return nil, fmt.Errorf("prune: keep must be at least 1, not %d", keep)
 	}
@@ -84,6 +86,15 @@ func Prune(dir string, keep int) ([]Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	pinned := func(b Bundle) bool {
+		for _, p := range pin {
+			if b.Path == p {
+				return true
+			}
+		}
+		return false
+	}
+	sort.SliceStable(all, func(i, j int) bool { return pinned(all[i]) && !pinned(all[j]) })
 	var gone []Bundle
 	for i, b := range all {
 		if i < keep {

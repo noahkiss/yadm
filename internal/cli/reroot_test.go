@@ -648,3 +648,55 @@ func TestRerootReviewedSmuggle(t *testing.T) {
 		t.Fatalf("host-b reviewed ref %s, want the new head %s (writer's %s)", got, newHead, w)
 	}
 }
+
+// TestRerootBackupFails: a bundle that cannot be written stops the
+// initiator before it pushes, and holds the switch on a peer, which keeps
+// its main and switches once the backup works.
+func TestRerootBackupFails(t *testing.T) {
+	root, remote, fx, clk, m := rerootFleet(t)
+	a := m[fixture.HostA]
+	on(t, root, fixture.HostA)
+	old := trimmed(t, a.Source, "rev-parse", "main")
+	dir := reroot.BackupDir(a.Source)
+	if err := os.MkdirAll(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	sq := squash(t, a.Source, "new root")
+	env, code, _ := yadm(t, "reroot", "--new-head", sq, "--fold-unreviewed", "--no-wait")
+	if code == ExitOK || !strings.Contains(env.Error.Message, "backup") {
+		t.Fatalf("reroot with no backup: exit %d %+v", code, env.Error)
+	}
+	if got := trimmed(t, remote, "rev-parse", "main"); got != old {
+		t.Fatalf("remote main %s after a failed backup", got)
+	}
+	yadmOK(t, "resume")
+
+	// host-a as a peer: a record it signed, pushed by hand.
+	clk.Add(time.Minute)
+	writeRecord(t, a.Source, a.State, reroot.Record{Initiator: fixture.HostA, Created: clk.Now(), OldHead: model.CommitID(old), NewHead: model.CommitID(sq)}, fx.Identities[fixture.HostA])
+	forcePush(t, a.Source, sq)
+	if _, code, _ := yadm(t, "sync", "--full"); code != ExitAttention {
+		t.Fatalf("sync with a failing backup: exit %d", code)
+	}
+	if h := holdTask(t, sync.HoldTaskReroot); h == nil || !strings.Contains(h.Detail, "backup") {
+		t.Fatalf("no reroot hold for the failed backup: %+v", h)
+	}
+	if got := trimmed(t, a.Source, "rev-parse", "main"); got != old {
+		t.Fatalf("main moved to %s without a backup", got)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yadmOK(t, "sync", "--full")
+	if got := trimmed(t, a.Source, "rev-parse", "main"); got != sq {
+		t.Fatalf("main %s after the backup worked, want %s", got, sq)
+	}
+	if bs, _ := reroot.List(dir); len(bs) != 1 {
+		t.Fatalf("%d backups", len(bs))
+	}
+}

@@ -392,7 +392,7 @@ func (s *Syncer) backupHistory(ctx context.Context, old model.CommitID, keep int
 	if err := b.Bundle(ctx, p); err != nil {
 		return "", err
 	}
-	if _, err := reroot.Prune(s.Backups, keep); err != nil {
+	if _, err := reroot.Prune(s.Backups, keep, p); err != nil {
 		return p, err
 	}
 	return p, nil
@@ -663,6 +663,13 @@ func (s *Syncer) prepareReroot(ctx context.Context, req RerootRequest, out *Rero
 	}
 	if dry {
 		return rec, nil, "", "", nil
+	}
+	// The backup comes before the push: once the remote is rewritten, a
+	// failed backup here could no longer stop it.
+	if keep := s.rerootKeep(ctx, remote); keep > 0 && s.Backups != "" {
+		if _, err := s.backupHistory(ctx, remote, keep); err != nil {
+			return rec, nil, "", "", fmt.Errorf("%w: the backup of the old history failed, so nothing was pushed: %v", ErrRerootState, err)
+		}
 	}
 	id, err := reroot.NewID()
 	if err != nil {
