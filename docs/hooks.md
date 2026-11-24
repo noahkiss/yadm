@@ -6,8 +6,8 @@
 
 | Event | Run it | Effect |
 |---|---|---|
-| `post-edit` | After a tool that writes or edits a file | Records the path for the session. Commits it locally if it is managed or in an owned root; the next timer tick pushes it. Hooks never touch the network. |
-| `stop` | When the agent or a subagent ends its turn | Commits the session's recorded paths locally. Blocks while a decision this session caused is open, including a conflict the timer met while pushing them. When another process holds the sync lock for more than 3 s, it returns and the timer commits the paths. No process holds the sync lock while it waits on the network. |
+| `post-edit` | After a tool that writes or edits a file | Records the path for the session. Commits it locally if it is managed or in an owned root and no live lease names it; the next timer tick pushes it. Hooks never touch the network. |
+| `stop` | When the agent or a subagent ends its turn | Commits the session's recorded paths locally, except leased ones. Blocks while a decision this session caused is open, never on a leased path, including a conflict the timer met while pushing them. When another process holds the sync lock for more than 3 s, it returns and the timer commits the paths. No process holds the sync lock while it waits on the network. |
 | `session-start` | When a session starts or resumes | Quick sync, then a summary of at most 10 lines. The sync skips its network steps when another process holds the network lock. A schedule the service manager stopped running is reinstalled, at most once an hour, and the summary says so first. |
 
 ## Input
@@ -85,6 +85,8 @@ Packet `kind` is `new_file` or a hold reason: `protected`, `rendered_edit`, `che
 With `--format text`, stdout carries the context as plain text instead of the verdict, and nothing on a block; a block still exits 2 with the reason on stderr.
 
 `yadm defer <hold id> --reason <why> [--for <duration>]` settles a packet for a short wait, 6h by default and at most 48h: the hold stays, `yadm review list` shows it under `deferred` with its `until`, and `stop` no longer blocks on it. Its output carries a `note` that the agent stays responsible for the decision. When the defer expires unsettled, `stop` and `session-start` raise the decision again and `yadm check` warns; the timer still never commits it. The file stays uncommitted, through edits and timer scans, until the decision is settled: `yadm commit <path>` names it, `yadm retag` tracks it, `yadm hold ignore` ignores it, or the file is removed. A new file in an owned root that nobody decides on or defers is shared by the timer after its quiet period.
+
+An agent that edits dotfiles over several tool calls and commits them with its own message takes a lease first: `yadm lease take <path...> --holder <name> --ttl <duration>`. While the lease lives, `post-edit` and `stop` in every session leave those paths alone: no commit, no decision, no block. `stop` says `leased by <holder> until HH:MM` in its `context`. The agent commits with `yadm commit -m <subject> <path...>` and releases with `yadm lease release <name>`. A path still pending after the lease ends commits as usual. Design section 9.7 states the rules.
 
 ## Example: Claude Code
 

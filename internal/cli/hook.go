@@ -594,6 +594,9 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 	if !managedOrRooted(snap, t) || m.eng.Ignored(t) {
 		return Verdict{}, nil // ignored on purpose: only a named commit tracks it
 	}
+	if ls := liveLeases(m.paths.State, []model.Target{t}); len(ls) > 0 {
+		return Verdict{}, nil // leased: recorded; the holder, stop or the timer commits it once the lease ends
+	}
 	ctx, cancel := context.WithTimeout(ctx, hookTimeout)
 	defer cancel()
 	rep, _, err := m.hookCommit(ctx, a.version, sync.CommitOptions{
@@ -645,16 +648,36 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	if ts = kept; len(ts) == 0 {
 		return Verdict{}, nil
 	}
+	// A leased path is neither committed nor a decision here, whoever
+	// holds the lease: its holder commits it, or stop or the timer does
+	// once the lease ends.
+	leasedTo := liveLeases(m.paths.State, ts)
+	note := leaseNote(leasedTo)
+	free := ts[:0:0]
+	for _, t := range ts {
+		if _, ok := leasedTo[t]; !ok {
+			free = append(free, t)
+		}
+	}
+	if ts = free; len(ts) == 0 {
+		return Verdict{Context: note}, nil
+	}
+	withNote := func(s string) string {
+		if note == "" || s == "" {
+			return s + note
+		}
+		return s + "\n" + note
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*hookTimeout)
 	defer cancel()
 	_, _, err = m.hookCommit(ctx, a.version, sync.CommitOptions{
 		Paths: ts, Unattended: true, Trigger: sync.TriggerStop, Session: in.SessionID, Push: false,
 	}, hooks.hookWait)
 	if errors.Is(err, sync.ErrLocked) {
-		return Verdict{Context: "yadm: a sync holds the lock; the timer commits this session's edits"}, nil
+		return Verdict{Context: withNote("yadm: a sync holds the lock; the timer commits this session's edits")}, nil
 	}
 	if errors.Is(err, pause.ErrHeld) {
-		return Verdict{Context: "yadm: " + err.Error() + "; the timer commits this session's edits after the pause"}, nil
+		return Verdict{Context: withNote("yadm: " + err.Error() + "; the timer commits this session's edits after the pause")}, nil
 	}
 	if err != nil {
 		return Verdict{}, err
@@ -665,10 +688,62 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	}
 	packets := m.packets(ctx, decisionsFor(hs, ts, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
 	if len(packets) == 0 {
-		return Verdict{}, nil
+		return Verdict{Context: note}, nil
 	}
 	head := fmt.Sprintf("%d decision(s) from this session are open; settle each one, or move it to the review queue with yadm defer", len(packets))
-	return Verdict{Decision: DecisionBlock, Reason: renderPackets(head, packets), Packets: packets}, nil
+	return Verdict{Decision: DecisionBlock, Reason: withNote(renderPackets(head, packets)), Packets: packets}, nil
+}
+
+// liveLeases maps each of targets that a live lease names to that lease.
+// Any holder counts: a holder name is a free-form label, and hooks never
+// match it against a session. An expired lease protects nothing.
+func liveLeases(stateDir string, targets []model.Target) map[model.Target]sync.Lease {
+	ls, err := sync.FileLeases(stateDir).List()
+	if err != nil || len(ls) == 0 {
+		return nil
+	}
+	now := hooks.now()
+	out := map[model.Target]sync.Lease{}
+	for _, t := range targets {
+		if x, ok := sync.LeaseOn(ls, t, now); ok {
+			out[t] = x
+		}
+	}
+	return out
+}
+
+// leaseNote is one line per lease: which of the session's paths it holds
+// back, by whom, and until when.
+func leaseNote(leasedTo map[model.Target]sync.Lease) string {
+	if len(leasedTo) == 0 {
+		return ""
+	}
+	type group struct {
+		lease sync.Lease
+		paths []string
+	}
+	by := map[string]*group{}
+	for t, x := range leasedTo {
+		g := by[x.Holder]
+		if g == nil {
+			g = &group{lease: x}
+			by[x.Holder] = g
+		}
+		g.paths = append(g.paths, string(t))
+	}
+	holders := make([]string, 0, len(by))
+	for h := range by {
+		holders = append(holders, h)
+	}
+	sort.Strings(holders)
+	now := hooks.now()
+	var lines []string
+	for _, h := range holders {
+		g := by[h]
+		sort.Strings(g.paths)
+		lines = append(lines, fmt.Sprintf("yadm: not committed, leased by %s until %s: %s", h, clockOn(g.lease.Expires, now), strings.Join(g.paths, ", ")))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, error) {

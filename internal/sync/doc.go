@@ -116,6 +116,8 @@
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
 //	type RemoteGuard interface{ Allow(ctx, from, to *apply.Snapshot) (bool, string, error) }
 //	type Lease struct{ Holder string; Paths []string; Expires time.Time }
+//	func LeaseOn(leases []Lease, t model.Target, now time.Time) (Lease, bool) // the live lease naming t
+//	(an Unattended Commit skips every path a live stored lease names)
 //	type Leases interface{ List() ([]Lease, error); Take(Lease) error; Release(holder string) error }
 //	func FileLeases(stateDir string) Leases
 //	const LockTimeout

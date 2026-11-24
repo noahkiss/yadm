@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
 )
@@ -105,18 +106,47 @@ func (l fileLeases) Release(holder string) error {
 	return err
 }
 
-// leased reports whether a lease that has not expired names t. A lease path
-// is a glob, or a directory that covers everything below it.
+// leased reports whether a lease that has not expired names t.
 func leased(leases []Lease, t model.Target, now time.Time) bool {
+	_, ok := LeaseOn(leases, t, now)
+	return ok
+}
+
+// LeaseOn returns the first lease in leases that has not expired at now and
+// names t. A lease path is a glob, or a directory that covers everything
+// below it.
+func LeaseOn(leases []Lease, t model.Target, now time.Time) (Lease, bool) {
 	for _, x := range leases {
 		if !x.Expires.IsZero() && !now.Before(x.Expires) {
 			continue
 		}
 		for _, g := range x.Paths {
 			if manifest.Match(g, string(t)) || strings.HasPrefix(string(t), strings.TrimSuffix(g, "/")+"/") {
-				return true
+				return x, true
 			}
 		}
 	}
-	return false
+	return Lease{}, false
+}
+
+// withoutLeased drops the drift a live stored lease names. An unattended
+// commit (a harness hook) never captures a leased path: the holder commits
+// it by name, or the timer or a hook does once the lease ends. The busy
+// probe is the timer's alone.
+func (s *Syncer) withoutLeased(drift []apply.Drift) ([]apply.Drift, error) {
+	if s.Leases == nil || len(drift) == 0 {
+		return drift, nil
+	}
+	ls, err := s.Leases.List()
+	if err != nil || len(ls) == 0 {
+		return drift, err
+	}
+	now := s.now()
+	out := make([]apply.Drift, 0, len(drift))
+	for _, d := range drift {
+		if !leased(ls, d.Target, now) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
 }
