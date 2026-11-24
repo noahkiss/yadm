@@ -531,3 +531,57 @@ func TestRerootCarry(t *testing.T) {
 		t.Fatalf("hold left after carry: %+v", h)
 	}
 }
+
+// TestRerootReplay: a writer with no member key force-pushes the remote
+// main back to the new head of an older re-root, after a newer one. A
+// machine that lacks the older record's old head must refuse it, not move
+// main back to the history the newer re-root replaced.
+func TestRerootReplay(t *testing.T) {
+	root, _, _, clk, m := rerootFleet(t)
+	a, c := m[fixture.HostA], m[fixture.HostC]
+	shared := ".config/shell/aliases.sh"
+
+	// host-a pushes a commit host-c never fetches: the first re-root's
+	// old head is then unknown to host-c.
+	on(t, root, fixture.HostA)
+	writeFile(t, filepath.Join(a.Home, shared), "# only host-a saw this\n")
+	yadmOK(t, "commit", "-m", "before the first re-root", shared)
+	yadmOK(t, "sync", "--full")
+	clk.Add(time.Minute)
+	first := squash(t, a.Source, "first root")
+	yadmOK(t, "reroot", "--new-head", first, "--fold-unreviewed", "--no-wait")
+	yadmOK(t, "resume")
+
+	on(t, root, fixture.HostC)
+	yadmOK(t, "sync", "--full")
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != first {
+		t.Fatalf("host-c main %s after the first re-root, want %s", got, first)
+	}
+
+	clk.Add(time.Minute)
+	on(t, root, fixture.HostA)
+	yadmOK(t, "sync", "--full")
+	second := squash(t, a.Source, "second root")
+	yadmOK(t, "reroot", "--new-head", second, "--fold-unreviewed", "--no-wait")
+	yadmOK(t, "resume")
+	on(t, root, fixture.HostC)
+	yadmOK(t, "sync", "--full")
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != second {
+		t.Fatalf("host-c main %s after the second re-root, want %s", got, second)
+	}
+
+	// The replay: main back to the first new head, by hand.
+	clk.Add(time.Minute)
+	on(t, root, fixture.HostA)
+	git(t, a.Source, "push", "-q", "--force", "origin", first+":refs/heads/main")
+	on(t, root, fixture.HostC)
+	if _, code, _ := yadm(t, "sync", "--full"); code != ExitAttention {
+		t.Fatalf("host-c sync over a replayed record: exit %d", code)
+	}
+	if got := trimmed(t, c.Source, "rev-parse", "main"); got != second {
+		t.Fatalf("host-c moved main back to %s on a replayed record", got)
+	}
+	if h := holdTask(t, sync.HoldTaskRewrite); h == nil || !strings.Contains(h.Detail, "older than") {
+		t.Fatalf("host-c: no history-rewrite hold naming the stale record: %+v", h)
+	}
+}

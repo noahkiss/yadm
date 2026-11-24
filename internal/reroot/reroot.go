@@ -347,7 +347,10 @@ type Accepted struct {
 	By      model.MachineID `json:"by"`
 	OldHead model.CommitID  `json:"old_head"`
 	NewHead model.CommitID  `json:"new_head"`
-	At      time.Time       `json:"at"`
+	// Created is the record's signed creation time: a record not newer
+	// than the newest accepted one is a replay.
+	Created time.Time `json:"created"`
+	At      time.Time `json:"at"`
 	// Backup is the bundle written before the switch, if any.
 	Backup string `json:"backup,omitempty"`
 	// Carried is the local ref that keeps this machine's commits as they

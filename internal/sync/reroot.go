@@ -145,6 +145,32 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 	for _, x := range bad {
 		ignored = append(ignored, x.ID+": "+x.Why)
 	}
+	// The floor: the newest re-root this machine already runs, from its
+	// own record of switches and from the verified records whose new head
+	// the accepted history holds. An older record is a replay, even when
+	// this machine lacks its old head and cannot check that it descends
+	// from the accepted main.
+	var floor reroot.Record
+	raise := func(r reroot.Record) {
+		if r.Created.After(floor.Created) {
+			floor = r
+		}
+	}
+	for _, a := range reroot.Load(s.Apply.StateDir).Accepted {
+		raise(reroot.Record{ID: a.ID, Created: a.Created})
+	}
+	for _, r := range recs {
+		if !s.exists(ctx, r.NewHead) {
+			continue
+		}
+		in, err := s.Store.IsAncestor(ctx, r.NewHead, base)
+		if err != nil {
+			return out, err
+		}
+		if in && reroot.Verify(trust, r) == nil {
+			raise(r)
+		}
+	}
 	var pick *reroot.Record
 	oldKnown := false
 	for i := range recs {
@@ -155,17 +181,29 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 		if !s.exists(ctx, r.NewHead) || !s.ancestor(ctx, r.NewHead, remote) {
 			continue // not the history the remote shows
 		}
-		if s.ancestor(ctx, r.NewHead, base) {
+		if in, err := s.Store.IsAncestor(ctx, r.NewHead, base); err != nil {
+			return out, err
+		} else if in {
 			continue // already in the accepted history: a replay
 		}
 		if err := reroot.Verify(trust, r); err != nil {
 			ignored = append(ignored, r.ID+": "+err.Error())
 			continue
 		}
-		known := s.exists(ctx, r.OldHead)
-		if known && !s.ancestor(ctx, base, r.OldHead) {
-			ignored = append(ignored, fmt.Sprintf("%s: its old head %s does not descend from this machine's accepted %s", r.ID, short(r.OldHead), short(base)))
+		if floor.ID != "" && floor.ID != r.ID && !r.Created.After(floor.Created) {
+			ignored = append(ignored, fmt.Sprintf("%s: it is older than re-root %s, which this machine already runs", r.ID, floor.ID))
 			continue
+		}
+		known := s.exists(ctx, r.OldHead)
+		if known {
+			in, err := s.Store.IsAncestor(ctx, base, r.OldHead)
+			if err != nil {
+				return out, err
+			}
+			if !in {
+				ignored = append(ignored, fmt.Sprintf("%s: its old head %s does not descend from this machine's accepted %s", r.ID, short(r.OldHead), short(base)))
+				continue
+			}
 		}
 		pick, oldKnown = &r, known
 		break
@@ -246,7 +284,7 @@ func (s *Syncer) rewrite(ctx context.Context, base, local, remote model.CommitID
 		}
 	}
 
-	acc := reroot.Accepted{ID: r.ID, By: r.Initiator, OldHead: r.OldHead, NewHead: r.NewHead, At: s.now().UTC()}
+	acc := reroot.Accepted{ID: r.ID, By: r.Initiator, OldHead: r.OldHead, NewHead: r.NewHead, Created: r.Created, At: s.now().UTC()}
 	tip := local
 	if !switched {
 		if keep := s.rerootKeep(ctx, trustAt); keep > 0 && s.Backups != "" {
