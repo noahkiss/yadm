@@ -270,3 +270,75 @@ func passBin(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// TestEnclaveAddSignerByKey: a signer counts by its signing key, not its id.
+// A personal member lists host-c's id in personal under keys it holds, then
+// signs a stranger's add with them. host-c's id is a client member, but
+// under other keys, so host-a's add to client without flags is refused,
+// commits nothing, and the stranger opens nothing of client.
+func TestEnclaveAddSignerByKey(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	fx := fixture.Build(t)
+	remote := fixtureRemote(t, root, fx)
+	passBin(t)
+
+	fixtureMachine(t, root, remote, fx, fixture.HostC, true)
+	ha := fx.Identities[fixture.HostA].Member()
+	fp := decode[entryData](t, yadmOK(t, "enclave", "add", "host-a", "--enclave", "client", "--recipient", ha.Recipient, "--sign-key", ha.SignKey).Data).Fingerprint
+	yadmRawPush(t)
+
+	a := fixtureMachine(t, root, remote, fx, fixture.HostA, true)
+	yadmOK(t, "enclave", "on-demand", "client")
+	yadmOK(t, "enclave", "join", "client", "--expect", fp)
+	fakeC, err := crypt.GenerateIdentity(fixture.HostC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := fakeC.Member()
+	yadmOK(t, "enclave", "add", string(fixture.HostC), "--enclave", "personal", "--recipient", fc.Recipient, "--sign-key", fc.SignKey)
+
+	// The impostor signs the stranger's add to personal.
+	stranger, err := crypt.GenerateIdentity("m-zzzzzz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := keyLogAt(t, a.Source, "personal")
+	head := log[len(log)-1]
+	ring, err := crypt.Open(head, fakeC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := crypt.MemPins()
+	pin, err := crypt.PinOf(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pins.Set("personal", pin); err != nil {
+		t.Fatal(err)
+	}
+	forged, err := ring.Add(head, stranger.Member(), fakeC, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := crypt.MarshalLogEntry(forged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(a.Source, string(crypt.LogPath("personal", forged.Seq))), string(b))
+	git(t, a.Source, "add", "-A")
+	git(t, a.Source, "commit", "-q", "-m", "enclave personal: add m-zzzzzz")
+	yadmOK(t, "enclave", "verify")
+
+	before := git(t, a.Source, "rev-parse", "main")
+	if env, code, _ := yadm(t, "enclave", "add", "m-zzzzzz", "--enclave", "client"); code != ExitUsage {
+		t.Fatalf("add vouched by a same-id impostor: exit %d %+v", code, env.Error)
+	}
+	if now := git(t, a.Source, "rev-parse", "main"); now != before {
+		t.Fatal("a refused add committed")
+	}
+	cl := keyLogAt(t, a.Source, "client")
+	if _, err := crypt.Open(cl[len(cl)-1], stranger); err == nil {
+		t.Fatal("the stranger opens client")
+	}
+}

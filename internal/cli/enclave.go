@@ -106,9 +106,9 @@ The new machine's keys: "yadm machine" (or "yadm init") on it prints its
 add may leave both flags out when this machine already holds the keys from a
 trusted source: the verified head of another enclave's key log that this
 machine has pinned lists the machine, and the entry that introduced that key
-pair was signed by this machine or by a current member of this enclave. A
-signer like that already holds this enclave's keys, so a false key from it
-gains it nothing. fleet.toml, status records and logs this machine has not
+pair was signed by this machine or by a current member of this enclave, with
+the signing key this enclave's log lists for it. A signer like that already
+holds this enclave's keys, so a false key from it gains it nothing. fleet.toml, status records and logs this machine has not
 pinned are never a source: any writer can edit them. Otherwise add asks for
 the flags. Output "keys from" names the source.`
 
@@ -132,7 +132,7 @@ For a machine that should read the enclave on demand only, run
 func addRecoveryFlags(c *cobra.Command) {
 	c.Flags().String("recovery-recipient", "", "age recipient of the offline recovery identity")
 	c.Flags().String("recovery-sign-key", "", "signing key of the offline recovery identity")
-	c.Flags().String("new-recovery", "", "generate a recovery identity into this directory (outside the source and state); store it offline")
+	c.Flags().String("new-recovery", "", "generate a recovery identity into this new directory (outside the source and state); store it offline")
 }
 
 // recoveryMember reads the recovery flags. With --new-recovery it generates
@@ -182,6 +182,9 @@ func newRecovery(dir, what string, forbidden ...string) (crypt.Member, string, e
 				}
 			}
 		}
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return crypt.Member{}, "", err
 	}
 	if err := os.Mkdir(abs, 0o700); err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -546,14 +549,21 @@ type vouch struct {
 // enclave e without the human passing them (design section 7.3). A key
 // pair counts only when the verified head of another enclave's key log,
 // which this machine has pinned, lists it, and the entry that introduced
-// that pair was signed by this machine or by a current member of e. Such a
-// signer already holds e's keys, so vouching for a false key gives it no
-// access it lacks. fleet.toml, status records and unpinned logs carry no
+// that pair was signed by this machine or by a current member of e, under
+// the same signing key that e's head lists for it. Such a signer already
+// holds e's keys, so vouching for a false key gives it no access it lacks. fleet.toml, status records and unpinned logs carry no
 // trusted keys: any writer can edit or forge them.
 func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head crypt.LogEntry, who model.MachineID) ([]vouch, error) {
-	trusted := map[model.MachineID]bool{m.local.Machine: true}
+	// A signer is trusted by its signing key, never by its id alone: a
+	// member of the other log could list a target member's id there under
+	// keys it holds.
+	trusted := map[crypt.Member]bool{}
+	if m.id != nil {
+		self := m.id.Member()
+		trusted[crypt.Member{Machine: self.Machine, SignKey: self.SignKey}] = true
+	}
 	for _, mb := range head.Members {
-		trusted[mb.Machine] = true
+		trusted[crypt.Member{Machine: mb.Machine, SignKey: mb.SignKey}] = true
 	}
 	pins := crypt.FilePins(m.paths.State)
 	var others []model.EnclaveName
@@ -582,7 +592,7 @@ func (m *machineEnv) vouchedKeys(ctx context.Context, e model.EnclaveName, head 
 			return nil, err
 		}
 		mb, signer, ok, err := crypt.Vouched(logs[x], pin, who)
-		if err != nil || !ok || !trusted[signer] {
+		if err != nil || !ok || !trusted[crypt.Member{Machine: signer.Machine, SignKey: signer.SignKey}] {
 			continue // a refused log or an outside signer vouches for nothing
 		}
 		out = append(out, vouch{member: mb, from: fmt.Sprintf("%s seq %d", x, len(logs[x]))})

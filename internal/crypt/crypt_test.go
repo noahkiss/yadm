@@ -895,10 +895,10 @@ func TestVouched(t *testing.T) {
 	w := newWorld(t)
 	pin := mustPin(t, w.head())
 	m, signer, ok, err := Vouched(w.log, pin, hostC)
-	if err != nil || !ok || signer != hostB || m != w.c.Member() {
+	if err != nil || !ok || signer != w.b.Member() || m != w.c.Member() {
 		t.Fatalf("hostC: %+v %s %v %v", m, signer, ok, err)
 	}
-	if _, signer, ok, _ := Vouched(w.log, pin, hostA); !ok || signer != hostA {
+	if _, signer, ok, _ := Vouched(w.log, pin, hostA); !ok || signer != w.a.Member() {
 		t.Fatalf("hostA, the creator, is vouched for by itself: %s %v", signer, ok)
 	}
 	if _, _, ok, err := Vouched(w.log, pin, evil); ok || err != nil {
@@ -924,7 +924,7 @@ func TestVouched(t *testing.T) {
 	}
 	log := append(append([]LogEntry{}, w.log...), e4, e5)
 	m, signer, ok, err = Vouched(log, mustPin(t, e5), hostC)
-	if err != nil || !ok || signer != hostA || m != c2.Member() {
+	if err != nil || !ok || signer != w.a.Member() || m != c2.Member() {
 		t.Fatalf("re-added hostC: %+v %s %v %v", m, signer, ok, err)
 	}
 }

@@ -362,7 +362,7 @@ Key-log changes, `fleet.toml` and `manifest.toml` are protected: they never auto
 - **The flags.** The user reads `--recipient` and `--sign-key` off the new machine's `yadm machine` (or `yadm init`) and compares them on both screens.
 - **A vouching key log.** The flags may be left out when another enclave's key log vouches for the keys. All of these must hold:
   - This machine has pinned that log, and its verified head lists the machine.
-  - The entry that introduced the machine's current key pair is signed by this machine, or by a current member of the enclave being added to. This is the last entry where the machine appears, or appears with other keys.
+  - The entry that introduced the machine's current key pair is signed by this machine, or by a current member of the enclave being added to. This is the last entry where the machine appears, or appears with other keys. The signer counts by its signing key: the key that verified the entry must be the one the target enclave's head lists for it. A machine id alone counts for nothing, since the other log's members could list that id under a key they hold.
   - Every vouching log that qualifies lists the same keys. On a disagreement, `add` asks for the flags.
 
 Why the signer rule: a signer that is already a member of the target enclave holds its keys. A false key from it gives it no access it lacks. A member of only the other enclave gets no such pass, or it could plant a key in its own enclave's log and so reach a second enclave.
