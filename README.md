@@ -1,33 +1,81 @@
-# yadm
+<h1 align="center">yadm</h1>
 
-Your dotfiles, on every machine you use, kept in sync without thinking about it.
+<p align="center">Dotfiles sync for personal, work and client machines, built for agents and humans.</p>
 
-This `yadm` is a ground-up rewrite. It shares a name with [the original yadm](https://github.com/yadm-dev/yadm), because that name is muscle memory. It shares no code, and it is not compatible with it.
+<p align="center">
+  <a href="#install"><b>Install</b></a> ·
+  <a href="docs/design.md">Docs</a> ·
+  <a href="docs/hooks.md">Agent hooks</a> ·
+  <a href="https://github.com/noahkiss/yadm/releases">Releases</a>
+</p>
 
-## The problem
+```sh
+# On a new machine: clone your dotfiles and install the sync schedule.
+yadm init <remote> --machine host-b
 
-Most people who live in a terminal work on more than one machine. Some machines are personal, some belong to an employer, and some belong to a client. They share most of their setup: the shell, the editor, the git config, the scripts and the agent instructions. Some files must never leave the personal machines. Some files exist only on work machines. Some files differ by a path or a single line.
+# On a member machine: let host-b into the "personal" enclave. It prints a join code.
+yadm enclave add host-b --enclave personal --recipient <age1...> --sign-key <key>
+yadm sync
 
-Existing dotfiles managers handle part of this. In daily use, the gaps add up:
+# Back on host-b: type the code you read off the other screen, then apply.
+yadm sync
+yadm enclave join personal --code 7K3M-Q9TD
+yadm apply
 
-- **Every command pays for every file.** A tool that re-links hundreds of alternates after each `status` turns a 0.1-second command into a 20-second one.
-- **Personal and work content share one repo, with secrecy bolted on.** Encryption sits in a git filter that local config can switch off. Diffs show ciphertext, renames look like rewrites, and one wrong suffix commits a private file in plaintext.
-- **Generated files look like real files.** Symlinks and rendered outputs end up in the index, go stale, or break apps that refuse symlinks.
-- **Sync needs a human.** Pulls autostash and conflict. Machines drift for weeks before anyone notices. Apps rewrite their own config files and leave phantom diffs.
-- **Agents have to remember the rituals.** Run this after that, never use that flag, retag with these three commands in this order. An agent that forgets one step leaks a file or breaks a machine.
+# From then on, the schedule keeps every machine in sync. Check on it any time.
+yadm status
+```
 
-## What yadm is designed for
+yadm keeps one dotfiles repository in sync across every machine you use. Personal, work and client machines share the setup they have in common. Files that must stay on some machines stay there, encrypted for everyone else. A schedule syncs each machine, so machines do not drift and nobody has to remember a ritual.
 
-- **One repo for every machine.** Personal and work machines share what they share and keep apart what they must. There is no fork per machine and no branch per employer.
-- **Machine types as enclaves.** A machine belongs to one or more types, such as `home`, `work` or `client`. Each type can be a sealed enclave: its files are encrypted for the members of that type, and other machines hold only ciphertext.
-- **A fleet the tool understands.** The tool keeps a registry of your machines: names, nicknames, types, operating systems and any facts you add. Any machine can answer "what does that machine get?" and "when did it last sync?".
-- **Fast by default.** Commands touch only what changed. Status is instant on a repo with thousands of files.
-- **Sync without babysitting.** Changes are committed and pushed on a schedule, conflicts are held per file instead of blocking everything, and a sleeping laptop catches up once when it wakes.
-- **Files that apps rewrite.** Rules per file keep the parts you own, drop the parts an app regenerates, and encrypt the parts that are secret, all inside the same file.
-- **Real files on disk.** What lands in `$HOME` is a plain file that every app can read, rewritten only when its content changes.
-- **Built for agents and humans alike.** Every command has machine-readable output and clear exit codes. Every command explains itself and suggests the next step. Nothing depends on remembering a follow-up step. Auto-commits can run unattended or go to an agent for review.
-- **Plain git underneath.** The history is an ordinary git repository. If the tool ever breaks, your files are still on disk and your history is still in git.
+It works with plain git, macOS (launchd) and Linux (systemd). It hooks into coding-agent harnesses such as Claude Code, so an agent's dotfile edits commit as they happen. This yadm shares only its name with [the original yadm](https://github.com/yadm-dev/yadm). It shares no code and is not compatible with it. `yadm import` converts a repository from it once.
 
-## Who it is for
+## What you get
 
-People who keep their setup on several machines across personal and work boundaries, and who increasingly share those machines with coding agents.
+- **One repository for every machine.** Each machine belongs to types such as `home`, `work` or `client`. Conditions decide which files it gets, so there is no fork per machine and no branch per employer.
+- **Secrets stay on the machines that own them.** Any type can be an enclave whose files only its member machines can decrypt. A personal machine can read a work machine's enclave on demand, and yadm never writes that plaintext to its disk. See `yadm enclave --help`.
+- **Machines join with a short code.** A new enclave member types a join code you read off a member's screen. `yadm enclave new-recovery` makes an offline recovery identity for each enclave.
+- **Sync without babysitting.** The schedule commits and pushes changes once they settle, and a conflict holds only its own file. A sleeping laptop catches up once when it wakes.
+- **Checks before every commit.** Checks you define run on every commit, manual or automatic, once you allow them on a machine. A failing check holds only the files it fails on.
+- **Built for coding agents.** Harness hooks commit an agent's edits and stop a session from ending with an open decision. Leases and defers let an agent keep a path to itself or park a decision; see [docs/hooks.md](docs/hooks.md).
+- **Fleet-wide changes with guard rails.** `yadm pause` holds sync on every other machine for a bounded time. `yadm reroot` replaces the shared history with one you rewrote, announced by a signed record, so no machine needs a new clone.
+- **Real files and plain git.** Every file yadm writes to `$HOME` is a plain file, never a symlink, and per-key rules leave alone the parts an app rewrites. The history is an ordinary git repository.
+
+## Install
+
+### Command line
+
+```sh
+brew install noahkiss/tap/yadm-nkmk
+```
+
+The formula runs on macOS and Linux. It installs a `yadm` binary, so it conflicts with Homebrew's core `yadm`. The [releases page](https://github.com/noahkiss/yadm/releases) has signed and notarized macOS binaries and Linux binaries for amd64 and arm64.
+
+Then set up each machine:
+
+```sh
+yadm init <remote> --machine host-a
+yadm apply
+```
+
+On a machine that another dotfiles tool managed, run `yadm adopt` in place of `yadm apply`. It takes over identical files and holds differing ones for you to decide.
+
+### You also need
+
+- A current `git` on `PATH`.
+- A git remote that every machine can push to.
+
+## Documentation
+
+- [Design](docs/design.md): the specification, including the threat model.
+- [Agent hooks](docs/hooks.md): the hook contract for coding-agent harnesses.
+- [Extensions](docs/extensions.md): what a `yadm-<name>` extension may rely on.
+- `yadm <command> --help` describes each command. `yadm explain <command>` lists the steps it would take on this machine.
+
+## Contributing
+
+[AGENTS.md](AGENTS.md) lists the build and test commands and the constraints every change must meet. [docs/design.md](docs/design.md) is the specification.
+
+## License
+
+[MIT](LICENSE)
