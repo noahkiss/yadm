@@ -252,7 +252,7 @@ func (a *app) root() *cobra.Command {
 	}
 	root.PersistentFlags().BoolVar(&a.json, "json", false, "print one JSON envelope on stdout")
 	root.PersistentFlags().Bool("interactive", false, "allow prompts (no command prompts without it)")
-	root.PersistentFlags().Duration("lock-wait", sync.CommandLockTimeout, "how long a command waits for another yadm process's lock before it exits 4; 0 does not wait (or $"+LockWaitEnv+")")
+	root.PersistentFlags().Duration("lock-wait", sync.CommandLockTimeout, "how long a command waits for another yadm process's lock before it exits 4 (sync --auto: at most "+shortDuration(sync.LockTimeout)+"); 0 does not wait (or $"+LockWaitEnv+")")
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
 	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
