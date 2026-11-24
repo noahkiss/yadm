@@ -301,3 +301,70 @@ func TestUndecidedNewFileShared(t *testing.T) {
 		t.Fatalf("the timer did not share an undecided new file: %q", got)
 	}
 }
+
+// TestDeferExpires: a defer lasts --for, capped at DeferMax. Once it
+// expires the stop hook and session start raise the decision again and
+// check warns, while the timer still never commits the file.
+func TestDeferExpires(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	file := filepath.Join(a.Home, ".config/tool/new.conf")
+	writeFile(t, file, "fresh = 1\n")
+	code, stdout, _ := hookRun(t, payload(payloadWrite, "session-s", a.Home, file), HookPostEdit)
+	if code != HookBlock {
+		t.Fatalf("post-edit on a new file: exit %d", code)
+	}
+	id := verdictOf(t, stdout).Packets[0].ID
+
+	if _, code, _ := yadm(t, "defer", id, "--reason", "r", "--for", "0s"); code == ExitOK {
+		t.Fatal("--for 0s was accepted")
+	}
+	type deferOut struct {
+		Deferred
+		Note string `json:"note"`
+	}
+	capped := decode[deferOut](t, yadmOK(t, "defer", id, "--reason", "r", "--for", "100h").Data)
+	if got := capped.Until.Sub(capped.At); got != DeferMax || !strings.Contains(capped.Note, "capped") {
+		t.Fatalf("--for 100h: lasts %s, note %q", got, capped.Note)
+	}
+	x := decode[deferOut](t, yadmOK(t, "defer", id, "--reason", "wait for the owner", "--for", "30m").Data)
+	if got := x.Until.Sub(x.At); got != 30*time.Minute || !strings.Contains(x.Note, "comes back as an open decision") {
+		t.Fatalf("--for 30m: lasts %s, note %q", got, x.Note)
+	}
+
+	// Inside its window the stop hook stays clear.
+	if code, stdout, _ := hookRun(t, payload(payloadStop, "session-s", a.Home, ""), HookStop); code != HookAllow {
+		t.Fatalf("stop inside the defer: exit %d\n%s", code, stdout)
+	}
+
+	// Past it, the timer still commits nothing.
+	before := git(t, a.Source, "rev-parse", "main")
+	timerSyncs(t) // leaves the clock 2h ahead
+	if git(t, a.Source, "rev-parse", "main") != before {
+		t.Fatal("the scan committed a file whose defer expired")
+	}
+	// The stop hook raises the decision again.
+	code, stdout, _ = hookRun(t, payload(payloadStop, "session-s", a.Home, ""), HookStop)
+	if code != HookBlock || len(verdictOf(t, stdout).Packets) != 1 {
+		t.Fatalf("stop after the defer expired: exit %d\n%s", code, stdout)
+	}
+	// Session start names it.
+	_, stdout, _ = hookRun(t, payload(payloadSessionStart, "session-t", a.Home, ""), HookSessionStart, "--format", "text")
+	if !strings.Contains(stdout, "0 deferred decision(s) still waiting, 1 expired") {
+		t.Fatalf("session start after the defer expired:\n%s", stdout)
+	}
+	// Check warns.
+	env, _, _ := yadm(t, "check")
+	warned := false
+	for _, c := range decode[map[string][]checkItem](t, env.Data)["checks"] {
+		if c.Name == "deferred" && c.Warn && strings.Contains(c.Detail, ".config/tool/new.conf") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("check did not warn on the expired defer: %+v", env.Data)
+	}
+}

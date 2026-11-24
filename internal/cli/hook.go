@@ -155,9 +155,11 @@ func (a *app) registerHooks(root *cobra.Command) {
 	}
 	root.AddCommand(h)
 
-	d := a.leaf(root, "defer <hold-id>", "Move an open decision to the review queue so an agent session can end", a.cmdDefer)
+	d := a.leaf(root, "defer <hold-id>", "Move an open decision to the review queue for a short wait so an agent session can end", a.cmdDefer)
+	d.Long = "Move an open decision to the review queue so an agent session can end.\n\n" + deferHelp
 	d.Args = cobra.ExactArgs(1)
 	d.Flags().String("reason", "", "required: why the decision waits")
+	d.Flags().Duration("for", DeferDefault, fmt.Sprintf("how long the decision waits (at most %s)", shortDuration(DeferMax)))
 	d.Flags().String("session", "", "the harness session that defers it (default $YADM_SESSION)")
 }
 
@@ -339,6 +341,21 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 // DeferredFile holds the decisions agents moved to the review queue.
 const DeferredFile = "deferred.json"
 
+// A defer is a short wait: DeferDefault unless --for says otherwise, and
+// never longer than DeferMax.
+const (
+	DeferDefault = 6 * time.Hour
+	DeferMax     = 48 * time.Hour
+)
+
+const deferHelp = `Defers are for short waits (default 6h, at most 48h; --for sets it). The
+agent that defers stays responsible for settling the decision soon: commit
+the file by name, retag it, ignore it with yadm hold ignore, or remove it.
+While deferred, the hold stays, the file stays uncommitted and the stop hook
+does not block on it. When the defer expires the decision is open again:
+the stop hook and session start raise it, and yadm check warns. The timer
+never commits it, expired or not.`
+
 // Deferred is one decision moved to the review queue. A new file's
 // decision (Kind "new_file") covers its path, so an edit that raises the
 // hold again under a new id stays deferred; other decisions cover their
@@ -352,6 +369,7 @@ type Deferred struct {
 	Why     string           `json:"why"`
 	Session string           `json:"session,omitempty"`
 	At      time.Time        `json:"at"`
+	Until   time.Time        `json:"until,omitempty"`
 }
 
 func loadDeferred(stateDir string) map[string]Deferred {
@@ -372,6 +390,49 @@ func saveDeferred(stateDir string, d map[string]Deferred) error {
 		return err
 	}
 	return os.Rename(p+".tmp", p)
+}
+
+// Expires returns when the defer stops holding back the decision. A record
+// from before defers expired lasts DeferDefault from its creation.
+func (x Deferred) Expires() time.Time {
+	if !x.Until.IsZero() {
+		return x.Until
+	}
+	return x.At.Add(DeferDefault)
+}
+
+// Expired reports whether the defer has run out at now.
+func (x Deferred) Expired(now time.Time) bool { return !now.Before(x.Expires()) }
+
+// running returns the defers in d that have not expired at now.
+func running(d map[string]Deferred, now time.Time) map[string]Deferred {
+	out := map[string]Deferred{}
+	for k, x := range d {
+		if !x.Expired(now) {
+			out[k] = x
+		}
+	}
+	return out
+}
+
+// clock formats t in local time, with the date when it is not today.
+func clock(t, now time.Time) string {
+	t, now = t.Local(), now.Local()
+	if t.YearDay() == now.YearDay() && t.Year() == now.Year() {
+		return t.Format("15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
+// shortDuration prints d without trailing zero units: 6h, 90m, 1h30m.
+func shortDuration(d time.Duration) string {
+	s := d.String()
+	s = strings.TrimSuffix(s, "0s")
+	s = strings.TrimSuffix(s, "0m")
+	if s == "" {
+		return "0s"
+	}
+	return s
 }
 
 // newFileKey is the deferred.json key of a new file's decision: its path.
@@ -470,8 +531,17 @@ func (a *app) cmdDefer(cmd *cobra.Command, args []string) (result, error) {
 	if err != nil {
 		return result{}, err
 	}
+	wait, _ := cmd.Flags().GetDuration("for")
+	if wait <= 0 {
+		return result{}, usagef("--for must be a positive duration, such as 2h")
+	}
+	capped := wait > DeferMax
+	if capped {
+		wait = DeferMax
+	}
+	now := hooks.now()
 	d := loadDeferred(m.paths.State)
-	x := Deferred{ID: h.ID, Target: h.Target, Reason: h.Reason, Why: strings.TrimSpace(why), Session: session, At: hooks.now().UTC()}
+	x := Deferred{ID: h.ID, Target: h.Target, Reason: h.Reason, Why: strings.TrimSpace(why), Session: session, At: now.UTC(), Until: now.Add(wait).UTC()}
 	key := h.ID
 	if newFileHold(h, m.managedTargets()) {
 		// An earlier version keyed this decision by hold id.
@@ -482,7 +552,17 @@ func (a *app) cmdDefer(cmd *cobra.Command, args []string) (result, error) {
 	if err := saveDeferred(m.paths.State, d); err != nil {
 		return result{}, err
 	}
-	return result{data: x, next: []string{"yadm review list"}, text: "deferred " + h.ID[:min(12, len(h.ID))] + " to the review queue"}, nil
+	until := clock(x.Until, now)
+	note := fmt.Sprintf("Defers are for short waits (default %s, this one until %s). You are still responsible for settling this decision: commit it, ignore it, or remove the file soon. After %s it comes back as an open decision.", shortDuration(DeferDefault), until, until)
+	if capped {
+		note = fmt.Sprintf("--for is capped at %s. ", shortDuration(DeferMax)) + note
+	}
+	data := struct {
+		Deferred
+		Note string `json:"note"`
+	}{x, note}
+	text := "deferred " + h.ID[:min(12, len(h.ID))] + " to the review queue until " + until + "\n" + note + "\n"
+	return result{data: data, next: []string{"yadm review list", "yadm hold show " + h.ID}, text: text}, nil
 }
 
 // ---- events ----
@@ -530,7 +610,7 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		return Verdict{}, err
 	}
 	hs = append(hs, rep.Holds...)
-	packets := m.packets(ctx, decisionsFor(hs, []model.Target{t}, loadDeferred(m.paths.State), m.managedTargets()))
+	packets := m.packets(ctx, decisionsFor(hs, []model.Target{t}, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
 	if len(packets) == 0 {
 		return Verdict{}, nil
 	}
@@ -579,7 +659,7 @@ func (a *app) hookStop(ctx context.Context, in HookInput) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	packets := m.packets(ctx, decisionsFor(hs, ts, loadDeferred(m.paths.State), m.managedTargets()))
+	packets := m.packets(ctx, decisionsFor(hs, ts, running(loadDeferred(m.paths.State), hooks.now()), m.managedTargets()))
 	if len(packets) == 0 {
 		return Verdict{}, nil
 	}
@@ -615,7 +695,12 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	hs, _ := m.eng.Holds(ctx)
 	deferred := openDeferred(m.paths.State, hs, m.managedTargets())
 	skip := map[string]bool{}
+	expired := 0
 	for _, d := range deferred {
+		if d.Expired(hooks.now()) {
+			expired++ // an open decision again
+			continue
+		}
 		skip[d.ID] = true
 	}
 	rel := ""
@@ -646,7 +731,7 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 		lines = append(lines, fmt.Sprintf("yadm: %d open decision(s) elsewhere: yadm hold list", n))
 	}
 	if n := len(deferred); n > 0 {
-		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) wait in the review queue: yadm review list", n))
+		lines = append(lines, fmt.Sprintf("yadm: %d deferred decision(s) still waiting, %d expired and open again: yadm review list", n-expired, expired))
 	}
 	if n := m.unreviewedAuto(ctx, snap); n > 0 {
 		lines = append(lines, fmt.Sprintf("yadm: %d auto-commit(s) not reviewed: yadm review list", n))
