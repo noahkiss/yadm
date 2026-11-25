@@ -72,6 +72,7 @@ On a machine that another dotfiles tool managed, run `yadm adopt` in place of `y
 - [Design](docs/design.md): the specification, including the threat model.
 - [Agent hooks](docs/hooks.md): the hook contract for coding-agent harnesses.
 - [Extensions](docs/extensions.md): what a `yadm-<name>` extension may rely on.
+- [Enclave recovery](docs/recovery.md): recovery identities, losing a machine or all of them, rotation, the yearly test.
 - `yadm <command> --help` describes each command. `yadm explain <command>` lists the steps it would take on this machine.
 
 ## Contributing
