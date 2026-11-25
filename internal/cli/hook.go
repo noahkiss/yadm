@@ -896,7 +896,7 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 			lines = append(lines, fmt.Sprintf("  and %d more here: yadm hold list", len(here)-3))
 			break
 		}
-		lines = append(lines, fmt.Sprintf("yadm: held %s %s (%s): yadm hold show %s", h.Reason, h.Target+model.Target(h.Task), oneLine(h.Detail), h.ID[:12]))
+		lines = append(lines, fmt.Sprintf("yadm: held %s %s (%s): yadm hold show %s", h.Reason, holdSubject(h), oneLine(h.Detail), h.ID[:12]))
 	}
 	if n := len(other); n > 0 {
 		lines = append(lines, fmt.Sprintf("yadm: %d open decision(s) elsewhere: yadm hold list", n))

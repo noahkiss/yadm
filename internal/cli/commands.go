@@ -541,9 +541,19 @@ func (a *app) cmdStatus(cmd *cobra.Command, args []string) (result, error) {
 		fmt.Fprintf(&b, "  %-10s %s\n", "generated", t)
 	}
 	for _, h := range d.Holds {
-		fmt.Fprintf(&b, "  held %-8s %s %s\n", h.Reason, h.Target+model.Target(h.Task), h.ID[:min(12, len(h.ID))])
+		fmt.Fprintf(&b, "  held %-8s %s %s\n", h.Reason, holdSubject(h), h.ID[:min(12, len(h.ID))])
 	}
 	return result{data: d, next: next, text: b.String()}, attention(d.Holds)
+}
+
+// holdSubject names what a hold holds: its target, else its task. A hold
+// can carry both (a held path's task, an expect-enclave refusal's); the
+// target is what a reader acts on.
+func holdSubject(h model.Hold) string {
+	if h.Target != "" {
+		return string(h.Target)
+	}
+	return h.Task
 }
 
 func short(c model.CommitID) string {
