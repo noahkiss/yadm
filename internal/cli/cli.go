@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/crypt"
@@ -405,7 +406,7 @@ func mainWith(a *app, args []string) int {
 	root := a.root()
 
 	if name, rest, ok := externalName(root, args); ok {
-		if a.runPlugin(name, pluginArgs(args), hasJSONFlag(args)) {
+		if a.runPlugin(name, pluginArgs(root, args), hasJSONFlag(args)) {
 			return a.code
 		}
 		a.json = hasJSONFlag(args)
@@ -439,10 +440,12 @@ func mainWith(a *app, args []string) int {
 // externalName reports the first argument when it names no built-in command,
 // with the arguments after it (minus --json).
 func externalName(root *cobra.Command, args []string) (string, []string, bool) {
-	for i, s := range args {
-		if s == "" || s[0] == '-' {
-			continue
-		}
+	i := commandIndex(root, args)
+	if i < 0 {
+		return "", nil, false
+	}
+	{
+		s := args[i]
 		for _, c := range root.Commands() {
 			if c.Name() == s || c.HasAlias(s) {
 				return "", nil, false
@@ -459,7 +462,36 @@ func externalName(root *cobra.Command, args []string) (string, []string, bool) {
 		}
 		return s, rest, true
 	}
-	return "", nil, false
+}
+
+// commandIndex returns the index in args of the first word that is not a
+// global flag or the separate value of one (`--lock-wait 5s`), or -1.
+func commandIndex(root *cobra.Command, args []string) int {
+	for i := 0; i < len(args); i++ {
+		s := args[i]
+		if s == "" {
+			continue
+		}
+		if s[0] != '-' {
+			return i
+		}
+		if s == "--" {
+			return -1
+		}
+		if strings.Contains(s, "=") {
+			continue
+		}
+		var f *pflag.Flag
+		if strings.HasPrefix(s, "--") {
+			f = root.PersistentFlags().Lookup(s[2:])
+		} else if len(s) == 2 {
+			f = root.PersistentFlags().ShorthandLookup(s[1:])
+		}
+		if f != nil && f.NoOptDefVal == "" {
+			i++ // the flag's value is the next argument
+		}
+	}
+	return -1
 }
 
 func hasJSONFlag(args []string) bool {

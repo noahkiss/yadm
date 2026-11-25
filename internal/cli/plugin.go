@@ -90,11 +90,9 @@ func (m *machineEnv) plugins() []pluginView {
 
 // pluginArgs returns the arguments after the command name in args, as
 // given: a plugin gets --json and every other flag unchanged.
-func pluginArgs(args []string) []string {
-	for i, s := range args {
-		if s != "" && s[0] != '-' {
-			return append([]string{}, args[i+1:]...)
-		}
+func pluginArgs(root *cobra.Command, args []string) []string {
+	if i := commandIndex(root, args); i >= 0 {
+		return append([]string{}, args[i+1:]...)
 	}
 	return nil
 }
