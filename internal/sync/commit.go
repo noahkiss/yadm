@@ -555,8 +555,8 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 		return rep, err
 	}
 	if opts.ExpectEnclave != "" {
-		// Before any hold changes or blob is written: a refusal commits
-		// nothing.
+		// After capture recorded its holds, before the commit plans,
+		// changes holds or writes a blob: a refusal commits nothing.
 		if err := expectSealed(cp, snap, opts.Paths, opts.ExpectEnclave); err != nil {
 			return rep, err
 		}

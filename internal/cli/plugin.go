@@ -118,7 +118,7 @@ func (a *app) runPlugin(name string, args []string, asJSON bool) bool {
 	if !ok {
 		return false
 	}
-	refuse :=func(next []string, err error) bool {
+	refuse := func(next []string, err error) bool {
 		a.json = asJSON
 		a.emit(name, result{next: next}, err)
 		return true
