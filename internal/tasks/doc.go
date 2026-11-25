@@ -50,8 +50,16 @@
 // content like a shell profile: once apply writes it, launchd or systemd
 // runs it at the next login whether or not yadm reloads it. Gating the
 // reload would delay the effect, not prevent it. The allow list guards what
-// the manifest itself asks this machine to run: tasks, checks and
-// collectors.
+// the manifest itself asks this machine to run: tasks, checks,
+// collectors and plugins.
+//
+// A plugin's trust hash (PluginHash) covers its definition and the bytes of
+// each executable it names ($HOME-relative, read through symlinks), because
+// the executable is usually a managed file any machine can push. A script
+// edit therefore needs a new `yadm plugin allow` on every machine. The hash
+// covers the named executables only, not files they read or source. Plugins
+// are allowed one kind at a time (extexec.KindPlugin): `task allow` and
+// `--allow-tasks` never allow one.
 //
 // Exported API:
 //
@@ -63,6 +71,8 @@
 //	type AllowList interface{ Allowed(kind extexec.Kind, name, hash string) bool; Allow(kind extexec.Kind, name, hash string) error }
 //	func DefinitionHash(def any) (string, error) // tasks, checks and collectors share the allow list
 //	func FileAllowList(stateDir string) AllowList
+//	func PluginHash(home string, def manifest.PluginDef) (string, error) // ErrPluginExecutable when one is missing, not regular or not executable
+//	func PluginExecutables(def manifest.PluginDef) []string; func ReadPluginExecutable(home, rel string) ([]byte, error)
 //	type Runner struct{ Exec extexec.Runner; Allow AllowList; Units UnitReloader }
 //	func (r *Runner) Run(ctx, ev Event, sel []Selected, req extexec.Request) ([]model.TaskResult, []model.Hold)
 //	type Staged struct{ Target model.Target; Scope model.Scope; Plaintext []byte; Entry *extexec.Entry }

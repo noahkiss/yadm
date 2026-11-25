@@ -1,7 +1,14 @@
 // Package cli is the command tree, the JSON envelope, exit codes, the query
 // commands (`machine`, `why`, `managed`, `where`, `explain`) and the
-// dispatch to external `yadm-<name>` subcommands. It wires every other
-// package together and holds no domain logic of its own.
+// dispatch to manifest plugins and external `yadm-<name>` subcommands. It
+// wires every other package together and holds no domain logic of its own.
+//
+// `yadm <name>` resolves a built-in command first, then a manifest plugin
+// whose `when` is true here, then `yadm-<name>` on PATH. A plugin runs only
+// when allowed (KindPlugin in the allow list, tasks.PluginHash over its
+// definition and executable bytes); otherwise it exits ExitRefused and never
+// falls through to PATH. A plugin's stdio, terminal, arguments (--json
+// included) and exit code pass through unchanged, with no envelope.
 //
 // Every command accepts --json. With --json, stdout carries exactly one
 // Envelope and nothing else; human text goes nowhere. No command prompts
@@ -50,7 +57,8 @@
 //	                               sync.Syncer.Run with Options.Carry; backups: reroot.List / Prune
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md);
-//	                               session-start repairs a broken schedule as sync does
+//	                               session-start repairs a broken schedule as sync does, then adds plugin news
+//	                               (extexec.Runner, KindNews, all plugins at once, NewsTimeout, NewsLines, NewsTotalLines)
 //	defer                          deferred.json in the state directory; review list shows it
 //	protection allow, root allow   apply.Engine.AllowProtection / AllowRoot, then Apply
 //	log                            store.Log + crypt.Set + textmerge.Diff
@@ -87,6 +95,9 @@
 //	                               and commits it on top of the import commit
 //	adopt                          apply.Engine.Adopt, schedule.ForOS().Install
 //	git                            store.Passthrough: git in the source clone with the secrecy overrides
+//	plugin list|allow              tasks.PluginHash, tasks.FileAllowList (KindPlugin); allow under the sync lock
+//	<plugin>                       extexec.Passthrough of $HOME/<command[0]> in the caller's directory, with
+//	                               extexec.PassEnv plus YADM_ENCLAVES, YADM_ON_DEMAND, YADM_PLUGIN_STATE
 //	<other>                        extexec.FindSubcommand + extexec.Runner
 //
 // Exported API:

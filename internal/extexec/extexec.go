@@ -30,7 +30,9 @@ const (
 	KindCheck      Kind = "check"
 	KindNotify     Kind = "notify"
 	KindBusy       Kind = "busy"
-	KindNudge      Kind = "nudge" // after a push: tell peers to run `yadm sync --quick` now
+	KindNudge      Kind = "nudge"  // after a push: tell peers to run `yadm sync --quick` now
+	KindPlugin     Kind = "plugin" // a manifest plugin run as `yadm <name>` with its stdio passed through (Passthrough)
+	KindNews       Kind = "news"   // a plugin's news query at session start
 )
 
 // Request is written to the executable's stdin as one JSON object.
@@ -50,6 +52,7 @@ type Request struct {
 	Args    []string                `json:"args,omitempty"`    // subcommands
 	JSON    bool                    `json:"json"`              // the caller asked for --json
 	Event   map[string]any          `json:"event,omitempty"`   // notify: the event being reported
+	Session string                  `json:"session,omitempty"` // news: the harness session id
 }
 
 // Entry is the manifest entry a staged target has once the commit under
@@ -78,6 +81,9 @@ type Response struct {
 type Spec struct {
 	Argv    []string
 	Timeout time.Duration
+	// KeepOrder keeps line items in the order printed: trimmed, empty
+	// lines dropped, never sorted or de-duplicated. A news query sets it.
+	KeepOrder bool
 }
 
 // EnvParentPID names the pid of the yadm process that runs an external
@@ -88,9 +94,9 @@ const EnvParentPID = "YADM_PARENT_PID"
 // Env returns the environment variables every external execution gets:
 // YADM_KIND, YADM_NAME, YADM_MACHINE (id), YADM_MACHINE_NAME, YADM_TYPES
 // (comma-separated), YADM_OS, YADM_ARCH, YADM_HOME, YADM_SOURCE,
-// YADM_COMMIT, YADM_JSON=1, YADM_PARENT_PID (EnvParentPID), and
-// YADM_FACT_<KEY> for each declared fact (key upper-cased, non-alphanumerics
-// as "_").
+// YADM_COMMIT, YADM_JSON=1, YADM_PARENT_PID (EnvParentPID), YADM_SESSION
+// when the request names a session, and YADM_FACT_<KEY> for each declared
+// fact (key upper-cased, non-alphanumerics as "_").
 func Env(req Request) []string {
 	m := req.Machine
 	types := make([]string, len(m.Types))
@@ -110,6 +116,9 @@ func Env(req Request) []string {
 		"YADM_COMMIT=" + string(req.Commit),
 		"YADM_JSON=1",
 		EnvParentPID + "=" + strconv.Itoa(os.Getpid()),
+	}
+	if req.Session != "" {
+		env = append(env, "YADM_SESSION="+req.Session)
 	}
 	keys := make([]string, 0, len(m.Facts))
 	for k := range m.Facts {
@@ -308,7 +317,7 @@ func (runner) Run(ctx context.Context, spec Spec, req Request) (Result, error) {
 			return res, fmt.Errorf("%s: %w: trailing data", name, ErrBadResponse)
 		}
 		res.Response = &r
-		res.Items = normalizeItems(r.Items)
+		res.Items = normalizeItems(r.Items, spec.KeepOrder)
 		if !r.OK {
 			msg := r.Message
 			if msg == "" {
@@ -318,7 +327,11 @@ func (runner) Run(ctx context.Context, spec Spec, req Request) (Result, error) {
 		}
 		return res, nil
 	}
-	res.Items = Normalize(out)
+	if spec.KeepOrder {
+		res.Items = orderedLines(out)
+	} else {
+		res.Items = Normalize(out)
+	}
 	return res, nil
 }
 
@@ -334,11 +347,26 @@ func parentEnv() []string {
 	return out
 }
 
-func normalizeItems(items []string) []string {
+func normalizeItems(items []string, keepOrder bool) []string {
 	if len(items) == 0 {
 		return nil
 	}
-	return Normalize([]byte(strings.Join(items, "\n")))
+	b := []byte(strings.Join(items, "\n"))
+	if keepOrder {
+		return orderedLines(b)
+	}
+	return Normalize(b)
+}
+
+// orderedLines returns the trimmed, non-empty lines of b in order.
+func orderedLines(b []byte) []string {
+	var out []string
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // headBuffer keeps the first max bytes and notes overflow.

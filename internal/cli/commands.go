@@ -173,6 +173,7 @@ func (a *app) register(root *cobra.Command) {
 	leaf(ts, "list", "List definitions and whether this machine allows them", a.cmdTaskList)
 	leaf(ts, "allow [name...]", "Allow current definitions on this machine", a.cmdTaskAllow)
 	exact(leaf(ts, "run <name>", "Run one task now", a.cmdTaskRun), 1)
+	a.registerPlugins(root)
 
 	sc := a.group(root, "schedule", "The sync schedule (launchd or systemd)")
 	leaf(sc, "install", "Install and load the schedule", a.cmdScheduleInstall)

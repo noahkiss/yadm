@@ -120,6 +120,7 @@ func (a *app) cmdCheck(cmd *cobra.Command, args []string) (result, error) {
 		for _, e := range m.local.OnDemand {
 			checks = append(checks, onDemandCheck(snap, e))
 		}
+		checks = append(checks, m.pluginChecks()...)
 	}
 
 	var next []string

@@ -39,7 +39,7 @@
 //
 // Exported API:
 //
-//	type Manifest struct{ Schema; Defaults; Entries ([[file]]); Roots ([[root]]); Tasks ([tasks.x]); Checks ([checks.x]); Units ([[unit]]); Protected }
+//	type Manifest struct{ Schema; Defaults; Entries ([[file]]); Roots ([[root]]); Tasks ([tasks.x]); Checks ([checks.x]); Units ([[unit]]); Plugins ([plugins.x]); Protected }
 //	type Entry struct{ Target, Source, When, Enclave, Template, Mode, Format, Keep, Drop, Seal, Regions, Quiet, Review, Merge, Volatile }
 //	type Root struct{ Path model.Target; When string; Enclave model.EnclaveName; Ignore []string }
 //	type MergePolicy string // text, union, add-only, ours, theirs, generated, json-keys, toml-keys, structural
@@ -49,9 +49,11 @@
 //	func (m *Manifest) Outputs() []string
 //	type CheckDef struct{ Paths []string; When string; Command []string; Timeout model.Duration }
 //	type Unit struct{ Target model.Target; Kind UnitKind; When string; Reload UnitReload } // reload: "" or auto, never
+//	type PluginDef struct{ Command []string; When string; Schema int; Summary string; News []string } // Command[0], News[0]: relative to $HOME
+//	var ReservedNames []string // built-in command names; Parse refuses a plugin that takes one
 //	func Parse(b []byte) (*Manifest, error)
 //	func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vocabulary) (*Plan, error)
-//	type Plan struct{ Targets map[model.Target]Resolved; Roots []Root; Tasks map[string]TaskDef; Checks map[string]CheckDef }
+//	type Plan struct{ Targets map[model.Target]Resolved; Roots []Root; Tasks map[string]TaskDef; Checks map[string]CheckDef; Plugins map[string]PluginDef }
 //	func (m *Manifest) Validate(v cond.Vocabulary) error
 //	func (m *Manifest) Quiet(e Entry) model.Duration
 //	type CollisionError struct{ Collisions []Collision }

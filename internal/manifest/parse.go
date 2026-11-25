@@ -147,10 +147,58 @@ func (m *Manifest) validate() error {
 			add(where, ValidPattern(p))
 		}
 	}
+	for _, name := range sortedKeys(m.Plugins) {
+		add("plugins."+name, validPlugin(name, m.Plugins[name]))
+	}
 	for _, p := range m.Protected {
 		add("protected", ValidPattern(p))
 	}
 	return errors.Join(errs...)
+}
+
+// validPlugin checks a plugin's name and its $HOME-relative executables.
+func validPlugin(name string, p PluginDef) error {
+	var errs []error
+	if !validPluginName(name) {
+		errs = append(errs, errors.New("a plugin name is lower-case letters, digits, '-' and '_', starting with a letter"))
+	}
+	if slices.Contains(ReservedNames, name) {
+		errs = append(errs, fmt.Errorf("%q is a built-in command; a plugin may not shadow it", name))
+	}
+	for _, argv := range []struct {
+		key  string
+		argv []string
+		need bool
+	}{{"command", p.Command, true}, {"news", p.News, false}} {
+		switch {
+		case len(argv.argv) == 0 && !argv.need:
+		case len(argv.argv) == 0 || argv.argv[0] == "":
+			errs = append(errs, fmt.Errorf("%s is empty", argv.key))
+		default:
+			if err := validRel(argv.argv[0]); err != nil {
+				errs = append(errs, fmt.Errorf("%s: the executable is a path relative to $HOME: %w", argv.key, err))
+			}
+		}
+	}
+	if p.Schema < 0 {
+		errs = append(errs, errors.New("negative schema"))
+	}
+	if strings.ContainsAny(p.Summary, "\n\r") {
+		errs = append(errs, errors.New("summary is one line"))
+	}
+	return errors.Join(errs...)
+}
+
+func validPluginName(s string) bool {
+	if s == "" || s[0] < 'a' || s[0] > 'z' {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func validName(what, s string) error {
