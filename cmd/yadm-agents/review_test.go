@@ -269,3 +269,18 @@ func TestGenServersToAllIsNotDrop(t *testing.T) {
 		t.Errorf("servers to all: %s %s", r.Status, r.Reason)
 	}
 }
+
+// A script path the shell would split or expand never reaches a harness
+// unquoted: a space works everywhere, and quoting characters are refused.
+func TestScriptPathQuoting(t *testing.T) {
+	u := Resolved{Harness: "h", Script: "~/Application Support/g.sh", Args: []string{"x"}}
+	if got := u.Command("E", false); got != `"$HOME/Application Support/g.sh" x` {
+		t.Fatalf("spaced, unquoted harness = %s", got)
+	}
+	for _, s := range []string{`~/a"b.sh`, "~/a`id`.sh", "~/$(id).sh", `~/a\b.sh`, "~/a\nb.sh"} {
+		src := strings.Replace(oneGuard, `script = "~/.agent/hooks/guard-a.sh"`, "script = '''"+s+"'''", 1)
+		if _, err := Parse([]byte(src)); err == nil {
+			t.Errorf("script %q parsed", s)
+		}
+	}
+}

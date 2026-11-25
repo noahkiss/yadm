@@ -145,6 +145,12 @@ func flattenConditions(prefix string, m map[string]any, out map[string]string) e
 }
 
 func (f Fields) validate() error {
+	if f.Script != nil {
+		rest := strings.TrimPrefix(strings.TrimPrefix(*f.Script, "~/"), "$HOME/")
+		if strings.ContainsAny(rest, scriptUnsafe) {
+			return fmt.Errorf("script %q: a path with a quote, $, backtick, backslash or newline cannot be quoted for every harness", *f.Script)
+		}
+	}
 	if _, err := eventMap[string](f.Match, "match"); err != nil {
 		return err
 	}
@@ -323,7 +329,7 @@ func (r Resolved) Command(ev string, quote bool) string {
 		return ""
 	}
 	s := homeVar(r.Script)
-	if quote {
+	if quote || strings.ContainsAny(s, shellSplit) {
 		s = `"` + s + `"`
 	}
 	for _, a := range r.Args {
@@ -331,6 +337,13 @@ func (r Resolved) Command(ev string, quote bool) string {
 	}
 	return s
 }
+
+// shellSplit holds the characters a shell would split or glob on in an
+// unquoted script path. Characters it would expand inside double quotes
+// are refused at parse time (scriptUnsafe).
+const shellSplit = " \t'&;|<>()*?[]{}#!~"
+
+const scriptUnsafe = "\"`$\\\n\r"
 
 // homeVar spells a leading ~/ as $HOME/, which every harness's shell expands.
 func homeVar(p string) string {
