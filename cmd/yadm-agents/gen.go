@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -132,6 +133,9 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 		res.Reason = fmt.Sprintf("no target: set [harness.%s] config in the units file", h)
 		return res
 	}
+	if !filepath.IsLocal(rel) {
+		return refuse("config %q: the file must be inside home", rel)
+	}
 	path := filepath.Join(o.Home, rel)
 	res.Target = path
 	live, err := os.ReadFile(path)
@@ -173,6 +177,16 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 	if or, ok := a.(orderer); ok {
 		rendered = or.Order(cur, rendered)
 	}
+	// A live owned value the units file does not render (a mod list with
+	// no mod unit for this harness) stays as it is.
+	for k, v := range cur.Values {
+		if _, ok := rendered.Values[k]; !ok {
+			if rendered.Values == nil {
+				rendered.Values = map[string]string{}
+			}
+			rendered.Values[k] = v
+		}
+	}
 	res.Added, res.Removed = diffRows(a.Rows(cur), a.Rows(rendered))
 
 	// Safety: never empty, never drop what no unit owns, never drop a
@@ -184,18 +198,25 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 	if err != nil {
 		return refuse("%v", err)
 	}
-	have := map[string]bool{}
+	// A required unit's live handler counts per event, tool and command,
+	// so a guard that keeps its command but loses a tool or an event is a
+	// drop too.
+	covered := map[string]bool{}
 	for _, e := range rendered.Entries {
-		have[e.Command] = true
+		for _, k := range coverKeys(e) {
+			covered[k] = true
+		}
 	}
 	foreign := map[string]bool{}
 	var dropped []string
 	for _, e := range cur.Entries {
 		switch {
+		case required[e.Command] != "":
+			if !coveredBy(covered, e) {
+				dropped = append(dropped, required[e.Command])
+			}
 		case !known[e.Command]:
 			foreign[e.Command] = true
-		case required[e.Command] != "" && !have[e.Command]:
-			dropped = append(dropped, required[e.Command])
 		}
 	}
 	res.Foreign = sortedKeys(foreign)
@@ -250,6 +271,44 @@ func checkWired(a Adapter, u Resolved) error {
 	return nil
 }
 
+// coverKeys lists what one handler covers: event, tool and command, one
+// key per matcher alternative. A server list `mcp__(a|b)__.*` counts per
+// server, so adding a server is not a drop.
+func coverKeys(e Entry) []string {
+	var out []string
+	for _, t := range matcherTokens(e.Matcher) {
+		if m := serverList.FindStringSubmatch(t); m != nil {
+			for _, s := range strings.Split(m[1], "|") {
+				out = append(out, e.Event+"\t"+"mcp__"+s+"__.*"+"\t"+e.Command)
+			}
+			continue
+		}
+		out = append(out, e.Event+"\t"+t+"\t"+e.Command)
+	}
+	return out
+}
+
+var serverList = regexp.MustCompile(`^mcp__\(([A-Za-z0-9_|-]+)\)__\.\*$`)
+
+// coveredBy reports whether the planned wiring still covers everything the
+// live handler e covers. A planned handler for every tool on the event
+// covers any tool, and one for every MCP tool covers any one server.
+func coveredBy(covered map[string]bool, e Entry) bool {
+	pre := e.Event + "\t"
+	post := "\t" + e.Command
+	if covered[pre+"*"+post] {
+		return true
+	}
+	allMCP := covered[pre+"mcp__.*"+post] || covered[pre+"mcp__*"+post]
+	for _, k := range coverKeys(e) {
+		tool := strings.TrimSuffix(strings.TrimPrefix(k, pre), post)
+		if !covered[k] && !(allMCP && strings.HasPrefix(tool, "mcp__")) {
+			return false
+		}
+	}
+	return true
+}
+
 func hasUnit(w Wiring, unit string) bool {
 	for _, e := range w.Entries {
 		if e.Unit == unit {
@@ -261,16 +320,22 @@ func hasUnit(w Wiring, unit string) bool {
 
 // commandsOf renders every unit with a cell for h as if it were on, so gen
 // knows which live commands are its own and which belong to required units.
+// A required unit with no cell for h still claims its commands: removing
+// its cell drops it, which needs --allow-drop, never --prune.
 func commandsOf(f *File, a Adapter, h string) (known map[string]bool, required map[string]string, err error) {
 	known, required = map[string]bool{}, map[string]string{}
 	for _, u := range f.Units {
-		if _, has := f.Cell(u.Name, h); !has {
+		_, has := f.Cell(u.Name, h)
+		if !has && !u.Required {
 			continue
 		}
 		r := u.Resolve(h)
 		r.Enabled = true
 		w, err := a.Render([]Resolved{r})
 		if err != nil {
+			if !has {
+				continue // the unit was never meant for this harness
+			}
 			return nil, nil, err
 		}
 		for _, e := range w.Entries {
@@ -335,8 +400,12 @@ func diffRows(a, b []string) (added, removed []string) {
 }
 
 // writeAtomic replaces path with b through a temp file in the same
-// directory, keeping the file's mode.
+// directory, keeping the file's mode. A symlink stays a symlink: gen writes
+// the file it points to.
 func writeAtomic(path string, b []byte) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	mode := fs.FileMode(0o644)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()

@@ -20,7 +20,7 @@
 //	args     = ["{harness}"]    # appended to script
 //	run      = "..."            # verbatim command instead of script + args
 //	on       = ["PreToolUse"]   # events, Claude Code hook event names
-//	actions  = ["shell"]        # docs/hooks.md vocabulary, plus mcp_call:<server>
+//	actions  = ["shell"]        # docs/hooks.md vocabulary, plus mcp_call:<server> (letters, digits, _ and -)
 //	match    = "startup"        # raw matcher, or { <event> = "<matcher>" }
 //	timeout  = 10               # seconds, or { "*" = 5, <event> = 2 }
 //	extra    = { k = "v" }      # handler fields passed through verbatim
@@ -71,8 +71,10 @@
 // its harness lacks; a required unit renders nothing or its script is
 // missing; the result would hold no handler where the file has some; a live
 // handler matches no unit (unless --prune); or a required unit's live
-// handler would go (unless --allow-drop). It never creates an app's config
-// file. --dry-run writes nothing; --diff prints the rows; --as <machine>
+// handler would go or lose an event or tool it covers (unless --allow-drop;
+// a required unit whose cell was removed still counts). It never creates an
+// app's config file, never writes outside home, writes a symlinked file
+// through its link, and never overwrites a route file it did not write. --dry-run writes nothing; --diff prints the rows; --as <machine>
 // renders another machine (implies --dry-run), treating a file the manifest
 // does not give that machine as missing.
 //

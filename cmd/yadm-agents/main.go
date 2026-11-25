@@ -103,6 +103,13 @@ func (c *cli) resolvePaths() {
 		}
 		c.units = filepath.Join(cfg, "yadm-agents", "units.toml")
 	}
+	// unitsTarget compares the two, so both must be absolute.
+	if p, err := filepath.Abs(c.home); err == nil {
+		c.home = p
+	}
+	if p, err := filepath.Abs(c.units); err == nil {
+		c.units = p
+	}
 }
 
 // unitsTarget names the units file relative to home, as a check request
@@ -178,6 +185,13 @@ func (c *cli) gen(args []string) int {
 	o.Home = c.home
 	if only != "" {
 		o.Only = setOf(strings.Split(only, ",")...)
+		named := setOf(f.Harnesses()...)
+		for _, h := range sortedKeys(o.Only) {
+			if !named[h] {
+				fmt.Fprintf(c.stderr, "yadm-agents: --only %s: no cell names that harness (have: %s)\n", h, strings.Join(f.Harnesses(), ", "))
+				return 2
+			}
+		}
 	}
 	if o.As != "" {
 		this, err := c.ev.This()

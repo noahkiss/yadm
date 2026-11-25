@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -9,12 +10,19 @@ import (
 // never harness tool names; each adapter maps them to its own matchers.
 var actions = []string{"shell", "file_read", "file_write", "file_edit", "web_fetch", "web_search", "mcp_call", "agent_spawn"}
 
+// serverName is an MCP server name as harnesses spell it in tool names.
+// It lands inside a matcher regex, so nothing else may pass.
+var serverName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 func checkAction(a string) error {
-	base, server, _ := strings.Cut(a, ":")
+	base, server, hasServer := strings.Cut(a, ":")
 	for _, x := range actions {
 		if base == x {
-			if server != "" && base != "mcp_call" {
+			if hasServer && base != "mcp_call" {
 				return fmt.Errorf("action %q: only mcp_call takes a server", a)
+			}
+			if hasServer && !serverName.MatchString(server) {
+				return fmt.Errorf("action %q: a server name uses letters, digits, _ and -", a)
 			}
 			return nil
 		}
