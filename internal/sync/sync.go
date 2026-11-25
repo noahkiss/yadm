@@ -631,6 +631,7 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 	if err := s.collect(ctx, head); err != nil {
 		return s.settle(ctx, rep, captured, committed, err)
 	}
+	collectedAt := s.holdSet()
 	if f.err != nil {
 		// A network that returns late: the next run catches up once.
 		rep.Holds = s.currentHolds(captured, committed)
@@ -684,10 +685,19 @@ func (s *Syncer) exchange(ctx context.Context, rep Report, lk *lockHold, f fetch
 			return s.finish(ctx, rep, captured, committed)
 		}
 
-		// 8. Status record.
+		// 8. Status record. Collectors ran before replay and apply: when
+		// those changed the holds, a collector that reports them (a fact
+		// fleet alerts read) runs again, so the record carries the holds
+		// it publishes.
+		if hs := s.holdSet(); hs != collectedAt {
+			if err := s.collect(ctx, tip); err != nil {
+				return s.settle(ctx, rep, captured, committed, err)
+			}
+			collectedAt = hs
+		}
 		changed := tip != start || len(rep.Committed) > 0 || len(rep.Alerts) > 0
 		if !published || tip != publishedTip {
-			if err := s.publish(ctx, tip, changed || published, len(pending(captured, committed, nil))); err != nil {
+			if err := s.publish(ctx, tip, changed || published, pending(captured, committed, nil)); err != nil {
 				return s.settle(ctx, rep, captured, committed, fmt.Errorf("status: %w", err))
 			}
 			published, publishedTip = true, tip
@@ -813,8 +823,9 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 			return out, err
 		}
 	}
+	var held []apply.Weakening
 	if ref == nil {
-		if ref, err = s.checkRemote(ctx, base, local, remote, snap); err != nil {
+		if ref, held, err = s.checkRemote(ctx, base, local, remote, snap); err != nil {
 			return out, err
 		}
 	}
@@ -841,12 +852,21 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		}
 		return out, err
 	}
+	// Held paths are recorded before the accepted remote moves: the next
+	// fetch is judged from the weakened source and would not find them.
+	pathAlert, err := s.holdBack(ctx, held, remote)
+	if err != nil {
+		return out, err
+	}
 	if err := s.setAccepted(remote); err != nil {
 		return out, err
 	}
 	alerts, err := s.nonMemberAlerts(ctx, snap, local, remote, seen)
 	if err != nil {
 		return out, err
+	}
+	if pathAlert != nil {
+		alerts = append(alerts, *pathAlert)
 	}
 	for _, a := range alerts {
 		s.notify(ctx, a)

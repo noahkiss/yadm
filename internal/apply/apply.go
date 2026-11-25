@@ -96,6 +96,10 @@ type State struct {
 	// Outputs holds the task `outputs` globs of the last applied
 	// manifest. Scan never reports a file that matches one.
 	Outputs []string `json:"outputs,omitempty"`
+	// Floors holds, per target, the protection a fetched commit tried to
+	// take from it (Floor). The target stays as it is here until allowed
+	// or restored.
+	Floors map[model.Target]Floor `json:"floors,omitempty"`
 }
 
 // StateDB loads and saves State atomically.

@@ -55,6 +55,15 @@
 //     entry names it. Track (a variant too) and retag (an existing entry
 //     too) refuse to take a file under an enclave root out of that enclave
 //     (ErrRootRefused).
+//   - A held path: sync records a Floor (State.Floors, HoldBack) for each
+//     target a fetched commit weakened, before it takes that commit. While
+//     the plan protects the target less than its floor and no allow covers
+//     the new protection, apply never writes or deletes it, and capture,
+//     ResolveHold, record and track --variant treat it as weakened, even
+//     when this machine never wrote it. One seal_guard hold with Task
+//     GuardTask names it. A full apply drops the floor once the plan
+//     protects the target enough again or the allow exists; a target that
+//     leaves the plan keeps its floor and loses its hold.
 //   - A target whose parent directory resolves outside $HOME (InsideHome,
 //     ErrOutsideHome), or whose name holds a control character, is held:
 //     never read, written or captured.
@@ -87,7 +96,7 @@
 //
 // Exported API:
 //
-//	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs }
+//	type State struct{ Schema; Machine; Applied; FirstApplyDone; LastFullHash; Targets; Holds; Observed; Tasks; RenderContext; Roots; Seen; Baseline; Ignored; TaskInputs; Outputs; Floors }
 //	func (e *Engine) Generated(ctx) ([]model.Target, error) // files on disk matching a task's outputs
 //	type TargetState struct{ Source; SourceBlob; Scope; Written; Size; ModTime; Mode; Want; SealSet; Enclave; Seal; Regions; Keep; Drop; Volatile; ExplicitMode; RenderHash; ApplyKey; ChangedAt }
 //	type StateDB interface{ Load() (*State, error); Save(*State) error }
@@ -111,7 +120,10 @@
 //	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write, and an unmanaged file's protected or gate hold once the file is gone
 //	func (s *Snapshot) CanOpen(e model.EnclaveName) bool // delivery: false for an on-demand enclave
 //	func (s *Snapshot) CanRead(e) bool; func (s *Snapshot) Readable() *crypt.Set; func (s *Snapshot) IsOnDemand(e) bool // stdout and key-log writes only
-//	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard: refuses a fetched manifest that weakens protection until allowed
+//	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard and PathGuard: names a fetched manifest's weakenings that are not allowed
+//	func (g *Guard) Weakenings(from, to *Snapshot) []Weakening; type Weakening struct{ Target; Root; Detail }
+//	type Floor struct{ Protection; Commit; Since }; const GuardTask = "manifest-guard"
+//	func (e *Engine) HoldBack(ctx, ws []Weakening, commit model.CommitID) ([]model.Target, error) // records floors; returns the targets newly held
 //	func (e *Engine) Scan(ctx, opts ScanOptions) ([]Drift, error) // a named path also reports a new file under an applying glob or in an accepted root that may capture it
 //	func (e *Engine) CheckNew(ctx, t model.Target) error; var ErrRootRefused // why no owned root may capture a new file t here
 //	func (e *Engine) Plan(ctx, rev model.CommitID) ([]Action, error)

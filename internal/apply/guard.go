@@ -48,10 +48,21 @@ func (g *Guard) Allow(_ context.Context, from, to *Snapshot) (bool, string, erro
 // Weakened lists each weakening of to against from that is not allowed
 // here, with the command that allows it.
 func (g *Guard) Weakened(from, to *Snapshot) []string {
+	var why []string
+	for _, w := range g.Weakenings(from, to) {
+		why = append(why, w.Detail)
+	}
+	return why
+}
+
+// Weakenings lists each weakening of to against from that is not allowed
+// here: targets in target order, then owned roots. A target weakening
+// carries the protection from gave it, the floor HoldBack records.
+func (g *Guard) Weakenings(from, to *Snapshot) []Weakening {
 	if from == nil || to == nil || from.Plan == nil || to.Plan == nil {
 		return nil
 	}
-	var why []string
+	var out []Weakening
 	targets := make([]model.Target, 0, len(to.Plan.Targets))
 	for t := range to.Plan.Targets {
 		targets = append(targets, t)
@@ -63,11 +74,13 @@ func (g *Guard) Weakened(from, to *Snapshot) []string {
 			continue
 		}
 		next := protOf(to.Plan.Targets[t].Entry)
-		w := weakerBy(protOf(old.Entry), next)
+		prev := protOf(old.Entry)
+		w := weakerBy(prev, next)
 		if len(w) == 0 || g.allowed(KindProtection, string(t), protectionHash(t, next)) {
 			continue
 		}
-		why = append(why, fmt.Sprintf("%s: %s (yadm protection allow %s)", t, strings.Join(w, ", "), model.ShellQuote(string(t))))
+		out = append(out, Weakening{Target: t, from: prev,
+			Detail: fmt.Sprintf("%s: %s (yadm protection allow %s)", t, strings.Join(w, ", "), model.ShellQuote(string(t)))})
 	}
 	oldRoots := map[model.Target]manifest.Root{}
 	for _, r := range from.Plan.Roots {
@@ -82,9 +95,10 @@ func (g *Guard) Weakened(from, to *Snapshot) []string {
 		if cover == "" || g.allowed(KindRoot, string(r.Path), rootHash(r)) {
 			continue
 		}
-		why = append(why, fmt.Sprintf("owned root %s (enclave %q) covers %s (yadm root allow %s)", r.Path, r.Enclave, cover, model.ShellQuote(string(r.Path))))
+		out = append(out, Weakening{Target: r.Path, Root: true,
+			Detail: fmt.Sprintf("owned root %s (enclave %q) covers %s (yadm root allow %s)", r.Path, r.Enclave, cover, model.ShellQuote(string(r.Path)))})
 	}
-	return why
+	return out
 }
 
 // coversProtected names a path the current source protects that root r

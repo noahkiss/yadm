@@ -199,8 +199,10 @@ func (e *Engine) gone(t model.Target) bool {
 	return errors.Is(err, fs.ErrNotExist)
 }
 
+// weakenedHold reports a hold for weakened protection: a held path's hold
+// (Task GuardTask), or apply's own seal_guard hold for a weaker entry.
 func weakenedHold(h model.Hold) bool {
-	return h.Reason == model.HoldSealGuard && strings.Contains(h.Detail, "weakened this file's protection")
+	return h.Reason == model.HoldSealGuard && (h.Task == GuardTask || strings.Contains(h.Detail, "weakened this file's protection"))
 }
 
 // pruneStaleHolds drops the holds whose target nothing covers any more: no

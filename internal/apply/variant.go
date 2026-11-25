@@ -171,12 +171,17 @@ func (e *Engine) trackVariant(ctx context.Context, head model.CommitID, snap *Sn
 		return Capture{}, err
 	}
 	ts, have := st.Targets[t]
-	if _, weak := e.weakened(ts, have, r); weak {
-		hint := ""
-		if ts.Enclave != "" {
-			hint = fmt.Sprintf("; seal the variant with --enclave %s", ts.Enclave)
+	if _, weak := e.weakened(st, ts, have, r); weak {
+		hint, why, enc := "", e.floorWeak(st, r), ts.Enclave
+		if len(why) > 0 {
+			enc = st.Floors[t].Protection.Enclave
+		} else {
+			why = weakerBy(ts.prot(), protOf(r.Entry))
 		}
-		return fail("this machine last received it with stronger protection than the variant has (%s)%s", strings.Join(weakerBy(ts.prot(), protOf(r.Entry)), "; "), hint)
+		if enc != "" {
+			hint = fmt.Sprintf("; seal the variant with --enclave %s", enc)
+		}
+		return fail("this machine last received it with stronger protection than the variant has (%s)%s", strings.Join(why, "; "), hint)
 	}
 	// Every fleet machine resolves the new entry: a variant that overlaps
 	// another entry for t on any of them fails here, before a commit.

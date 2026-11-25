@@ -44,7 +44,12 @@
 //     deletes a key-log entry, or that the RemoteGuard refuses, is not taken:
 //     a hold and one alert, local main stays, main is not pushed. It stays
 //     refused on every later sync until the remote drops it or an allow
-//     names it.
+//     names it. A PathGuard (apply.Guard) names each weakening instead:
+//     when all are targets, the source is taken, and each weakened target
+//     is a held path. Its floor is recorded (apply.Engine.HoldBack) before
+//     the accepted remote moves, one AlertPathHeld names it, and apply keeps
+//     the target as it is until allowed or restored. A weakened owned root
+//     still refuses the whole source.
 //  5. If local main is not an ancestor of origin main, replay each local
 //     commit onto origin main with `git merge-tree`, in memory. Conflicted
 //     paths go up the resolution ladder: a key-level merge for json, jsonc
@@ -59,9 +64,13 @@
 //     stops with a source_dirty hold), apply. Main moves only after
 //     store.CheckWorktree passes, so the clone's index never falls behind
 //     HEAD; a commit over a dirty clone makes nothing.
-//  7. Publish the status record to this machine's status ref: holds, tasks,
-//     published facts, alerts, the pinned key-log head of each enclave, and
-//     this machine's home and user (read only by show --as).
+//  7. Publish the status record to this machine's status ref: holds (count,
+//     conflicts, oldest, count per model.HoldKind), tasks, published facts,
+//     alerts, the pinned key-log head of each enclave, and this machine's
+//     home and user (read only by show --as). The hold counts leave out the
+//     drift of pending edits. A change to them publishes at once, not only
+//     hourly; when replay or apply changed the holds after step 3, the
+//     collectors run again first.
 //  8. Release the sync lock; push main, the status ref and advanced
 //     reviewed refs atomically under the network lock. A rejection is not
 //     an error: go back to 4 (fetch, then 5 to 7 under the sync lock again),
@@ -138,6 +147,8 @@
 //	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error)
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
 //	type RemoteGuard interface{ Allow(ctx, from, to *apply.Snapshot) (bool, string, error) }
+//	type PathGuard interface{ RemoteGuard; Weakenings(from, to *apply.Snapshot) []apply.Weakening } // holds weakened targets alone
+//	const HoldTaskKeyLog, HoldTaskGuard (= apply.GuardTask); const AlertNonMember, AlertKeyLogRewrite, AlertGuardRefused, AlertPathHeld
 //	type Lease struct{ Holder string; Paths []string; Expires time.Time }
 //	func LeaseOn(leases []Lease, t model.Target, now time.Time) (Lease, bool) // the live lease naming t
 //	(an Unattended Commit skips every path a live stored lease names)

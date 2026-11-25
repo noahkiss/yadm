@@ -137,7 +137,7 @@ func (s *Syncer) pausedRun(ctx context.Context, rep Report, lk *lockHold, f fetc
 			}
 		}
 	}
-	if err := s.publish(ctx, head, false, 0); err != nil {
+	if err := s.publish(ctx, head, false, nil); err != nil {
 		return rep, fmt.Errorf("status: %w", err)
 	}
 	if f.err != nil {
