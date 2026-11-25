@@ -1,6 +1,6 @@
 # Extensions
 
-An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and the manifest can run it as a task, check or collector. This page lists what an extension may rely on. `docs/design.md` holds the full behaviour; the section numbers below point there.
+An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and the manifest can run it as a task, check or collector. A plugin is an executable that a `[plugins.<name>]` manifest table declares; `yadm <name>` runs it with stdio passed through (see Plugins below). This page lists what an extension may rely on. `docs/design.md` holds the full behaviour; the section numbers below point there.
 
 ## Rules for every extension
 
@@ -10,10 +10,26 @@ An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and 
 
 ## Exec contract (section 12.4)
 
-- Request on stdin: `schema = 1`, with `kind` (`subcommand`, `task`, `check`, `collector`, `nudge`, `notify`, `busy`), `name`, `machine`, `home`, `source`, `commit`, `changed`, `removed`, `trigger` and `args`; a check also gets `staged` and `entries`.
-- The same context is in the environment: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES`, `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON`, `YADM_PARENT_PID`, `YADM_FACT_<KEY>`.
+- Request on stdin: `schema = 1`, with `kind` (`subcommand`, `task`, `check`, `collector`, `nudge`, `notify`, `busy`, `news`), `name`, `session` (news), `machine`, `home`, `source`, `commit`, `changed`, `removed`, `trigger` and `args`; a check also gets `staged` and `entries`.
+- The same context is in the environment: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES`, `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON`, `YADM_PARENT_PID`, `YADM_SESSION` (news), `YADM_FACT_<KEY>`.
 - Response on stdout, on exit 0: one JSON object with `schema = 1`, `ok`, `items`, `data`, `message`, `next`; or one item per line.
 - A task's `trigger` is `paths`, `remove`, `first-apply`, `fact` or `render`.
+
+## Plugins (section 12.6)
+
+```toml
+[plugins.todo]
+command = ["bin/todo"]                  # relative to $HOME, then fixed arguments
+when = "type:personal"
+summary = "Per-machine to-dos"
+news = ["bin/todo", "list", "--brief"]  # optional
+```
+
+- `yadm todo <args>` runs `$HOME/bin/todo <args>` in the caller's directory. Stdin, stdout, stderr, the terminal, every argument (`--json` included) and the exit code pass through unchanged. No request goes to stdin and yadm prints no envelope.
+- The environment is the exec contract's, with `YADM_KIND=plugin`, `YADM_JSON=1` only under `--json`, `YADM_ENCLAVES`, `YADM_ON_DEMAND` and `YADM_PLUGIN_STATE` (a private directory for the plugin's own state).
+- A plugin runs only after `yadm plugin allow <name>` on each machine. The allow covers the definition and the bytes of each executable it names, so every edit of the script needs a new allow; until then `yadm <name>` exits 6. The hash does not cover files the script reads or sources.
+- `news` runs at session start under the exec contract (`kind = "news"`), with a 3 s timeout and at most 5 lines, kept in order. Print one line per item, or one JSON response whose `message` and `items` become the lines.
+- A plugin may call `yadm` itself: `yadm commit --expect-enclave <e> <path>...` commits a file only when it seals for that enclave, and `yadm lease take` keeps hooks off a file while the plugin edits it.
 
 ## JSON contracts
 

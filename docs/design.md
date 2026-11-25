@@ -164,6 +164,12 @@ command = ["yadm-tool-config"]
 [checks.secret-scan]
 paths = ["**"]
 command = ["secret-check"]
+
+[plugins.todo]                    # `yadm todo ...` (section 12.6)
+command = ["bin/todo"]            # relative to $HOME
+when = "type:personal"
+summary = "Per-machine to-dos"
+news = ["bin/todo", "list", "--brief"]   # optional, read at session start
 ```
 
 Resolution for one machine:
@@ -558,6 +564,8 @@ A message names paths only. No subject, body or trailer ever carries file conten
 
 `yadm commit [-m <subject> | --why <intent>] [--no-push] [--dry-run] [path...]` makes a manual commit and pushes it. It bypasses the quiet period and leases, never the gate or the seal guard. A source clone with local edits stops it before anything is committed, with a `source_dirty` hold. Protected paths commit only when named. A named managed file deleted in `$HOME` commits its deletion (section 8.4). A named file that predates its owned root is captured too. A named file with a deferred decision (section 9.7) is captured and committed, which settles the decision; a commit that does not name it leaves it held. A named new file that an applying glob entry matches is captured under that entry (section 4). A named path that no manifest entry, applying glob or owned root covers on this machine (the path itself, or anything under it) fails the whole commit, `--dry-run` included, before anything is captured; the error names the path and suggests `yadm retag`. With `--no-push`, the next sync pushes. When the push does not happen in this call (another process holds the network lock, or the remote kept moving), the commit stands, `push_error` says why, and the next sync pushes. With `--dry-run` it scans and captures but commits nothing; `planned` lists each commit it would make, with its scope, subject and paths, new files in owned roots included. The gate does not run in a dry run.
 
+`yadm commit --expect-enclave <e> <path>...` states which enclave the caller expects the paths to seal for. The commit is refused with exit 6, `--dry-run` included, and commits nothing unless every captured file under the named paths has its source under `sealed/<e>/` in scope `<e>`, and every named path that captured nothing is a target whose source is under `sealed/<e>/` here (an unchanged sealed file passes). The seal guard holds a target that loses protection it had; a brand-new file has none, so without this flag a plain glob entry, a plain file entry, an owned root this machine has not allowed or an ignore rule decides where it lands. The check runs under the sync lock, after capture and before any hold changes or blob is written. It needs at least one path.
+
 ### 9.6 Review
 
 Each scope has a fast-forward-only ref `refs/yadm/reviewed/<scope>`. Each machine trusts its own copy. Sync pushes a local advance, and moves the local ref to a fetched one only when the move skips no commit of the scope; otherwise the fetched ref is refused with a `reviewed_ref_refused` alert, since any machine can push it. `init` seeds empty local refs from the fetched ones. `yadm review list [scope] --json` lists commits in `reviewed/<scope>..main` that touch the scope, with plaintext diffs for scopes this machine can open, and `deferred`: the decisions agents moved here with `yadm defer` (section 9.7) whose holds are still open. Agents act with `yadm review ok <scope> <commit>`, `yadm review revert <commit>` (a new commit), a fix-forward commit, or `yadm bisect --as <machine> -- <cmd>`, which renders each candidate commit into a sandbox and never touches `$HOME`.
@@ -577,7 +585,7 @@ Agents edit dotfiles; they must not have to remember to commit. `yadm hook <even
 |---|---|---|
 | `post-edit` | after a file write or edit tool | Records the path for the session. If the path is managed or inside an owned root and no live lease names it, commits it now through the gate, with `Yadm-Auto: hook` and `Yadm-Session`, locally; the next timer tick pushes it. Silent when clean; otherwise a decision packet. |
 | `stop` | the agent (or a subagent) ends its turn | Commits the session's recorded paths that no live lease names, locally; the next timer tick pushes them. Blocks the stop while a decision this session caused is open, including a conflict the timer met while pushing them. |
-| `session-start` | a session starts | A quick sync and a repair of a broken schedule (section 13), then at most 10 lines: the repair first, holds near the cwd, deferred decisions (one line: how many still wait and how many expired), live leases (one line: each holder, its paths and expiry), fleet drift. Unreviewed auto-commits are not counted there; `yadm review list` shows them on request. |
+| `session-start` | a session starts | A quick sync and a repair of a broken schedule (section 13), then at most 10 lines: the repair first, holds near the cwd, deferred decisions (one line: how many still wait and how many expired), live leases (one line: each holder, its paths and expiry), fleet drift. Unreviewed auto-commits are not counted there; `yadm review list` shows them on request. Then plugin news (section 12.6), with its own budget of at most 10 lines. |
 
 A hook commit is unattended: naming the path does not lift protection. A hook does not commit a new file in an owned root: it holds it (`protected`) and returns a decision packet, since which machines get it is the user's choice. If nobody decides and nobody defers it, the timer shares it after its quiet period (section 9.3). A hook waits at most a few seconds for the sync lock; if another process holds it, the path stays recorded and `stop` or the timer commits it.
 
@@ -842,11 +850,11 @@ The core knows no package manager and does no machine provisioning. Bootstrap is
 
 ### 12.3 Trust
 
-Tasks, checks and collectors run commands, and any machine that can push can change their definitions. A machine runs a definition only after it is allowed locally: `yadm task allow [name...]`, or `--allow-tasks` on `init` and `adopt`. `allowed.json` stores a SHA-256 of each allowed definition. A changed definition is not run; it becomes a `task_untrusted` hold until allowed again. Definitions live in protected files and never auto-commit. The same allow list holds two more kinds: `yadm protection allow <target>` accepts a manifest change that weakens a target's sealing or protection here, and `yadm root allow <path>` accepts a new, changed or removed owned root (until then it holds `root_untrusted`). Both apply right after recording the allow.
+Tasks, checks and collectors run commands, and any machine that can push can change their definitions. A machine runs a definition only after it is allowed locally: `yadm task allow [name...]`, or `--allow-tasks` on `init` and `adopt`. `allowed.json` stores a SHA-256 of each allowed definition. A changed definition is not run; it becomes a `task_untrusted` hold until allowed again. Definitions live in protected files and never auto-commit. The same allow list holds two more kinds: `yadm protection allow <target>` accepts a manifest change that weakens a target's sealing or protection here, and `yadm root allow <path>` accepts a new, changed or removed owned root (until then it holds `root_untrusted`). Both apply right after recording the allow. Plugins (section 12.6) have their own allow, `yadm plugin allow`, whose hash also covers the bytes of the plugin's executables.
 
 ### 12.4 Exec contract
 
-One contract covers external subcommands, collectors, tasks, checks, the notify hook and the busy probe. There is no in-process plugin API.
+One contract covers external subcommands, collectors, tasks, checks, the notify hook, the busy probe and plugin news. There is no in-process plugin API. Running a plugin as `yadm <name>` is the one exception: its stdio passes through (section 12.6).
 
 - The tool runs argv directly (no shell) in `$HOME`, with a timeout.
 - Stdin carries one JSON request:
@@ -878,11 +886,22 @@ One contract covers external subcommands, collectors, tasks, checks, the notify 
   Otherwise each non-empty stdout line is an item.
 - A non-zero exit, a timeout or invalid JSON is a failure. Stderr is kept (bounded) for the record and never parsed.
 
-External subcommands: `yadm foo args…` runs `yadm-foo` from `PATH` when `foo` is not built in, with `kind = "subcommand"` and `args`. Under `--json`, its response is wrapped in the normal envelope. A non-zero exit is reported with its code and stderr tail in `error.details`.
+External subcommands: `yadm foo args…` runs `yadm-foo` from `PATH` when `foo` is neither built in nor a manifest plugin that applies here (section 12.6), with `kind = "subcommand"` and `args`. Under `--json`, its response is wrapped in the normal envelope. A non-zero exit is reported with its code and stderr tail in `error.details`. The environment also carries `YADM_SESSION` when the request names a session (`kind = "news"`).
 
 ### 12.5 Nudge
 
 Peers learn of a push on their next timer tick at the latest. To make it immediate, a user may install an executable `yadm-nudge` on `PATH`. After a push that moved `main`, sync runs it under the exec contract with `kind = "nudge"` and `event = {kind: "pushed", commit, machine}`, with a 10 s timeout; its failure never fails the sync. What it does is the user's: ping a notification service, or reach peers over their own network. A peer that receives a nudge runs `yadm sync --quick`. The core names no service.
+
+### 12.6 Plugins
+
+A plugin is an executable plus a `[plugins.<name>]` manifest table (section 4): `command` (a path relative to `$HOME`, then fixed arguments), `when`, `schema` (the exec contract version it speaks; empty means 1), `summary` (one line) and an optional `news` argv whose first element is also relative to `$HOME`. A plugin needs no `PATH` entry, so a timer run or a task reaches it too.
+
+- **Resolution.** `yadm <name>` runs a built-in command first, then a plugin whose `when` is true here, then `yadm-<name>` on `PATH`. A plugin name is lower-case letters, digits, `-` and `_`, starting with a letter; a name that shadows a built-in command fails the manifest parse. A plugin whose `when` is false here leaves the name to `PATH`.
+- **Passthrough.** A plugin runs in the foreground in the caller's directory, with the caller's stdin, stdout, stderr and terminal, so an editor, a prompt or a heredoc works. Its arguments, `--json` included, pass through unchanged, and its exit code is yadm's; yadm prints no envelope. There is no timeout. While it runs, yadm ignores interrupt and quit (the terminal sends them to the plugin) and forwards hangup and terminate; a plugin killed by a signal exits 128 plus the signal number. yadm holds no lock while it runs, so the plugin may call `yadm` itself. The environment is the exec contract's, with `YADM_KIND=plugin`, `YADM_JSON=1` only when the caller passed `--json`, `YADM_ENCLAVES` (the enclaves this machine applies), `YADM_ON_DEMAND` (those it reads on demand only) and `YADM_PLUGIN_STATE` (a private 0700 directory under the state directory). No request is written to stdin.
+- **Trust.** A plugin runs only after `yadm plugin allow [name...]` on this machine; with no name it allows every plugin that applies here. `allowed.json` stores a SHA-256 over the definition and over the bytes of each executable it names, read through symlinks. A changed definition or a changed executable, pushed from any machine, is refused with exit 6 and `next` naming the allow; it never falls through to `PATH`. The hash covers the named executables, not files they read. A missing or non-executable file, or a `schema` newer than this yadm speaks, fails with exit 1. `task allow` and `--allow-tasks` never allow a plugin. `yadm plugin list` shows each plugin's state; `yadm check` warns about each plugin that applies here but cannot run; `yadm --help` lists the plugins that apply here and are allowed.
+- **News.** `yadm hook session-start` runs the `news` argv of each allowed plugin that applies here, all at once, under the exec contract with `kind = "news"`, the session id in `session` and `YADM_SESSION`, and a 3 s timeout each. Lines keep their order. Each plugin adds at most 5 lines, prefixed with its name and cut to 200 characters; all plugins together add at most 10, the last saying how many were dropped. A plugin that fails or times out adds one line. Plugins that apply but are not allowed add one line together. Nothing a plugin does fails the hook.
+
+A manifest that declares plugins needs this version of yadm on every machine: an older one refuses the unknown `plugins` table.
 
 ## 13. Schedule
 
@@ -961,7 +980,7 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `capture [path…]` | Capture without committing | `{paths[], holds[]}` |
 | `diff [path…]` | Plaintext diff target vs source | `{files[{target, diff, skipped?}]}` |
 | `show <path> [--as <m>] [--source]` | Print a target as machine `m` (default this one) receives it, or with `--source` its source unrendered, to stdout only; opens on-demand enclaves (section 7.6) | `{machine, name, target, source, enclave?, content, encoding, home_from, view?}`; without `--json`, the bytes alone |
-| `commit [-m\|--why] [--no-push] [--dry-run] [path…]` | Gate, commit and push now | `{commits[], holds[], pushed, push_error?, planned[{scope, subject, paths[]}]?}`; `planned` only with `--dry-run` |
+| `commit [-m\|--why] [--no-push] [--dry-run] [--expect-enclave <e>] [path…]` | Gate, commit and push now; `--expect-enclave` refuses unless every path seals for `e` (section 9.5) | `{commits[], holds[], pushed, push_error?, planned[{scope, subject, paths[]}]?}`; `planned` only with `--dry-run` |
 | `sync [--auto] [--quick] [--full] [--no-push]` | Section 10; without `--auto`, also repairs a broken schedule (section 13) | `{captured[], committed[], fetched, replayed, applied, pushed, retries, holds[], alerts[], tasks[], skipped, reason, network?, schedule_healed?, paused?, pause?}` |
 | `pause [--for <d>] [--reason <r>] [--wait <d> \| --no-wait]` | Section 10.1: sign and push a fleet pause, or extend this machine's own, then wait for peers to confirm | `{id, initiator, reason?, created, until, requested, clamped?, extended?, pushed, push_error?, confirmed[], waiting[], ignored[]?}` |
 | `resume [pause-id]` | Section 10.1: sign and push a resume | the same, with `resumed`; `{resumed: false}` when no pause holds |
@@ -987,6 +1006,8 @@ Reasons: `drifted`, `uncapturable`, `conflict`, `protected`, `secret_scan`, `sea
 | `defer <hold-id> --reason <why> [--for <duration>]` | Move a decision to the review queue for a short wait (section 9.7) | the deferred record with `until`, and `note` |
 | `lease take` / `release` / `list` | Leases | leases |
 | `task list` / `allow` / `run <name>` | Section 12 | definitions with allowed state, results |
+| `plugin list` / `allow [name…]` | Section 12.6 | `{plugins[{name, applies, allowed, hash?, error?, definition}]}` / `{allowed[]}` |
+| `<plugin> [args…]` | Section 12.6: runs the plugin with stdio passed through | passthrough; `--json` goes to the plugin |
 | `schedule install` / `uninstall` / `status` | Section 13 | `{installed, loaded, last_run, unit_path, last_exit?, runs?, needs_constraint_update?, last_result?, log?}`: `last_exit` is the job's last exit status (absent before its first exit), `runs` launchd's start count, `needs_constraint_update` launchd's `needs LWCR update` flag, `last_result` systemd's service result, `log` the launchd job's output file |
 | `import <legacy-repo>` | Section 15 | `{commit, mappings[], machines, problems[]}` |
 | `adopt` | Section 15 | `{commit, actions[], holds[], tasks[]}` |
@@ -1059,4 +1080,4 @@ Git is the `git` binary (merge-tree `--write-tree` needs a current git), not a l
 
 ## 18. Out of scope
 
-Hooks run by the tool, encrypted archives, alternate template processors, a permissions command (`mode` per entry covers it), self-upgrade and an "enter the repo" shell. `yadm git` covers raw git access; it refuses verbs that move the source HEAD (pull, checkout, reset, switch, merge, rebase, cherry-pick, revert, am) and points to `yadm sync`.
+Hooks run by the tool (a plugin's `news` query, section 12.6, is a read-only query like a collector: it runs only from `yadm hook session-start`, changes nothing and cannot fail the hook), encrypted archives, alternate template processors, a permissions command (`mode` per entry covers it), self-upgrade and an "enter the repo" shell. `yadm git` covers raw git access; it refuses verbs that move the source HEAD (pull, checkout, reset, switch, merge, rebase, cherry-pick, revert, am) and points to `yadm sync`.
