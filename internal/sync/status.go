@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/noahkiss/yadm/internal/extexec"
 	"github.com/noahkiss/yadm/internal/fleet"
@@ -63,6 +65,10 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if last != nil && (last.Home != s.Apply.Home || last.User != s.Apply.User) {
 		changed = true // show --as on peers renders with them
 	}
+	held, conflicts, oldest, kinds := holdCounts(st.Holds)
+	if last != nil && (last.Held != held || last.Conflicts != conflicts || !sameTime(last.OldestHeld, oldest) || !maps.Equal(last.HoldKinds, kinds)) {
+		changed = true // fleet alerts read the holds; do not wait for the hourly record
+	}
 	if !fleet.PublishDue(last, changed, now) {
 		return nil
 	}
@@ -80,16 +86,7 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 		Home: s.Apply.Home,
 		User: s.Apply.User,
 	}
-	for _, h := range st.Holds {
-		rec.Held++
-		if h.Reason == model.HoldConflict {
-			rec.Conflicts++
-		}
-		if !h.Since.IsZero() && (rec.OldestHeld == nil || h.Since.Before(*rec.OldestHeld)) {
-			t := h.Since.UTC()
-			rec.OldestHeld = &t
-		}
-	}
+	rec.Held, rec.Conflicts, rec.OldestHeld, rec.HoldKinds = held, conflicts, oldest, kinds
 	if tip != "" {
 		if snap, err := s.load(ctx, tip); err == nil {
 			if keys := snap.Readable(); keys != nil {
@@ -143,6 +140,33 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	rec.PausedUntil, rec.PauseID, rec.PauseIgnored = pausedUntil, pauseID, pauseIgnored
 	rec.PauseVerified = pauseVerified
 	return s.Status.Publish(ctx, rec)
+}
+
+// holdCounts is what a status record says about holds: how many, how many
+// conflicts, the oldest, and the count per kind (model.HoldKind).
+func holdCounts(holds []model.Hold) (held, conflicts int, oldest *time.Time, kinds map[string]int) {
+	for _, h := range holds {
+		held++
+		if h.Reason == model.HoldConflict {
+			conflicts++
+		}
+		if !h.Since.IsZero() && (oldest == nil || h.Since.Before(*oldest)) {
+			t := h.Since.UTC()
+			oldest = &t
+		}
+		if kinds == nil {
+			kinds = map[string]int{}
+		}
+		kinds[model.HoldKind(h)]++
+	}
+	return held, conflicts, oldest, kinds
+}
+
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }
 
 func (s *Syncer) alertsPath() string { return filepath.Join(s.Apply.StateDir, AlertsFile) }

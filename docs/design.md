@@ -783,6 +783,7 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "held": 1,
   "conflicts": 0,
   "oldest_held": "2030-01-01T09:00:00Z",
+  "hold_kinds": { "seal_guard:manifest-guard": 1 },
   "epochs": { "personal": 1 },
   "observed": { "packages": { "collector": "packages", "items": ["tool-one", "tool-two"], "collected_at": "…" } },
   "sealed": { "client": "<sealed observed facts>" },
@@ -798,6 +799,8 @@ Each machine fast-forwards only its own `refs/yadm/status/<machine-id>`: a chain
   "reroot_held": "reroot"
 }
 ```
+
+`held`, `conflicts`, `oldest_held` and `hold_kinds` describe the machine's holds. `hold_kinds` counts them per kind: the hold's reason, or `reason:task` for a hold that names a task (`seal_guard:manifest-guard` for a held path, `protected:key-log` for a refused key log). It names no target. A change to any of the four publishes a record at once, in the same sync step 8 as the apply that changed the holds, so fleet alerts see a new or cleared hold with its kind without waiting for the hourly record. A sync that stops with a `source_dirty` hold publishes nothing; its next sync does.
 
 `paused_until` and `pause_id` confirm a fleet pause the machine honours, `pause_verified` says a pinned key-log member signed it, and `pause_ignored` lists pause records it did not accept (section 10.1). A change to either publishes a record at once. Both are self-reported, so a confirmation is advisory: the initiator learns who says it paused, not who did.
 

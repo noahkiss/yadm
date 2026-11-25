@@ -146,6 +146,15 @@ func HoldID(h Hold) string {
 	return hex.EncodeToString(s[:])
 }
 
+// HoldKind is the kind a status record counts a hold under: its reason, or
+// reason:task when the hold names a task ("protected:key-log").
+func HoldKind(h Hold) string {
+	if h.Task == "" {
+		return string(h.Reason)
+	}
+	return string(h.Reason) + ":" + h.Task
+}
+
 // SameHold reports whether two holds are about the same thing: the same
 // target, task and reason.
 func SameHold(a, b Hold) bool {
@@ -209,6 +218,8 @@ type Status struct {
 	// capture never do. Self-reported, like the rest of the record.
 	Home string `json:"home,omitempty"`
 	User string `json:"user,omitempty"`
+	// HoldKinds counts the holds per kind (HoldKind). It names no target.
+	HoldKinds map[string]int `json:"hold_kinds,omitempty"`
 	// OnDemand lists the enclaves this machine says it reads on demand
 	// only. It is self-reported: `yadm check` uses it to explain a key-log
 	// member without the enclave's type, never as proof.
