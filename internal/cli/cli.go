@@ -80,6 +80,7 @@ var refusals = []error{
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
 	sync.ErrRerootRefused,
+	sync.ErrNotSealed,
 	apply.ErrRootRefused,
 }
 

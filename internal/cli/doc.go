@@ -35,7 +35,8 @@
 //	                               context, its published home and user (else $HOME and $USER), and the keys of
 //	                               the enclaves it is a member of that this machine holds (Snapshot.Readable);
 //	                               stdout only
-//	commit                         refuses named paths no entry, applying glob (manifest.Plan.GlobNew) or owned root covers, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call
+//	commit                         refuses named paths no entry, applying glob (manifest.Plan.GlobNew) or owned root covers, then sync.Syncer.Commit (tasks.Gate inside), then push in the same call;
+//	                               --expect-enclave is sync.CommitOptions.ExpectEnclave (sync.ErrNotSealed exits ExitRefused)
 //	                               (fetch and push under sync.FileNetLock, never under the sync lock)
 //	sync                           sync.Syncer.Run (--auto implies the quick check and records the run);
 //	                               without --auto, schedule.Status.Broken + Install, once an hour

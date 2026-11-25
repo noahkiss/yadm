@@ -295,6 +295,12 @@ type CommitOptions struct {
 	// Resolve settles the conflict holds of the named paths: they commit over
 	// the current source blob and the hold is dropped.
 	Resolve bool
+	// ExpectEnclave, when set, is the enclave the caller says every named
+	// path seals for. The commit fails with ErrNotSealed, and commits
+	// nothing, unless each captured target under a named path has its
+	// source under sealed/<enclave>/ in that enclave's scope, and each
+	// named path that captured nothing is a target sealed for it here.
+	ExpectEnclave model.EnclaveName
 	// Push fetches before the commit and replays, applies, publishes and
 	// pushes after it, in the same call. Fetch and push run under the
 	// network lock, never under the sync lock.
