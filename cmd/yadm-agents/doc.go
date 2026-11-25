@@ -4,7 +4,10 @@
 // # Units file
 //
 // Default path: $YADM_AGENTS_UNITS, else $XDG_CONFIG_HOME/yadm-agents/units.toml
-// (~/.config/yadm-agents/units.toml). TOML, schema 1:
+// (~/.config/yadm-agents/units.toml). yadm manages it as the target
+// .config/yadm-agents/units.toml; when XDG_CONFIG_HOME moves the default away
+// from it, a check or task that yadm hands that target fails and names both
+// paths instead of reading the wrong copy. TOML, schema 1:
 //
 //	schema = 1
 //

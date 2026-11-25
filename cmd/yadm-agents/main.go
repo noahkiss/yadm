@@ -6,8 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -71,6 +74,7 @@ type cli struct {
 	kind           string
 	stdout, stderr io.Writer
 	units, home    string
+	unitsFrom      string // where the units path came from: flag, env, xdg or home
 	json           bool
 }
 
@@ -93,15 +97,16 @@ func (c *cli) resolvePaths() {
 	if c.home == "" {
 		c.home, _ = os.UserHomeDir()
 	}
+	c.unitsFrom = "flag"
 	if c.units == "" {
-		c.units = os.Getenv("YADM_AGENTS_UNITS")
+		c.units, c.unitsFrom = os.Getenv("YADM_AGENTS_UNITS"), "env"
 	}
 	if c.units == "" {
-		cfg := os.Getenv("XDG_CONFIG_HOME")
+		cfg, from := os.Getenv("XDG_CONFIG_HOME"), "xdg"
 		if cfg == "" {
-			cfg = filepath.Join(c.home, ".config")
+			cfg, from = filepath.Join(c.home, ".config"), "home"
 		}
-		c.units = filepath.Join(cfg, "yadm-agents", "units.toml")
+		c.units, c.unitsFrom = filepath.Join(cfg, "yadm-agents", "units.toml"), from
 	}
 	// unitsTarget compares the two, so both must be absolute.
 	if p, err := filepath.Abs(c.home); err == nil {
@@ -147,15 +152,57 @@ func (c *cli) finish(ok bool, text string, data any) int {
 	return code
 }
 
-func (c *cli) load() (*File, error) {
-	c.resolvePaths()
-	path := c.units
-	if c.req != nil && c.req.Staged != nil {
-		if p, ok := c.req.Staged[model.Target(c.unitsTarget())]; ok {
-			path = p
+// managedUnits is the home-relative units target yadm manages.
+const managedUnits = ".config/yadm-agents/units.toml"
+
+// unitsMismatch reports a units path that is not the file yadm hands over:
+// a check stages, or a task reports changed, a units target other than the
+// one yadm-agents reads. Reading the live file in its place would check or
+// apply the wrong copy, so it fails loudly instead.
+func (c *cli) unitsMismatch() error {
+	if c.req == nil {
+		return nil
+	}
+	want := c.unitsTarget()
+	var ts []string
+	for t := range c.req.Staged {
+		ts = append(ts, string(t))
+	}
+	for _, t := range c.req.Changed {
+		ts = append(ts, string(t))
+	}
+	sort.Strings(ts)
+	for _, t := range ts {
+		if path.Base(t) == "units.toml" && path.Base(path.Dir(t)) == "yadm-agents" && t != want {
+			return c.mismatchErr(t)
 		}
 	}
-	f, err := Load(path)
+	return nil
+}
+
+func (c *cli) mismatchErr(target string) error {
+	from := map[string]string{"flag": "--units", "env": "YADM_AGENTS_UNITS", "xdg": "XDG_CONFIG_HOME", "home": "$HOME/.config"}[c.unitsFrom]
+	return fmt.Errorf("units path mismatch: yadm manages %s but yadm-agents reads %s (from %s); pass --units %s in the task and check command (a task does not see YADM_AGENTS_UNITS), or unset XDG_CONFIG_HOME",
+		target, c.units, from, filepath.Join(c.home, filepath.FromSlash(target)))
+}
+
+func (c *cli) load() (*File, error) {
+	c.resolvePaths()
+	if err := c.unitsMismatch(); err != nil {
+		return nil, err
+	}
+	p := c.units
+	if c.req != nil && c.req.Staged != nil {
+		if s, ok := c.req.Staged[model.Target(c.unitsTarget())]; ok {
+			p = s
+		}
+	}
+	f, err := Load(p)
+	if errors.Is(err, fs.ErrNotExist) && c.unitsFrom == "xdg" && c.unitsTarget() != managedUnits {
+		if _, serr := os.Stat(filepath.Join(c.home, managedUnits)); serr == nil {
+			return nil, c.mismatchErr(managedUnits)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
