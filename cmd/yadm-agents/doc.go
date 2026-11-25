@@ -13,6 +13,8 @@
 //
 //	[harness.<name>]            # optional adapter settings
 //	config = "~/<file>"         # the file the adapter owns keys in
+//	trusted_projects = ["~/src/app"]  # codex only: projects to trust; each
+//	                            # ~/..., $HOME/... or absolute, inside home
 //
 //	[[unit]]                    # order matters, see below
 //	name     = "guard-a"        # letters, digits, _ and -; no dots
@@ -61,6 +63,10 @@
 //	codex     .codex/config.toml: each hooks.<Event> table by name, never
 //	          hooks.state. Codex keys hook trust by event and position, so
 //	          gen keeps every live handler at its position and appends new ones.
+//	          It also owns projects."<abs path>".trust_level = "trusted" for
+//	          each trusted_projects path, and removes only an entry it wrote
+//	          (the state file records which). An entry that was there before
+//	          gen listed the path stays when the path leaves the list.
 //	opencode  a route file (config required): event, Claude tool name and the
 //	pi        guard scripts a shared runner script runs, in unit order with
 //	          units marked first ahead. Only route lists have an order that
@@ -94,6 +100,13 @@
 // matrix prints unit × harness × machine as a table, JSON, or a parity
 // report (one line per script: harness[tokens]). For file units it compares
 // each cell with what `yadm manifest --fleet --json` delivers.
+//
+// # State
+//
+// gen records, per harness, the file it owns keys in and the trust entries
+// it wrote, in ~/.local/state/yadm-agents/state.json (a task lists it in
+// outputs). --dry-run and --as never write it. Losing it is safe: gen then
+// removes no trust entry.
 //
 // # Invocation
 //

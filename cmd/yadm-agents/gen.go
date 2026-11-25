@@ -21,6 +21,7 @@ type GenOptions struct {
 	Only      map[string]bool // harnesses to consider; empty means all
 	Prune     bool            // drop live handlers no unit produces
 	AllowDrop bool            // drop a required unit's live handlers
+	State     string          // state file; "" is <Home>/.local/state/yadm-agents/state.json
 }
 
 // Status of one harness after gen.
@@ -44,6 +45,14 @@ type HarnessResult struct {
 	Foreign  []string            `json:"foreign,omitempty"`
 	Lacks    map[string][]string `json:"lacks,omitempty"` // unit -> actions this harness has no tool for
 	Rendered []byte              `json:"-"`
+
+	next      *HarnessState // the state to record; nil keeps the old record
+	dropState bool          // the harness has no file here: forget its record
+}
+
+// truster is an adapter that owns per-project trust entries.
+type truster interface {
+	TrustKey(abs string) string
 }
 
 // Gen plans, checks and (unless dry) writes each harness's wiring.
@@ -51,6 +60,10 @@ func Gen(f *File, ev Evaluator, o GenOptions) ([]HarnessResult, error) {
 	if o.As != "" {
 		o.DryRun = true
 	}
+	if o.State == "" {
+		o.State = statePath(o.Home)
+	}
+	st := loadState(o.State)
 	var out []HarnessResult
 	for _, h := range f.Harnesses() {
 		if len(o.Only) > 0 && !o.Only[h] {
@@ -61,9 +74,79 @@ func Gen(f *File, ev Evaluator, o GenOptions) ([]HarnessResult, error) {
 			out = append(out, HarnessResult{Harness: h, Status: StatusSkipped, Reason: "no adapter for this harness"})
 			continue
 		}
-		out = append(out, genOne(f, ev, a, o))
+		out = append(out, genOne(f, ev, a, o, st.Harness[h]))
+	}
+	if o.DryRun {
+		return out, nil
+	}
+	// Record state after the harness files: a crash in between leaves an
+	// entry gen wrote unowned (never removed), never a foreign one owned.
+	for _, r := range out {
+		switch {
+		case r.next != nil:
+			st.Harness[r.Harness] = *r.next
+		case r.dropState:
+			delete(st.Harness, r.Harness)
+		}
+	}
+	if err := writeState(o.State, st); err != nil {
+		return out, fmt.Errorf("state %s: %w", o.State, err)
 	}
 	return out, nil
+}
+
+// trustPaths expands trusted_projects against home. Each must name a
+// directory strictly inside home.
+func trustPaths(list []string, home string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range list {
+		var abs string
+		switch {
+		case strings.HasPrefix(p, "~/"):
+			abs = filepath.Join(home, p[2:])
+		case strings.HasPrefix(p, "$HOME/"):
+			abs = filepath.Join(home, p[6:])
+		case filepath.IsAbs(p):
+			abs = filepath.Clean(p)
+		default:
+			return nil, fmt.Errorf("trusted_projects: %q is relative", p)
+		}
+		rel, err := filepath.Rel(home, abs)
+		if err != nil || rel == "." || !filepath.IsLocal(rel) {
+			return nil, fmt.Errorf("trusted_projects: %q is not inside home", p)
+		}
+		if !seen[abs] {
+			seen[abs] = true
+			out = append(out, abs)
+		}
+	}
+	return out, nil
+}
+
+// planTrust sets the trust entries gen owns: every listed path is trusted,
+// and a path gen trusted earlier that left the list loses its entry. It
+// returns the paths gen owns after this run: listed paths it wrote or
+// already owned. A path trusted before gen listed it stays unowned.
+func planTrust(tr truster, cur Wiring, vals map[string]string, want, prevOwned []string) (map[string]string, []string) {
+	if vals == nil {
+		vals = map[string]string{}
+	}
+	listed, prev := setOf(want...), setOf(prevOwned...)
+	var owned []string
+	for _, p := range want {
+		k := tr.TrustKey(p)
+		if prev[p] || cur.Values[k] != trustedLevel {
+			owned = append(owned, p)
+		}
+		vals[k] = trustedLevel
+	}
+	for _, p := range prevOwned {
+		if k := tr.TrustKey(p); !listed[p] && cur.Values[k] == trustedLevel {
+			vals[k] = "" // gen wrote it; take it back
+		}
+	}
+	return vals, owned
 }
 
 // resolveFor lists every unit with a cell for harness h, resolved, with
@@ -85,7 +168,7 @@ func resolveFor(f *File, ev Evaluator, h, machine string) ([]Resolved, error) {
 	return out, nil
 }
 
-func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
+func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) HarnessResult {
 	h := a.Name()
 	res := HarnessResult{Harness: h, Units: []string{}}
 	refuse := func(format string, args ...any) HarnessResult {
@@ -124,6 +207,17 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 		}
 	}
 
+	var want []string
+	tr, trusts := a.(truster)
+	switch {
+	case trusts:
+		if want, err = trustPaths(f.Harness[h].Trust, o.Home); err != nil {
+			return refuse("[harness.%s] %v", h, err)
+		}
+	case len(f.Harness[h].Trust) > 0:
+		return refuse("[harness.%s] trusted_projects: %s has no project trust", h, h)
+	}
+
 	rel := a.DefaultConfig()
 	if c := f.Harness[h].Config; c != "" {
 		rel = homeRel(c)
@@ -158,12 +252,14 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 	case err != nil && !missing:
 		return refuse("read %s: %v", path, err)
 	case missing && !a.Create():
+		res.dropState = o.As == ""
 		res.Status = StatusSkipped
 		if res.Reason == "" {
 			res.Reason = fmt.Sprintf("%s does not exist; gen never creates it", path)
 		}
 		return res
 	case missing && len(rendered.Entries) == 0:
+		res.dropState = o.As == ""
 		res.Status = StatusSkipped
 		res.Reason = "nothing to wire"
 		return res
@@ -176,6 +272,10 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 	}
 	if or, ok := a.(orderer); ok {
 		rendered = or.Order(cur, rendered)
+	}
+	var owned []string
+	if trusts {
+		rendered.Values, owned = planTrust(tr, cur, rendered.Values, want, prev.Trusted)
 	}
 	// A live owned value the units file does not render (a mod list with
 	// no mod unit for this harness) stays as it is.
@@ -228,8 +328,10 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 		return refuse("this would remove required unit(s) %s; pass --allow-drop if that is intended", strings.Join(uniq(dropped), ", "))
 	}
 
+	record := &HarnessState{Target: filepath.ToSlash(rel), Trusted: owned}
 	if len(res.Added) == 0 && len(res.Removed) == 0 {
 		res.Status = StatusUnchanged
+		res.next = record
 		return res
 	}
 	next, err := a.Apply(live, rendered, cur)
@@ -253,6 +355,7 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 		return refuse("write %s: %v", path, err)
 	}
 	res.Status = StatusWritten
+	res.next = record
 	return res
 }
 

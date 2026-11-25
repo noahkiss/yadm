@@ -124,11 +124,29 @@ func (codexAdapter) Order(live, w Wiring) Wiring {
 	return out
 }
 
+// trustedLevel is the value Codex writes for a trusted project.
+const trustedLevel = "trusted"
+
+// TrustKey names a project's trust entry in Wiring.Values. Load reads every
+// project's entry, so one gen does not own is carried as it is.
+func (codexAdapter) TrustKey(abs string) string { return trustPrefix + abs }
+
+const trustPrefix = "projects:"
+
 func (codexAdapter) Load(b []byte) (Wiring, error) {
-	var w Wiring
+	w := Wiring{Values: map[string]string{}}
 	var doc map[string]any
 	if err := toml.Unmarshal(b, &doc); err != nil {
 		return w, err
+	}
+	if ps, ok := doc["projects"].(map[string]any); ok {
+		for p, v := range ps {
+			if t, ok := v.(map[string]any); ok {
+				if lv, ok := t["trust_level"].(string); ok {
+					w.Values[trustPrefix+p] = lv
+				}
+			}
+		}
 	}
 	hooks, _ := doc["hooks"].(map[string]any)
 	for _, ev := range sortedKeys(hooks) {
@@ -195,6 +213,35 @@ func (codexAdapter) Apply(b []byte, w Wiring, prev Wiring) ([]byte, error) {
 	for _, ev := range sortedKeys(owned) {
 		keep = append(keep, "hooks."+ev)
 	}
+	// Trust entries: only the ones that change. A project table that holds
+	// nothing but its trust level is owned whole, so removing the entry
+	// leaves no empty table behind.
+	var live map[string]any
+	if err := toml.Unmarshal(b, &live); err != nil {
+		return nil, err
+	}
+	lps, _ := live["projects"].(map[string]any)
+	keys := map[string]bool{}
+	for k := range w.Values {
+		keys[k] = true
+	}
+	for k := range prev.Values {
+		keys[k] = true
+	}
+	for _, k := range sortedKeys(keys) {
+		p, ok := strings.CutPrefix(k, trustPrefix)
+		if !ok || w.Values[k] == prev.Values[k] {
+			continue
+		}
+		if v := w.Values[k]; v != "" {
+			fmt.Fprintf(&src, "[projects.%s]\ntrust_level = %s\n\n", tomlString(p), tomlString(v))
+		}
+		path := "projects." + escapeKeyPath(p)
+		if t, ok := lps[p].(map[string]any); ok && (len(t) > 1 || (len(t) == 1 && t["trust_level"] == nil)) {
+			path += ".trust_level"
+		}
+		keep = append(keep, path)
+	}
 	return rules.ToTarget([]byte(src.String()), b, rules.Spec{Format: "toml", Keep: keep}, nil)
 }
 
@@ -252,6 +299,11 @@ func (codexAdapter) Rows(w Wiring) []string {
 		rows = append(rows, fmt.Sprintf("%s\t#%d\t%s\t%s\t%s", e.Event, pos[e.Event], e.Matcher, e.Command, handlerTail(e)))
 		pos[e.Event]++
 	}
+	for _, k := range sortedKeys(w.Values) {
+		if w.Values[k] != "" {
+			rows = append(rows, fmt.Sprintf("value\t%s\t%s", k, w.Values[k]))
+		}
+	}
 	sort.Strings(rows)
 	return rows
 }
@@ -271,5 +323,25 @@ func (codexAdapter) Unowned(b []byte) (any, error) {
 			delete(doc, "hooks")
 		}
 	}
+	// Trust levels are compared as rows (every project's, owned or not), so
+	// the rest of each project table is what must stay.
+	if ps, ok := doc["projects"].(map[string]any); ok {
+		for p, v := range ps {
+			if t, ok := v.(map[string]any); ok {
+				delete(t, "trust_level")
+				if len(t) == 0 {
+					delete(ps, p)
+				}
+			}
+		}
+		if len(ps) == 0 {
+			delete(doc, "projects")
+		}
+	}
 	return doc, nil
+}
+
+// escapeKeyPath escapes one key for a rules key path.
+func escapeKeyPath(k string) string {
+	return strings.NewReplacer(`\`, `\\`, ".", `\.`, "*", `\*`).Replace(k)
 }

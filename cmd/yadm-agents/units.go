@@ -25,6 +25,9 @@ type File struct {
 // HarnessConfig holds per-harness settings from `[harness.<name>]`.
 type HarnessConfig struct {
 	Config string `toml:"config"` // the file the adapter owns keys in, relative to home
+	// Trust lists project directories the harness trusts (codex). Each is
+	// ~/..., $HOME/... or absolute, and must be inside home.
+	Trust []string `toml:"trusted_projects"`
 }
 
 // Fields are the unit fields a `[unit.harness.<name>]` table may override.
@@ -100,6 +103,13 @@ func Parse(b []byte) (*File, error) {
 	}
 	if err := flattenConditions("", raw.Conditions, f.Conditions); err != nil {
 		return nil, err
+	}
+	for h, c := range f.Harness {
+		for _, p := range c.Trust {
+			if !strings.HasPrefix(p, "~/") && !strings.HasPrefix(p, "$HOME/") && !strings.HasPrefix(p, "/") {
+				return nil, fmt.Errorf("[harness.%s] trusted_projects: %q is relative; write ~/<path> or an absolute path", h, p)
+			}
+		}
 	}
 	for i, u := range f.Units {
 		u.index = i
@@ -197,9 +207,15 @@ func (f *File) Cell(unit, harness string) (string, bool) {
 	return c, ok
 }
 
-// Harnesses lists every harness a cell names, sorted.
+// Harnesses lists every harness a cell or a trusted_projects list names,
+// sorted.
 func (f *File) Harnesses() []string {
 	seen := map[string]bool{}
+	for h, c := range f.Harness {
+		if len(c.Trust) > 0 {
+			seen[h] = true
+		}
+	}
 	for name := range f.Conditions {
 		if u, h, ok := splitCell(name); ok && f.byName[u] != nil {
 			seen[h] = true

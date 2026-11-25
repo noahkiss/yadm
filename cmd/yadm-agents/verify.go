@@ -47,6 +47,18 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 		}
 	}
 
+	for _, h := range sortedKeys(f.Harness) {
+		if len(f.Harness[h].Trust) == 0 {
+			continue
+		}
+		a, ok := adapterFor(h)
+		if _, trusts := a.(truster); ok && !trusts {
+			errf("[harness.%s] trusted_projects: %s has no project trust", h, h)
+		} else if _, err := trustPaths(f.Harness[h].Trust, o.Home); err != nil {
+			errf("[harness.%s] %v", h, err)
+		}
+	}
+
 	for _, u := range f.Units {
 		if deref(u.Kind) == "" {
 			errf("unit %q: kind is empty", u.Name)
