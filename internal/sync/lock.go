@@ -236,15 +236,15 @@ func (l fileLock) Acquire(ctx context.Context) (func(), error) {
 		if ok {
 			return l.hold(f), nil
 		}
-		if first {
-			h := readHolder(filepath.Join(l.dir, l.file))
-			if l.file == LockFile && ownHolder(h) {
-				f.Close()
-				return nil, &LockedError{Lock: l.name(), Holder: h, Cause: ErrSelfLocked}
-			}
-			if l.onWait != nil && l.timeout > 0 {
-				l.onWait(h, l.timeout)
-			}
+		// The holder is read on every attempt, not only the first: the parent
+		// that runs this process may take the lock after another holder lets go.
+		h := readHolder(filepath.Join(l.dir, l.file))
+		if l.file == LockFile && ownHolder(h) {
+			f.Close()
+			return nil, &LockedError{Lock: l.name(), Holder: h, Cause: ErrSelfLocked}
+		}
+		if first && l.onWait != nil && l.timeout > 0 {
+			l.onWait(h, l.timeout)
 		}
 		if !time.Now().Before(deadline) {
 			f.Close()

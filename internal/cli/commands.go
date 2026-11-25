@@ -83,6 +83,10 @@ func (a *app) register(root *cobra.Command) {
 	rt.Flags().String("enclave", "", "seal for this enclave; empty stores plaintext")
 	rt.Flags().String("source", "", "pick one of several entries for the path by its source (files/... or sealed/<enclave>/...)")
 	rt.Flags().Bool("dry-run", false, "plan only")
+	rt.Long = "Change which types receive one or more paths, resealing as needed, in one commit.\n\n" +
+		"Several paths commit together: if any path is refused, nothing is committed.\n" +
+		"A path under an owned root that seals for an enclave is refused (exit 6) unless\n" +
+		"--enclave names that enclave, so a retag never moves a file out of its enclave."
 	tr := exact(leaf(root, "track <path>", "Start syncing a file no entry or owned root covers yet; capture a new file under a glob entry", a.cmdTrack), 1)
 	tr.Flags().String("when", "", "condition for the new entry; empty sends it to every machine")
 	tr.Flags().String("enclave", "", "seal for this enclave (this machine must be a member); empty stores plaintext")
@@ -93,7 +97,9 @@ func (a *app) register(root *cobra.Command) {
 		"files/<target> (or sealed/<enclave>/<target>) with .<name> before the extension, e.g.\n" +
 		"route.toml becomes route.<name>.toml. --when is required, must be true on this machine\n" +
 		"(the variant captures this file), and must not select a machine another entry for the\n" +
-		"path already applies to. untrack and retag pick a variant with --source."
+		"path already applies to. untrack and retag pick a variant with --source.\n\n" +
+		"A path under an owned root that seals for an enclave is refused (exit 6) unless\n" +
+		"--enclave names that enclave, so a file there never becomes plaintext."
 	ut := exact(leaf(root, "untrack <path>", "Stop syncing a file: remove its manifest entry and source in one commit; the file stays here", a.cmdUntrack), 1)
 	ut.Flags().String("source", "", "pick one of several entries for the path by its source (files/... or sealed/<enclave>/...)")
 	ut.Flags().Bool("dry-run", false, "plan only")

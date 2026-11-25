@@ -2,8 +2,10 @@ package sync
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -114,5 +116,33 @@ func TestCommitBuildSeesTheMainItLandsOn(t *testing.T) {
 	rep, err = A.s.Commit(ctx, CommitOptions{Push: true, Build: func(context.Context) (*apply.Capture, []store.Change, error) { return nil, nil, nil }})
 	if err != nil || len(rep.Committed) != 0 || A.main() != head {
 		t.Fatalf("empty build: %+v %v", rep, err)
+	}
+}
+
+// TestAcquireNoticesItsParentTakingTheLock: a command waits behind another
+// holder, and then the yadm that runs it takes the lock. The wait must end
+// at once with ErrSelfLocked, not run out its bound behind the parent.
+func TestAcquireNoticesItsParentTakingTheLock(t *testing.T) {
+	dir := t.TempDir()
+	release, err := FileLock(dir).Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	parent := os.Getppid() // alive, and not this process
+	t.Setenv(extexec.EnvParentPID, strconv.Itoa(parent))
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		b, _ := json.Marshal(Holder{PID: parent, Command: "yadm sync", Since: time.Now()})
+		_ = os.WriteFile(filepath.Join(dir, LockFile), b, 0o600)
+	}()
+	start := time.Now()
+	_, err = FileLockTimeout(dir, 10*time.Second).Acquire(context.Background())
+	if !errors.Is(err, ErrSelfLocked) {
+		t.Fatalf("acquire after the parent took the lock: %v", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("acquire waited %v after the parent took the lock", d)
 	}
 }
