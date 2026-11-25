@@ -22,6 +22,11 @@ var fileHoldReasons = map[model.HoldReason]bool{
 	model.HoldNeedsDecision: true,
 }
 
+// ExpectTask is the Task of the seal_guard hold on a file that `yadm commit
+// --expect-enclave` refused (package sync). Scan-driven captures skip it.
+// It goes with the file, or once the file is back at what was written.
+const ExpectTask = "expect-enclave"
+
 // HoldID returns the stable id of a hold. It is model.HoldID, kept here for
 // callers of this package.
 func HoldID(h model.Hold) string { return model.HoldID(h) }
@@ -176,7 +181,7 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 			n++
 			continue
 		}
-		if h.Target != "" && !managed && !drifting[h.Target] && goneReasons[h.Reason] && e.gone(h.Target) {
+		if h.Target != "" && !managed && !drifting[h.Target] && (goneReasons[h.Reason] || h.Task == ExpectTask) && e.gone(h.Target) {
 			n++
 			continue
 		}

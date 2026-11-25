@@ -547,15 +547,16 @@ func (s *Syncer) Run(ctx context.Context, opts Options) (Report, error) {
 }
 
 // withoutDeferred drops the drift of targets with a deferred decision whose
-// hold is still open (see Deferral), except those keep approves. A dropped target is not
-// captured, so its hold stays and it stays uncommitted.
+// hold is still open (see Deferral), and of targets an expect-enclave commit
+// refused (apply.ExpectTask), except those keep approves. A dropped target
+// is not captured, so its hold stays and it stays uncommitted.
 func (s *Syncer) withoutDeferred(drift []apply.Drift, keep func(model.Target) bool) []apply.Drift {
-	if s.Deferred == nil || len(drift) == 0 {
+	if len(drift) == 0 {
 		return drift
 	}
-	def := s.Deferred()
-	if len(def) == 0 {
-		return drift
+	var def []Deferral
+	if s.Deferred != nil {
+		def = s.Deferred()
 	}
 	st, err := s.Apply.State.Load()
 	if err != nil {
@@ -579,7 +580,7 @@ func (s *Syncer) withoutDeferred(drift []apply.Drift, keep func(model.Target) bo
 			id = apply.HoldID(h)
 		}
 		_, managed := st.Targets[h.Target]
-		if ids[id] || (newFile[h.Target] && h.Reason == model.HoldProtected && !managed) {
+		if ids[id] || h.Task == apply.ExpectTask || (newFile[h.Target] && h.Reason == model.HoldProtected && !managed) {
 			held[h.Target] = true
 		}
 	}

@@ -74,7 +74,9 @@ func (a *app) register(root *cobra.Command) {
 		"unless every captured file under the named paths has its source under sealed/<e>/,\n" +
 		"and every named path that captured nothing is a target sealed for <e> here. It\n" +
 		"covers a brand-new file, which has no protection to lose: a plain glob entry, an\n" +
-		"owned root this machine has not allowed or an ignore rule would otherwise decide it."
+		"owned root this machine has not allowed or an ignore rule would otherwise decide it.\n" +
+		"A refused file stays in $HOME under a seal_guard hold: the timer and hooks never\n" +
+		"commit it, and only a commit that names it does."
 	sy := leaf(root, "sync", "Capture, commit by policy, fetch, replay, apply and push", a.cmdSync)
 	sy.Flags().Bool("auto", false, "timer mode: auto-commit by policy; implies --quick unless --full")
 	sy.Flags().Bool("quick", false, "check cheaply first (scan, ls-remote); sync in full only when something moved")

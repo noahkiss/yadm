@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/noahkiss/yadm/internal/apply"
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -557,7 +558,16 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if opts.ExpectEnclave != "" {
 		// After capture recorded its holds, before the commit plans,
 		// changes holds or writes a blob: a refusal commits nothing.
-		if err := expectSealed(cp, snap, opts.Paths, opts.ExpectEnclave); err != nil {
+		if bad, err := expectSealed(cp, snap, opts.Paths, opts.ExpectEnclave); err != nil {
+			if !opts.DryRun && len(bad) > 0 {
+				// The refused files stay in $HOME. Hold each one so no
+				// timer or hook commits it later in plaintext: only an
+				// attended commit that names it does (withoutDeferred).
+				holdRefused(st, s.now(), cp, bad, opts.ExpectEnclave)
+				if serr := s.Apply.State.Save(st); serr != nil {
+					return rep, serr
+				}
+			}
 			return rep, err
 		}
 	}
@@ -815,10 +825,14 @@ var ErrNotSealed = errors.New("not sealed for the expected enclave")
 // A brand-new file has no protection to lose, so seal_guard does not hold
 // it: a plain glob entry, an unaccepted root or an ignore rule would
 // otherwise commit it in plaintext.
-func expectSealed(cp apply.Capture, snap *apply.Snapshot, paths []model.Target, e model.EnclaveName) error {
+//
+// It also returns the captured targets it refused: the files a later
+// unattended capture would otherwise commit outside the enclave.
+func expectSealed(cp apply.Capture, snap *apply.Snapshot, paths []model.Target, e model.EnclaveName) ([]model.Target, error) {
 	if len(paths) == 0 {
-		return fmt.Errorf("%w: expect-enclave %s needs the paths to commit", ErrNotSealed, e)
+		return nil, fmt.Errorf("%w: expect-enclave %s needs the paths to commit", ErrNotSealed, e)
 	}
+	var refused []model.Target
 	prefix := "sealed/" + string(e) + "/"
 	var bad []string
 	covered := map[model.Target]bool{}
@@ -831,6 +845,7 @@ func expectSealed(cp apply.Capture, snap *apply.Snapshot, paths []model.Target, 
 		src, scope := cp.Changes[i].Path, scopeOf(cp, t)
 		if scope != model.Scope(e) || !strings.HasPrefix(string(src), prefix) {
 			bad = append(bad, fmt.Sprintf("%s would commit to %s (scope %s)", t, src, scope))
+			refused = append(refused, t)
 		}
 	}
 	for _, p := range paths {
@@ -846,9 +861,23 @@ func expectSealed(cp apply.Capture, snap *apply.Snapshot, paths []model.Target, 
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)
-		return fmt.Errorf("%w %s; nothing committed: %s", ErrNotSealed, e, strings.Join(bad, "; "))
+		return refused, fmt.Errorf("%w %s; nothing committed: %s", ErrNotSealed, e, strings.Join(bad, "; "))
 	}
-	return nil
+	return nil, nil
+}
+
+// holdRefused puts a seal_guard hold with Task apply.ExpectTask on each
+// target an expect-enclave commit refused. While it stands, scan-driven
+// captures (the timer, the hooks) skip the target; an attended commit that
+// names it captures it and clears the hold. It goes, too, once the file is
+// gone or back at what this machine wrote (apply.Engine.SettleHolds).
+func holdRefused(st *apply.State, now time.Time, cp apply.Capture, ts []model.Target, e model.EnclaveName) {
+	for _, t := range ts {
+		h := model.KeepSince(st.Holds, model.Hold{Target: t, Task: apply.ExpectTask, Scope: scopeOf(cp, t), Reason: model.HoldSealGuard, Since: now}, now)
+		h.Detail = fmt.Sprintf("yadm commit --expect-enclave %s refused it: it would not be sealed for %s; no timer or hook commits it. Move it where %s seals it, fix the manifest, or delete it", e, e, e)
+		h.Next = []string{"yadm hold show " + h.ID, "yadm commit --expect-enclave " + model.ShellQuote(string(e)) + " " + model.ShellQuote(string(t))}
+		putHold(st, h)
+	}
 }
 
 func named(paths []model.Target, t model.Target) bool {
