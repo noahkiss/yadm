@@ -62,6 +62,11 @@ func (e *Engine) HoldBack(_ context.Context, ws []Weakening, commit model.Commit
 		if _, ok := st.Floors[w.Target]; ok {
 			continue
 		}
+		if len(weakerBy(w.from, protection{})) == 0 {
+			// Only Guard.Weakenings fills from; a floor of nothing
+			// would hold nothing. Fail closed.
+			return nil, fmt.Errorf("hold back %s: the weakening carries no protection to keep", w.Target)
+		}
 		if st.Floors == nil {
 			st.Floors = map[model.Target]Floor{}
 		}

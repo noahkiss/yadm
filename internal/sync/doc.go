@@ -67,8 +67,10 @@
 //  7. Publish the status record to this machine's status ref: holds (count,
 //     conflicts, oldest, count per model.HoldKind), tasks, published facts,
 //     alerts, the pinned key-log head of each enclave, and this machine's
-//     home and user (read only by show --as). A change to the holds the
-//     record shows publishes at once, not only hourly.
+//     home and user (read only by show --as). The hold counts leave out the
+//     drift of pending edits. A change to them publishes at once, not only
+//     hourly; when replay or apply changed the holds after step 3, the
+//     collectors run again first.
 //  8. Release the sync lock; push main, the status ref and advanced
 //     reviewed refs atomically under the network lock. A rejection is not
 //     an error: go back to 4 (fetch, then 5 to 7 under the sync lock again),

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/noahkiss/yadm/internal/extexec"
@@ -28,7 +29,10 @@ func collectWith(ctx context.Context, f *fleet.File, mctx model.Context, r extex
 
 // publish writes this machine's status record to its status ref when one is
 // due: after a sync that changed something, and at least hourly.
-func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, pendingCount int) error {
+// pend lists the captured edits not committed yet: their drift holds are
+// not counted, since a pending edit is not a problem.
+func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, pend []model.Target) error {
+	pendingCount := len(pend)
 	if s.Status == nil {
 		return nil
 	}
@@ -65,8 +69,10 @@ func (s *Syncer) publish(ctx context.Context, tip model.CommitID, changed bool, 
 	if last != nil && (last.Home != s.Apply.Home || last.User != s.Apply.User) {
 		changed = true // show --as on peers renders with them
 	}
-	held, conflicts, oldest, kinds := holdCounts(st.Holds)
-	if last != nil && (last.Held != held || last.Conflicts != conflicts || !sameTime(last.OldestHeld, oldest) || !maps.Equal(last.HoldKinds, kinds)) {
+	held, conflicts, oldest, kinds := holdCounts(reportHolds(st, pend))
+	// oldest_held is not compared: a gate hold raised again on each sync
+	// gets a new Since, and would republish every sync.
+	if last != nil && (last.Held != held || last.Conflicts != conflicts || !maps.Equal(last.HoldKinds, kinds)) {
 		changed = true // fleet alerts read the holds; do not wait for the hourly record
 	}
 	if !fleet.PublishDue(last, changed, now) {
@@ -162,11 +168,19 @@ func holdCounts(holds []model.Hold) (held, conflicts int, oldest *time.Time, kin
 	return held, conflicts, oldest, kinds
 }
 
-func sameTime(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == b
+// holdSet is a fingerprint of this machine's holds (kind and target or
+// task of each), or "" when the state does not load.
+func (s *Syncer) holdSet() string {
+	st, err := s.Apply.State.Load()
+	if err != nil || st == nil {
+		return ""
 	}
-	return a.Equal(*b)
+	keys := make([]string, 0, len(st.Holds))
+	for _, h := range st.Holds {
+		keys = append(keys, model.HoldKind(h)+"\x00"+string(h.Target))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\x01")
 }
 
 func (s *Syncer) alertsPath() string { return filepath.Join(s.Apply.StateDir, AlertsFile) }

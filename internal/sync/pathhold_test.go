@@ -303,6 +303,12 @@ func TestPathHoldLocalSealedCommitReplayed(t *testing.T) {
 	if got := A.read(sec2Private); got != "note "+canary.String()+"\n" {
 		t.Errorf("the held note changed: %q", got)
 	}
+	// Resolving the replay's conflict on the note by taking this
+	// machine's file commits nothing plain.
+	_, _ = A.s.Commit(ctx, CommitOptions{Paths: []model.Target{sec2Private}, Resolve: true, Push: true})
+	if r = A.sync(); heldOn(r, sec2Private) == nil {
+		t.Fatalf("hold lost after a resolve: %+v", r.Holds)
+	}
 	secrecytest.AssertRepoClean(t, w.remote, canary)
 	secrecytest.AssertTreeClean(t, B.home, canary)
 }

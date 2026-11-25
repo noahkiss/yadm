@@ -62,8 +62,9 @@ func (c *clock) Now() time.Time { return time.Now().Add(c.offset) }
 // fakeExec answers every external call. A check fails when fail returns true
 // for the check and one of its staged targets.
 type fakeExec struct {
-	fail  func(check string, t model.Target) bool
-	calls []extexec.Request
+	fail    func(check string, t model.Target) bool
+	collect func() []string // the collector's items; nil: a fixed list
+	calls   []extexec.Request
 }
 
 func (x *fakeExec) Run(_ context.Context, _ extexec.Spec, req extexec.Request) (extexec.Result, error) {
@@ -76,6 +77,9 @@ func (x *fakeExec) Run(_ context.Context, _ extexec.Spec, req extexec.Request) (
 			}
 		}
 	case extexec.KindCollector:
+		if x.collect != nil {
+			return extexec.Result{Items: x.collect()}, nil
+		}
 		return extexec.Result{Items: []string{"tool-one", "tool-two"}}, nil
 	}
 	return extexec.Result{}, nil
