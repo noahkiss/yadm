@@ -68,6 +68,13 @@ func (a *app) register(root *cobra.Command) {
 	cm.Flags().String("why", "", "short intent; used as the subject when -m is not given")
 	cm.Flags().Bool("no-push", false, "commit only; the next sync pushes")
 	cm.Flags().Bool("dry-run", false, "plan only")
+	cm.Flags().String("expect-enclave", "", "refuse (exit 6) and commit nothing unless every named path seals for this enclave")
+	cm.Long = "Capture, gate and commit now, one commit per scope; a named deleted file drops its source and its own entry.\n\n" +
+		"With --expect-enclave <e>, the commit is refused (exit 6) and nothing is committed\n" +
+		"unless every captured file under the named paths has its source under sealed/<e>/,\n" +
+		"and every named path that captured nothing is a target sealed for <e> here. It\n" +
+		"covers a brand-new file, which has no protection to lose: a plain glob entry, an\n" +
+		"owned root this machine has not allowed or an ignore rule would otherwise decide it."
 	sy := leaf(root, "sync", "Capture, commit by policy, fetch, replay, apply and push", a.cmdSync)
 	sy.Flags().Bool("auto", false, "timer mode: auto-commit by policy; implies --quick unless --full")
 	sy.Flags().Bool("quick", false, "check cheaply first (scan, ls-remote); sync in full only when something moved")
@@ -166,6 +173,7 @@ func (a *app) register(root *cobra.Command) {
 	leaf(ts, "list", "List definitions and whether this machine allows them", a.cmdTaskList)
 	leaf(ts, "allow [name...]", "Allow current definitions on this machine", a.cmdTaskAllow)
 	exact(leaf(ts, "run <name>", "Run one task now", a.cmdTaskRun), 1)
+	a.registerPlugins(root)
 
 	sc := a.group(root, "schedule", "The sync schedule (launchd or systemd)")
 	leaf(sc, "install", "Install and load the schedule", a.cmdScheduleInstall)
@@ -729,8 +737,12 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 	why, _ := cmd.Flags().GetString("why")
 	noPush, _ := cmd.Flags().GetBool("no-push")
 	dry, _ := cmd.Flags().GetBool("dry-run")
+	expect, _ := cmd.Flags().GetString("expect-enclave")
 	if msg == "" {
 		msg = why
+	}
+	if expect != "" && len(args) == 0 {
+		return result{}, usagef("--expect-enclave needs the paths to commit")
 	}
 	m, err := open(ctx)
 	if err != nil {
@@ -765,7 +777,7 @@ func (a *app) cmdCommit(cmd *cobra.Command, args []string) (result, error) {
 			return result{}, err
 		}
 	}
-	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry, Push: !noPush && !dry})
+	rep, pushErr, err := m.commitThrough(ctx, a.version, sync.CommitOptions{Message: msg, Paths: paths, DryRun: dry, Push: !noPush && !dry, ExpectEnclave: model.EnclaveName(expect)})
 	if err != nil {
 		return result{}, err
 	}

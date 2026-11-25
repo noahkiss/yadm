@@ -133,6 +133,32 @@ type CheckDef struct {
 	Timeout model.Duration `toml:"timeout" json:"timeout"` // default 30s
 }
 
+// PluginDef declares a plugin: `yadm <name> args...` runs Command with args
+// appended and the caller's stdio passed through. Command[0] and News[0]
+// are paths relative to $HOME, so a plugin needs no PATH entry. A plugin
+// runs only after this machine allowed its definition and the bytes of its
+// executables.
+type PluginDef struct {
+	Command []string `toml:"command" json:"command"`
+	When    string   `toml:"when" json:"when,omitempty"`
+	Schema  int      `toml:"schema" json:"schema,omitempty"`   // the exec contract version it speaks; 0 means 1
+	Summary string   `toml:"summary" json:"summary,omitempty"` // one line for `yadm --help`
+	// News is the argv of an optional read-only query that
+	// `yadm hook session-start` runs under the exec contract (kind news).
+	News []string `toml:"news" json:"news,omitempty"`
+}
+
+// ReservedNames are the built-in command names of the CLI. A plugin may not
+// take one; the CLI's tests keep the list equal to its command tree.
+var ReservedNames = []string{
+	"adopt", "alt", "apply", "backups", "bisect", "bootstrap", "capture", "check", "clone", "collect",
+	"commit", "conflicts", "decrypt", "defer", "diff", "encrypt", "enclave", "enter", "eval", "explain",
+	"fleet", "git", "gitconfig", "help", "hold", "holds", "hook", "import", "init", "introspect", "lease",
+	"list", "log", "machine", "managed", "manifest", "pause", "perms", "plugin", "protection", "reroot",
+	"resume", "retag", "review", "root", "schedule", "show", "source", "status", "sync", "task", "track",
+	"untrack", "upgrade", "version", "where", "why",
+}
+
 // UnitKind is a service manager.
 type UnitKind string
 
@@ -165,14 +191,15 @@ const (
 
 // Manifest is the parsed manifest file.
 type Manifest struct {
-	Schema    int                 `toml:"schema" json:"schema"`
-	Defaults  Defaults            `toml:"defaults" json:"defaults"`
-	Entries   []Entry             `toml:"file" json:"files"`
-	Roots     []Root              `toml:"root" json:"roots,omitempty"`
-	Tasks     map[string]TaskDef  `toml:"tasks" json:"tasks,omitempty"`
-	Checks    map[string]CheckDef `toml:"checks" json:"checks,omitempty"`
-	Units     []Unit              `toml:"unit" json:"units,omitempty"`
-	Protected []string            `toml:"protected" json:"protected,omitempty"` // extra never-auto-commit globs
+	Schema    int                  `toml:"schema" json:"schema"`
+	Defaults  Defaults             `toml:"defaults" json:"defaults"`
+	Entries   []Entry              `toml:"file" json:"files"`
+	Roots     []Root               `toml:"root" json:"roots,omitempty"`
+	Tasks     map[string]TaskDef   `toml:"tasks" json:"tasks,omitempty"`
+	Checks    map[string]CheckDef  `toml:"checks" json:"checks,omitempty"`
+	Units     []Unit               `toml:"unit" json:"units,omitempty"`
+	Plugins   map[string]PluginDef `toml:"plugins" json:"plugins,omitempty"`
+	Protected []string             `toml:"protected" json:"protected,omitempty"` // extra never-auto-commit globs
 	// Conditions is the raw `[conditions]` table: named conditions and
 	// `include`. Parse turns it into Definitions and Includes.
 	Conditions map[string]any `toml:"conditions" json:"-"`
@@ -193,8 +220,9 @@ type Resolved struct {
 type Plan struct {
 	Targets map[model.Target]Resolved
 	Roots   []Root
-	Tasks   map[string]TaskDef  // only tasks whose `when` matched
-	Checks  map[string]CheckDef // only checks whose `when` matched
+	Tasks   map[string]TaskDef   // only tasks whose `when` matched
+	Checks  map[string]CheckDef  // only checks whose `when` matched
+	Plugins map[string]PluginDef // only plugins whose `when` matched
 
 	m     *Manifest
 	cands [][]candidate // per entry: what it would produce

@@ -80,6 +80,7 @@ var refusals = []error{
 	crypt.ErrBrokenChain,
 	crypt.ErrNotMember,
 	sync.ErrRerootRefused,
+	sync.ErrNotSealed,
 	apply.ErrRootRefused,
 }
 
@@ -262,8 +263,21 @@ func (a *app) root() *cobra.Command {
 
 	defHelp := root.HelpFunc()
 	root.SetHelpFunc(func(c *cobra.Command, args []string) {
+		// The root's help lists the plugins `yadm <name>` runs here.
+		var plugins []pluginView
+		if !c.HasParent() {
+			plugins = pluginHelpLines()
+		}
 		if !a.json {
 			defHelp(c, args)
+			if len(plugins) > 0 {
+				var b strings.Builder
+				b.WriteString("\nPlugins (yadm plugin list):\n")
+				for _, p := range plugins {
+					fmt.Fprintf(&b, "  %-20s %s\n", p.Name, p.Def.Summary)
+				}
+				fmt.Fprint(c.OutOrStdout(), b.String())
+			}
 			return
 		}
 		var subs []string
@@ -272,9 +286,15 @@ func (a *app) root() *cobra.Command {
 				subs = append(subs, s.CommandPath())
 			}
 		}
-		a.emit(strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), "yadm")), result{data: map[string]any{
-			"usage": c.UseLine(), "short": c.Short, "commands": subs, "flags": c.Flags().FlagUsages(),
-		}}, nil)
+		data := map[string]any{"usage": c.UseLine(), "short": c.Short, "commands": subs, "flags": c.Flags().FlagUsages()}
+		if !c.HasParent() {
+			ps := []map[string]string{}
+			for _, p := range plugins {
+				ps = append(ps, map[string]string{"name": p.Name, "summary": p.Def.Summary})
+			}
+			data["plugins"] = ps
+		}
+		a.emit(strings.TrimSpace(strings.TrimPrefix(c.CommandPath(), "yadm")), result{data: data}, nil)
 	})
 
 	a.register(root)
@@ -385,6 +405,9 @@ func mainWith(a *app, args []string) int {
 	root := a.root()
 
 	if name, rest, ok := externalName(root, args); ok {
+		if a.runPlugin(name, pluginArgs(args), hasJSONFlag(args)) {
+			return a.code
+		}
 		a.json = hasJSONFlag(args)
 		res, err := a.runExternal(name, rest)
 		a.emit(name, res, err)

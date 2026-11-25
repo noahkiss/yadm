@@ -554,6 +554,13 @@ func (s *Syncer) Commit(ctx context.Context, opts CommitOptions) (Report, error)
 	if err != nil {
 		return rep, err
 	}
+	if opts.ExpectEnclave != "" {
+		// After capture recorded its holds, before the commit plans,
+		// changes holds or writes a blob: a refusal commits nothing.
+		if err := expectSealed(cp, snap, opts.Paths, opts.ExpectEnclave); err != nil {
+			return rep, err
+		}
+	}
 	pol := s.policyFor(snap)
 	now := s.now()
 	info := MessageInfo{Trigger: opts.Trigger, Subject: opts.Message, Session: opts.Session, Tool: opts.Tool}
@@ -798,6 +805,52 @@ func dropHolds(st *apply.State, t model.Target, reasons ...model.HoldReason) {
 }
 
 // named reports whether t is one of paths or below one of them.
+// ErrNotSealed is the error of a commit with CommitOptions.ExpectEnclave
+// whose paths do not all seal for that enclave. Nothing was committed.
+var ErrNotSealed = errors.New("not sealed for the expected enclave")
+
+// expectSealed checks CommitOptions.ExpectEnclave: every captured change
+// has its source under sealed/<e>/ in scope e, and every named path that
+// captured nothing is a target whose source is under sealed/<e>/ in snap.
+// A brand-new file has no protection to lose, so seal_guard does not hold
+// it: a plain glob entry, an unaccepted root or an ignore rule would
+// otherwise commit it in plaintext.
+func expectSealed(cp apply.Capture, snap *apply.Snapshot, paths []model.Target, e model.EnclaveName) error {
+	if len(paths) == 0 {
+		return fmt.Errorf("%w: expect-enclave %s needs the paths to commit", ErrNotSealed, e)
+	}
+	prefix := "sealed/" + string(e) + "/"
+	var bad []string
+	covered := map[model.Target]bool{}
+	for i, t := range cp.Paths {
+		for _, p := range paths {
+			if named([]model.Target{p}, t) {
+				covered[p] = true
+			}
+		}
+		src, scope := cp.Changes[i].Path, scopeOf(cp, t)
+		if scope != model.Scope(e) || !strings.HasPrefix(string(src), prefix) {
+			bad = append(bad, fmt.Sprintf("%s would commit to %s (scope %s)", t, src, scope))
+		}
+	}
+	for _, p := range paths {
+		if covered[p] {
+			continue
+		}
+		if snap != nil && snap.Plan != nil {
+			if r, ok := snap.Plan.Targets[p]; ok && strings.HasPrefix(string(r.Source), prefix) {
+				continue // unchanged, and already sealed for e
+			}
+		}
+		bad = append(bad, fmt.Sprintf("%s captured nothing and is not a target sealed for %s here", p, e))
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf("%w %s; nothing committed: %s", ErrNotSealed, e, strings.Join(bad, "; "))
+	}
+	return nil
+}
+
 func named(paths []model.Target, t model.Target) bool {
 	for _, p := range paths {
 		if p == t || strings.HasPrefix(string(t), strings.TrimSuffix(string(p), "/")+"/") {

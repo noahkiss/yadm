@@ -917,6 +917,8 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	if len(lines) > 10 {
 		lines = append(lines[:9], "yadm: more in yadm status")
 	}
+	// Plugin news has its own budget (pluginNews), after yadm's lines.
+	lines = append(lines, m.pluginNews(ctx, in.SessionID)...)
 	return Verdict{Context: strings.Join(lines, "\n")}, nil
 }
 

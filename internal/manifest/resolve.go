@@ -70,8 +70,8 @@ func (m *Manifest) Validate(v cond.Vocabulary) error {
 }
 
 type conds struct {
-	entries, units, roots []cond.Expr
-	tasks, checks         map[string]cond.Expr
+	entries, units, roots  []cond.Expr
+	tasks, checks, plugins map[string]cond.Expr
 }
 
 func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
@@ -98,7 +98,7 @@ func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
 			errs = append(errs, fmt.Errorf("%s: %s: type %q is not an enclave", FileName, where, name))
 		}
 	}
-	c := &conds{tasks: map[string]cond.Expr{}, checks: map[string]cond.Expr{}}
+	c := &conds{tasks: map[string]cond.Expr{}, checks: map[string]cond.Expr{}, plugins: map[string]cond.Expr{}}
 	for i, e := range m.Entries {
 		where := fmt.Sprintf("file[%d] %q", i, e.Target)
 		c.entries = append(c.entries, parse(where, e.When))
@@ -129,6 +129,9 @@ func (m *Manifest) conditions(v cond.Vocabulary) (*conds, error) {
 	}
 	for _, name := range sortedKeys(m.Checks) {
 		c.checks[name] = parse("checks."+name, m.Checks[name].When)
+	}
+	for _, name := range sortedKeys(m.Plugins) {
+		c.plugins[name] = parse("plugins."+name, m.Plugins[name].When)
 	}
 	return c, errors.Join(errs...)
 }
@@ -220,6 +223,7 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 		Targets: map[model.Target]Resolved{},
 		Tasks:   map[string]TaskDef{},
 		Checks:  map[string]CheckDef{},
+		Plugins: map[string]PluginDef{},
 		m:       m,
 	}
 	var errs []error
@@ -290,6 +294,11 @@ func (m *Manifest) Resolve(ctx model.Context, tree []model.SourcePath, v cond.Vo
 	for name, ch := range m.Checks {
 		if c.checks[name].Eval(ctx) {
 			p.Checks[name] = ch
+		}
+	}
+	for name, pl := range m.Plugins {
+		if c.plugins[name].Eval(ctx) {
+			p.Plugins[name] = pl
 		}
 	}
 	return p, nil

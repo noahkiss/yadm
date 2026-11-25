@@ -115,7 +115,9 @@
 // Exported API:
 //
 //	type Options struct{ Auto, Push, DryRun bool; MaxRetries int; Quick, Carry bool }
-//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Build; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
+//	type CommitOptions struct{ Message; Paths; DryRun; Capture; Changes; ChangesScope; Build; Atomic; Forget; Trigger; Session; Tool; Unattended; Resolve; ExpectEnclave; Push; MaxRetries } // Forget: targets an untrack stops managing here once its commit lands, before the apply
+//	(ExpectEnclave: every named path seals for that enclave, or the commit fails with ErrNotSealed before it changes anything)
+//	var ErrNotSealed
 //	(Build computes Capture and Changes under the commit's hold of the sync lock, on the main it lands on)
 //	type MessageInfo struct{ Trigger, Subject, Session, Tool string }; Trigger* and Trailer* constants
 //	type RemoteHeads interface{ RemoteHeads(ctx) (map[string]model.CommitID, error) } // the quick check; *store.Repo
