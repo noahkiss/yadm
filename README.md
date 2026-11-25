@@ -1,4 +1,6 @@
-<h1 align="center">yadm</h1>
+<p align="center"><img src="docs/assets/banner.jpg" alt="A hedgehog with headphones and a laptop sits in a meadow beside three round burrow doors, one of them padlocked" width="100%"></p>
+
+<h1 align="center"><img src="docs/assets/mark.png" alt="" width="48" height="48" align="absmiddle"> yadm</h1>
 
 <p align="center">Yet another dotfiles manager (again!): one setup across personal, work and client machines, built for agents and humans.</p>
 
