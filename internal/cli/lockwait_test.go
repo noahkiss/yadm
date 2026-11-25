@@ -90,7 +90,7 @@ func TestRetagWaitsForTheLock(t *testing.T) {
 	}
 }
 
-// TestReadOnlyCommandsSkipTheLock: why, managed, status, manifest and show
+// TestReadOnlyCommandsSkipTheLock: why, managed, list, status, manifest and show
 // read; they never wait for the sync lock a sync holds.
 func TestReadOnlyCommandsSkipTheLock(t *testing.T) {
 	hermetic(t)
@@ -102,6 +102,7 @@ func TestReadOnlyCommandsSkipTheLock(t *testing.T) {
 	for _, args := range [][]string{
 		{"why", ".config/tool/config"},
 		{"managed", ".config/tool/config"},
+		{"list"},
 		{"status"},
 		{"manifest"},
 		{"show", ".config/tool/config"},

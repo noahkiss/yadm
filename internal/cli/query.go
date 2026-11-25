@@ -186,6 +186,47 @@ func (a *app) cmdManaged(cmd *cobra.Command, args []string) (result, error) {
 	return result{data: d, text: fmt.Sprintf("%s: managed=%v %s", t, d.Managed, d.Source)}, nil
 }
 
+// listData is the output of yadm list: the targets machine manages, sorted.
+type listData struct {
+	Machine model.MachineID `json:"machine"`
+	Targets []managedData   `json:"targets"`
+}
+
+// cmdList lists the targets a machine manages: this machine's plan, or with
+// --as a fleet machine's, resolved as yadm manifest --as does. It reads no
+// file content and takes no lock.
+func (a *app) cmdList(cmd *cobra.Command, args []string) (result, error) {
+	ctx := cmd.Context()
+	m, err := openLoaded(ctx)
+	if err != nil {
+		return notInit(err), err
+	}
+	ids, err := pickMachines(cmd, m)
+	if err != nil {
+		return result{}, err
+	}
+	d := listData{Machine: ids[0], Targets: []managedData{}}
+	if as, _ := cmd.Flags().GetString("as"); as == "" {
+		for t, r := range m.snap.Plan.Targets {
+			d.Targets = append(d.Targets, managedData{Target: t, Managed: true, Scope: r.Entry.Scope(), Source: r.Source})
+		}
+	} else {
+		mm := resolveFor(m, statuses(ctx, m), ids[0])
+		if mm.Error != "" {
+			return result{}, fmt.Errorf("list --as %s: %s", as, mm.Error)
+		}
+		for _, e := range mm.Entries {
+			d.Targets = append(d.Targets, managedData{Target: e.Target, Managed: true, Scope: e.Scope, Source: e.Source})
+		}
+	}
+	sort.Slice(d.Targets, func(i, j int) bool { return d.Targets[i].Target < d.Targets[j].Target })
+	var b strings.Builder
+	for _, t := range d.Targets {
+		b.WriteString(string(t.Target) + "\n")
+	}
+	return result{data: d, text: strings.TrimSuffix(b.String(), "\n")}, nil
+}
+
 // explainSteps lists, per command, the steps it takes. Steps that depend on
 // this machine are filled in by cmdExplain.
 var explainSteps = map[string][]string{

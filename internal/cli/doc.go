@@ -20,7 +20,8 @@
 // Which package function backs each command:
 //
 //	version, where                 cli (implemented)
-//	machine, why, managed          apply.Engine.Load -> Snapshot (Fleet, Plan.Why); explain: cli over the same
+//	machine, why, managed, list    apply.Engine.Load -> Snapshot (Fleet, Plan.Why); explain: cli over the same;
+//	                               list --as resolves as manifest --as does
 //	manifest [--as|--fleet]        manifest.Resolve per fleet machine over the loaded snapshot; reads no file content
 //	eval <cond> [--as]             cond.Parse with the named conditions, cond.Expand; another machine's observed
 //	                               facts from its status ref: plain, plus sealed ones a member opens (fleet.WithVisible)

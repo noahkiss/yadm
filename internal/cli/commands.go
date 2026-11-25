@@ -39,6 +39,8 @@ func (a *app) register(root *cobra.Command) {
 	leaf(root, "machine", "Show this machine: fleet entry, observed facts, enclaves", a.cmdMachine)
 	exact(leaf(root, "why <path>", "Explain how the manifest treats a path", a.cmdWhy), 1)
 	exact(leaf(root, "managed <path>", "Report whether a path is managed on this machine", a.cmdManaged), 1)
+	lst := exact(leaf(root, "list", "List the targets a machine manages, one per line (read-only; reads no file content)", a.cmdList), 0)
+	lst.Flags().String("as", "", "list for this fleet machine (default: this machine)")
 	mf := leaf(root, "manifest", "Show the resolved manifest per machine (read-only)", a.cmdManifest)
 	mf.Flags().String("as", "", "resolve for this fleet machine")
 	mf.Flags().Bool("fleet", false, "resolve for every fleet machine")
