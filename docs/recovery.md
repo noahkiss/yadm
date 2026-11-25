@@ -88,7 +88,131 @@ You need the remote, read access to it, and the enclave's recovery identity.
    recovery key, that names the new machine as the only member and starts a new epoch.
 
 **Status: step 3 has no command yet.** The key-log format and the library support `recover`
-(design.md, section 7.3), but the CLI does not expose it. Until it does:
+(design.md, section 7.3), but the CLI does not expose it. Until it does, no machine can become a
+member again, but you can still **read** the enclave with its recovery identity:
+
+1. Install Go, and clone this repository (the steps below were tested at commit `c82944e`):
+
+   ```sh
+   git clone https://github.com/noahkiss/yadm ~/yadm-src
+   git clone <remote> ~/dotfiles-src      # any clone of your dotfiles remote
+   ```
+
+2. Save the file below as `~/yadm-src/internal/crypt/zz_recoverread_test.go`. It uses the
+   package's internal API, so it must live inside that package.
+3. Run it. Choose a new output directory:
+
+   ```sh
+   cd ~/yadm-src
+   BG_SOURCE=~/dotfiles-src BG_REC=~/recovery-personal BG_ENCLAVE=personal \
+     BG_OUT=~/personal-plain go test ./internal/crypt -run TestRecoveryRead -count=1 -v
+   ```
+
+   It verifies the key-log chain, opens the epoch keys with the recovery identity, and writes every
+   sealed file of the enclave to `BG_OUT/<target path>`, mode 0600. `BG_PREFIX=<path>` limits it
+   to one subtree. It writes nothing to the clone or the key log. A wrong identity or a tampered
+   file fails: every file is authenticated.
+4. Delete `BG_OUT`, the recovery directory and the test file when you are done.
+
+```go
+package crypt
+
+// Break-glass read: open an enclave's sealed files with its recovery identity,
+// with no member machine left. Read-only: it writes nothing to the dotfiles
+// clone or its key log. Put this file at internal/crypt/zz_recoverread_test.go
+// in a clone of github.com/noahkiss/yadm, then run:
+//
+//   BG_SOURCE=<dotfiles clone> BG_REC=<0700 dir with identity.age.key and
+//   identity.sign.key> BG_ENCLAVE=personal BG_OUT=<new dir> [BG_PREFIX=<path>] \
+//   go test ./internal/crypt -run TestRecoveryRead -count=1 -v
+//
+// It verifies the key-log chain, unwraps the epoch keys with the recovery
+// identity, and writes every sealed file of the enclave (or only those under
+// BG_PREFIX) to BG_OUT/<target path>, mode 0600. A wrong identity or a
+// tampered file fails: AES-SIV authenticates every file.
+
+import (
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/noahkiss/yadm/internal/model"
+)
+
+func TestRecoveryRead(t *testing.T) {
+	src, rec, enc, out := os.Getenv("BG_SOURCE"), os.Getenv("BG_REC"), os.Getenv("BG_ENCLAVE"), os.Getenv("BG_OUT")
+	if src == "" || rec == "" || enc == "" || out == "" {
+		t.Skip("set BG_SOURCE, BG_REC, BG_ENCLAVE and BG_OUT")
+	}
+	prefix := os.Getenv("BG_PREFIX")
+	files, _ := filepath.Glob(filepath.Join(src, "keys", enc, "*.toml"))
+	sort.Strings(files)
+	if len(files) == 0 {
+		t.Fatalf("no key log under %s/keys/%s", src, enc)
+	}
+	var entries []LogEntry
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := ParseLogEntry(raw)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		entries = append(entries, e)
+	}
+	head, err := VerifyLog(entries, nil)
+	if err != nil {
+		t.Fatalf("key log does not verify: %v", err)
+	}
+	id, err := LoadIdentity(rec)
+	if err != nil {
+		t.Fatalf("recovery identity: %v", err)
+	}
+	k, err := Open(head, id)
+	if err != nil {
+		t.Fatalf("this identity does not open enclave %s: %v", enc, err)
+	}
+	t.Logf("enclave %s: chain verified to seq %d, epoch %d; keys opened", enc, head.Seq, head.Epoch)
+	root := filepath.Join(src, "sealed", enc)
+	n := 0
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		rel = filepath.ToSlash(rel)
+		if prefix != "" && !strings.HasPrefix(rel, prefix) {
+			return nil
+		}
+		ct, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		pt, err := k.OpenFile(model.SourcePath("sealed/"+enc+"/"+rel), ct)
+		if err != nil {
+			t.Errorf("%s: %v", rel, err)
+			return nil
+		}
+		dst := filepath.Join(out, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return err
+		}
+		n++
+		return os.WriteFile(dst, pt, 0o600)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("wrote %d files to %s", n, out)
+}
+```
+
+Until the command exists:
 
 - the recovery identity is still the only key to the enclave. Keep it, and keep checking it
   yearly;
@@ -135,7 +259,7 @@ What you lose with a recovery identity:
 | Lost | Effect |
 |---|---|
 | the recovery identity, members alive | nothing yet. The next total loss is unrecoverable |
-| every member, identity kept | nothing, once Case 2 has its command |
+| every member, identity kept | nothing is lost: read with the procedure in Case 2; a new member needs the `recover` command |
 | every member and the identity | every sealed file of that enclave, for good |
 
 ## Yearly test
