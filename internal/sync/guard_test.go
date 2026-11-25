@@ -296,9 +296,9 @@ func TestPreExistingFileUnderNewRootNotCommitted(t *testing.T) {
 }
 
 // TestApplyGuardHoldsWeakenedManifest: with apply.Guard wired, a fetched
-// manifest that drops a target's region protection is refused until
-// `protection allow` names the fetched source, and the machine that pushed
-// a change never refuses it on its own next sync.
+// manifest that drops a target's region protection is taken with that
+// target held until `protection allow` names it, and the machine that
+// pushed a change never holds it on its own next sync.
 func TestApplyGuardHoldsWeakenedManifest(t *testing.T) {
 	a, b := fixture.HostA, fixture.HostB
 	w := newWorld(t, nil, a, b)
@@ -316,29 +316,25 @@ func TestApplyGuardHoldsWeakenedManifest(t *testing.T) {
 	if weak == string(man) {
 		t.Fatal("fixture manifest changed; update the test")
 	}
-	pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(weak), Mode: 0o100644}})
-	before := A.main()
+	kept := A.read(".ssh/config")
+	pushed := pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(weak), Mode: 0o100644}})
 	r := A.sync()
 	h := holdTask(r, HoldTaskGuard)
-	if h == nil || !strings.Contains(h.Detail, "regions were turned off") || !strings.Contains(h.Detail, "yadm protection allow .ssh/config") {
+	if h == nil || h.Target != ".ssh/config" || !strings.Contains(h.Detail, "regions were turned off") || h.Next[0] != "yadm protection allow .ssh/config" {
 		t.Fatalf("holds %+v", r.Holds)
 	}
-	if A.main() != before {
-		t.Fatal("refused source moved main")
+	if A.main() != pushed {
+		t.Fatal("main did not take the fetched source")
 	}
-	if r = A.sync(); holdTask(r, HoldTaskGuard) == nil || A.main() != before {
-		t.Fatal("refusal did not persist")
+	if r = A.sync(); holdTask(r, HoldTaskGuard) == nil || A.read(".ssh/config") != kept {
+		t.Fatal("the held path did not persist")
 	}
-	remote, err := A.st.ResolveRef(ctx, store.RemoteMain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := A.eng.AllowProtection(ctx, remote, ".ssh/config"); err != nil {
+	if err := A.eng.AllowProtection(ctx, A.main(), ".ssh/config"); err != nil {
 		t.Fatal(err)
 	}
 	r = A.sync()
-	if holdTask(r, HoldTaskGuard) != nil || A.main() == before {
-		t.Fatalf("after allow: main moved %v holds %+v", A.main() != before, r.Holds)
+	if holdTask(r, HoldTaskGuard) != nil {
+		t.Fatalf("after allow: holds %+v", r.Holds)
 	}
 
 	// B pushed the weakening itself: its own next sync takes it.

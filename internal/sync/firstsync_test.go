@@ -262,8 +262,9 @@ func TestEmptyCloneRefusesRewrittenHistory(t *testing.T) {
 	}
 }
 
-// A manifest-guard refusal on a first sync holds on every later sync until
-// `protection allow` names the fetched source.
+// A manifest-guard weakening on a first sync holds its target on every
+// later sync until `protection allow` names it. The rest of the fetch is
+// taken at once, and the held target is never written.
 func TestFirstSyncManifestGuardPersistsUntilAllowed(t *testing.T) {
 	a, b := fixture.HostA, fixture.HostB
 	w := newWorld(t, nil, a, b)
@@ -279,27 +280,28 @@ func TestFirstSyncManifestGuardPersistsUntilAllowed(t *testing.T) {
 	if weak == string(man) {
 		t.Fatal("fixture manifest changed; update the test")
 	}
-	pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(weak), Mode: 0o100644}})
-	before := A.main()
+	pushed := pushRaw(t, B, []store.Change{{Path: "manifest.toml", Blob: []byte(weak), Mode: 0o100644}})
 	for i := 0; i < 4; i++ {
 		r := tick(t, A, i)
-		if holdTask(r, HoldTaskGuard) == nil || A.main() != before {
-			t.Fatalf("tick %d: main moved %v holds %+v", i, A.main() != before, r.Holds)
+		if h := holdTask(r, HoldTaskGuard); h == nil || h.Target != ".ssh/config" || A.main() != pushed {
+			t.Fatalf("tick %d: main at the fetch %v holds %+v", i, A.main() == pushed, r.Holds)
+		}
+		if _, err := os.Stat(A.path(".ssh/config")); err == nil {
+			t.Fatalf("tick %d: the held target was written", i)
 		}
 	}
-	remote, err := A.st.ResolveRef(ctx, store.RemoteMain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := A.eng.AllowProtection(ctx, remote, ".ssh/config"); err != nil {
+	if err := A.eng.AllowProtection(ctx, A.main(), ".ssh/config"); err != nil {
 		t.Fatal(err)
 	}
 	r := A.sync()
-	if holdTask(r, HoldTaskGuard) != nil || A.main() == before {
-		t.Fatalf("after allow: main moved %v holds %+v", A.main() != before, r.Holds)
+	if holdTask(r, HoldTaskGuard) != nil {
+		t.Fatalf("after allow: holds %+v", r.Holds)
 	}
-	if A.s.accepted() != remote {
-		t.Fatalf("accepted %q, want %s", A.s.accepted(), remote)
+	if _, err := os.Stat(A.path(".ssh/config")); err != nil {
+		t.Fatalf("after allow: %v", err)
+	}
+	if A.s.accepted() != pushed {
+		t.Fatalf("accepted %q, want %s", A.s.accepted(), pushed)
 	}
 }
 

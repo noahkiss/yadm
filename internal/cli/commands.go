@@ -125,7 +125,14 @@ func (a *app) register(root *cobra.Command) {
 	a.registerReroot(root)
 
 	pr := a.group(root, "protection", "Local allows for weakened protection of a target")
-	exact(leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow), 1)
+	pa := leaf(pr, "allow <target>", "Allow a target whose manifest entry lost sealing or protection", a.cmdProtectionAllow)
+	pa.Long = "Allow a target whose manifest entry lost sealing or protection, then apply.\n\n" +
+		"A fetched commit that weakens a target's protection does not stop the sync: the machine takes\n" +
+		"the rest of the commit and keeps that target as it is (a manifest-guard hold names it). The\n" +
+		"target is neither written, deleted nor captured until this allow, or until a later commit\n" +
+		"restores its protection. A weakened owned root still holds the whole fetched source; allow it\n" +
+		"with yadm root allow."
+	exact(pa, 1)
 	ro := a.group(root, "root", "Local allows for owned roots")
 	exact(leaf(ro, "allow <path>", "Allow an owned root that is new, changed or removed here", a.cmdRootAllow), 1)
 
@@ -1317,9 +1324,10 @@ func (a *app) cmdRootAllow(cmd *cobra.Command, args []string) (result, error) {
 	})
 }
 
-// allowRev is the source an allow reads. While a fetched source is refused
-// (a manifest-guard hold), the allow names that fetched source, so the next
-// sync takes it; otherwise local main.
+// allowRev is the source an allow reads. While a whole fetched source is
+// refused (a manifest-guard hold without a target), the allow names that
+// fetched source, so the next sync takes it; otherwise local main, which
+// already holds the source of a held path (a guard hold with a target).
 func (m *machineEnv) allowRev(ctx context.Context) model.CommitID {
 	hs, err := m.eng.Holds(ctx)
 	if err != nil {

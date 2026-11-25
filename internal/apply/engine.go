@@ -662,6 +662,13 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldUncapturable), &h
 		return s, nil
 	}
+	// A held path (Floor) stays as it is, whatever the plan says now: no
+	// write, no delete, no take-back for an on-demand enclave.
+	if why := e.floorWeak(st, r); len(why) > 0 {
+		h := floorHold(st, now, t, s.Scope, st.Floors[t].Since, why)
+		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
+		return s, nil
+	}
 	// Decide delivery before touching the target, so a non-member never
 	// computes or reads anything for a sealed file.
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
@@ -679,7 +686,7 @@ func (e *Engine) planOne(ctx context.Context, snap *Snapshot, st *State, r manif
 		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
 		return s, nil
 	}
-	if detail, weak := e.weakened(ts, have, r); weak {
+	if detail, weak := e.weakened(st, ts, have, r); weak {
 		h := weakHold(st, now, t, s.Scope, ts.ChangedAt, detail)
 		s.Kind, s.Reason, s.hold = ActHold, string(model.HoldSealGuard), &h
 		return s, nil
@@ -1096,6 +1103,13 @@ func (e *Engine) run(ctx context.Context, rev model.CommitID, paths []model.Targ
 			st.Outputs = snap.Manifest.Outputs()
 		}
 		res.Holds = append(res.Holds, e.acceptRoots(ctx, snap, st, now)...)
+		held := map[model.Target]bool{}
+		for _, s := range steps {
+			if s.hold != nil && s.hold.Task == GuardTask {
+				held[s.Target] = true
+			}
+		}
+		e.settleFloors(st, snap, held)
 		pruneStaleHolds(st, snap)
 	}
 	// Prune first: a failed step must not leave an on-demand enclave's
@@ -1283,9 +1297,11 @@ func (e *Engine) record(st *State, s step, now time.Time) error {
 	if old, had := st.Targets[s.Target]; had {
 		// Belt and braces: never record a weaker protection that was not
 		// allowed. Every caller checks first; the record keeps the stronger.
-		if _, weak := e.weakened(old, true, s.d.res); weak {
+		if _, weak := e.weakened(st, old, true, s.d.res); weak {
 			prot = old.prot()
 		}
+	} else if f, ok := st.Floors[s.Target]; ok && len(e.floorWeak(st, s.d.res)) > 0 {
+		prot = f.Protection
 	}
 	ts.Enclave, ts.Seal, ts.Regions = prot.Enclave, prot.Seal, prot.Regions
 	ts.Keep, ts.Drop, ts.Volatile = prot.Keep, prot.Drop, prot.Volatile

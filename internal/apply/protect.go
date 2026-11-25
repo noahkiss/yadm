@@ -201,11 +201,23 @@ func (e *Engine) allowed(kind extexec.Kind, name, hash string) bool {
 	return a != nil && a.Allowed(kind, name, hash)
 }
 
-// weakened reports, for a target this machine has written before, whether
-// the resolved entry protects it less than the protection recorded in
-// state and the user has not allowed that here. The detail names what was
-// weakened.
-func (e *Engine) weakened(ts TargetState, have bool, r manifest.Resolved) (string, bool) {
+// weakened reports whether the resolved entry protects its target less
+// than this machine holds it to, and the user has not allowed that here:
+// the protection recorded in state for a target written before (have), and
+// the target's floor (Floor) when a fetched commit weakened it. The detail
+// names what was weakened. floor says the floor is weaker, so the hold is
+// the held path's (floorHold).
+func (e *Engine) weakened(st *State, ts TargetState, have bool, r manifest.Resolved) (detail string, weak bool) {
+	if why := e.floorWeak(st, r); len(why) > 0 {
+		if have {
+			for _, w := range weakerBy(ts.prot(), protOf(r.Entry)) {
+				if !containsStr(why, w) {
+					why = append(why, w)
+				}
+			}
+		}
+		return floorDetail(why), true
+	}
 	if !have {
 		return "", false
 	}
@@ -215,6 +227,24 @@ func (e *Engine) weakened(ts TargetState, have bool, r manifest.Resolved) (strin
 		return "", false
 	}
 	return "the manifest weakened this file's protection (" + strings.Join(why, "; ") + "); it is neither applied nor captured until allowed on this machine", true
+}
+
+func containsStr(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
+
+// weakHoldFor is the hold for a weakened target: the held path's hold when
+// its floor holds it, else the seal_guard hold of weakHold.
+func (e *Engine) weakHoldFor(st *State, now time.Time, r manifest.Resolved, scope model.Scope, since time.Time, detail string) model.Hold {
+	if why := e.floorWeak(st, r); len(why) > 0 {
+		return floorHold(st, now, r.Target, scope, st.Floors[r.Target].Since, why)
+	}
+	return weakHold(st, now, r.Target, scope, since, detail)
 }
 
 // weakHold is the seal_guard hold for a weakened protection.

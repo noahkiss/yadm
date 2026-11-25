@@ -25,10 +25,21 @@ type RemoteGuard interface {
 	Allow(ctx context.Context, from, to *apply.Snapshot) (ok bool, detail string, err error)
 }
 
-// Tasks of the holds a refused fetch raises. They have no target.
+// PathGuard is a RemoteGuard that names each weakening (apply.Guard). With
+// one, a fetched source whose weakenings are all targets is taken: those
+// targets alone are held back (apply.Engine.HoldBack), and every other
+// change applies and pushes. A weakened owned root, or a guard that is not
+// a PathGuard, refuses the whole source.
+type PathGuard interface {
+	RemoteGuard
+	Weakenings(from, to *apply.Snapshot) []apply.Weakening
+}
+
+// Tasks of the holds a refused fetch raises. They have no target, except
+// a held path's hold, which names its target and shares HoldTaskGuard.
 const (
-	HoldTaskKeyLog = "key-log"        // a fetched commit rewrote or deleted a key-log entry
-	HoldTaskGuard  = "manifest-guard" // RemoteGuard refused the fetched source
+	HoldTaskKeyLog = "key-log"       // a fetched commit rewrote or deleted a key-log entry
+	HoldTaskGuard  = apply.GuardTask // RemoteGuard refused the fetched source, or held one target of it
 )
 
 // Alert kinds.
@@ -36,6 +47,9 @@ const (
 	AlertNonMember     = "non_member_enclave_commit"
 	AlertKeyLogRewrite = "key_log_rewrite"
 	AlertGuardRefused  = "remote_refused"
+	// AlertPathHeld: a fetched source was taken with some targets held
+	// back, because it weakens their protection.
+	AlertPathHeld = "protection_held"
 )
 
 // keyLogPath reports a path under keys/: crypt.ParseLogPath's enclave and
@@ -214,47 +228,136 @@ type refusal struct {
 }
 
 // checkRemote runs the key-log rule and the RemoteGuard on a fetched source.
-func (s *Syncer) checkRemote(ctx context.Context, base, local, remote model.CommitID, to *apply.Snapshot) (*refusal, error) {
+// It returns a refusal of the whole source, or, with a PathGuard, the
+// target weakenings to hold back while the rest is taken.
+func (s *Syncer) checkRemote(ctx context.Context, base, local, remote model.CommitID, to *apply.Snapshot) (*refusal, []apply.Weakening, error) {
 	if remote == "" || remote == local {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if base == "" {
 		base = local
 	}
 	v, err := s.keyLogViolations(ctx, base, remote)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(v) > 0 {
 		return &refusal{task: HoldTaskKeyLog, kind: AlertKeyLogRewrite,
-			detail: "key-log entries are append-only; the fetched source was not applied: " + strings.Join(v, "; ")}, nil
+			detail: "key-log entries are append-only; the fetched source was not applied: " + strings.Join(v, "; ")}, nil, nil
 	}
-	if s.Guard != nil && local != "" && to != nil && remote != base {
-		// The guard judges what the fetch changed: the accepted remote
-		// (base) against the fetched one. A weakening this machine already
-		// runs (its own pushed commit, or one it allowed) is not refused,
-		// so the guard must also refuse against local main. Comparing with
-		// local alone would refuse an unpushed local strengthening (a
-		// retag into an enclave) as the remote "weakening" it.
-		ok, detail, err := s.guardFrom(ctx, base, to)
-		if err != nil && local != base {
-			// The accepted source does not load (a bad commit was
-			// accepted before the guard existed): judge from local.
-			ok, detail, err = s.guardFrom(ctx, local, to)
-		} else if err == nil && !ok && local != base {
-			var okLocal bool
-			okLocal, _, err = s.guardFrom(ctx, local, to)
-			ok = okLocal
+	if s.Guard == nil || local == "" || to == nil || remote == base {
+		return nil, nil, nil
+	}
+	refuse := func(detail string) *refusal {
+		return &refusal{task: HoldTaskGuard, kind: AlertGuardRefused,
+			detail: "the fetched source weakens protection and is not allowed here: " + detail}
+	}
+	if pg, ok := s.Guard.(PathGuard); ok {
+		ws, err := s.weakenings(ctx, pg, base, local, to)
+		if err != nil || len(ws) == 0 {
+			return nil, nil, err
 		}
-		if err != nil {
+		var why []string
+		root := false
+		for _, w := range ws {
+			why = append(why, w.Detail)
+			root = root || w.Root
+		}
+		if root {
+			// An owned root covers paths apply cannot pin one by one: the
+			// files under it would leave the plan and be removed.
+			return refuse(strings.Join(why, "; ")), nil, nil
+		}
+		return nil, ws, nil
+	}
+	// The guard judges what the fetch changed: the accepted remote (base)
+	// against the fetched one. A weakening this machine already runs (its
+	// own pushed commit, or one it allowed) is not refused, so the guard
+	// must also refuse against local main. Comparing with local alone
+	// would refuse an unpushed local strengthening (a retag into an
+	// enclave) as the remote "weakening" it.
+	ok, detail, err := s.guardFrom(ctx, base, to)
+	if err != nil && local != base {
+		// The accepted source does not load (a bad commit was accepted
+		// before the guard existed): judge from local.
+		ok, detail, err = s.guardFrom(ctx, local, to)
+	} else if err == nil && !ok && local != base {
+		var okLocal bool
+		okLocal, _, err = s.guardFrom(ctx, local, to)
+		ok = okLocal
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		return refuse(detail), nil, nil
+	}
+	return nil, nil, nil
+}
+
+// weakenings lists what pg finds weakened from the accepted remote (base)
+// to the fetched source that it also finds weakened from local main, as
+// the whole-source judgement does: a weakening this machine already runs
+// is not held. A base that does not load is judged from local alone.
+func (s *Syncer) weakenings(ctx context.Context, pg PathGuard, base, local model.CommitID, to *apply.Snapshot) ([]apply.Weakening, error) {
+	from, err := s.load(ctx, base)
+	if err != nil {
+		if local == base {
 			return nil, err
 		}
-		if !ok {
-			return &refusal{task: HoldTaskGuard, kind: AlertGuardRefused,
-				detail: "the fetched source weakens protection and is not allowed here: " + detail}, nil
+		if from, err = s.load(ctx, local); err != nil {
+			return nil, err
+		}
+		return pg.Weakenings(from, to), nil
+	}
+	ws := pg.Weakenings(from, to)
+	if len(ws) == 0 || local == base {
+		return ws, nil
+	}
+	lf, err := s.load(ctx, local)
+	if err != nil {
+		return nil, err
+	}
+	type key struct {
+		t    model.Target
+		root bool
+	}
+	inLocal := map[key]bool{}
+	for _, w := range pg.Weakenings(lf, to) {
+		inLocal[key{w.Target, w.Root}] = true
+	}
+	out := ws[:0]
+	for _, w := range ws {
+		if inLocal[key{w.Target, w.Root}] {
+			out = append(out, w)
 		}
 	}
-	return nil, nil
+	return out, nil
+}
+
+// holdBack records the held paths of a fetched source taken with ws held
+// back, and returns one alert naming the targets held for the first time.
+func (s *Syncer) holdBack(ctx context.Context, ws []apply.Weakening, remote model.CommitID) (*model.Alert, error) {
+	if len(ws) == 0 {
+		return nil, nil
+	}
+	fresh, err := s.Apply.HoldBack(ctx, ws, remote)
+	if err != nil || len(fresh) == 0 {
+		return nil, err
+	}
+	isFresh := map[model.Target]bool{}
+	for _, t := range fresh {
+		isFresh[t] = true
+	}
+	var why []string
+	for _, w := range ws {
+		if isFresh[w.Target] {
+			why = append(why, w.Detail)
+		}
+	}
+	a := model.Alert{Kind: AlertPathHeld, Commit: remote, At: s.now(),
+		Detail: "the fetched source weakens protection that is not allowed here; it was taken without these files, which stay as they are on this machine: " + strings.Join(why, "; ")}
+	return &a, nil
 }
 
 // guardFrom runs the RemoteGuard from the source at rev to the fetched one.

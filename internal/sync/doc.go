@@ -44,7 +44,12 @@
 //     deletes a key-log entry, or that the RemoteGuard refuses, is not taken:
 //     a hold and one alert, local main stays, main is not pushed. It stays
 //     refused on every later sync until the remote drops it or an allow
-//     names it.
+//     names it. A PathGuard (apply.Guard) names each weakening instead:
+//     when all are targets, the source is taken, and each weakened target
+//     is a held path. Its floor is recorded (apply.Engine.HoldBack) before
+//     the accepted remote moves, one AlertPathHeld names it, and apply keeps
+//     the target as it is until allowed or restored. A weakened owned root
+//     still refuses the whole source.
 //  5. If local main is not an ancestor of origin main, replay each local
 //     commit onto origin main with `git merge-tree`, in memory. Conflicted
 //     paths go up the resolution ladder: a key-level merge for json, jsonc
@@ -136,6 +141,8 @@
 //	func PlanCommits(c apply.Capture, st *apply.State, p Policy, leases []Lease, self model.MachineID, now time.Time) ([]PlannedCommit, []model.Hold, error)
 //	type MergePolicy string; type Structural interface{ Merge3(format, volatile, base, ours, theirs) }
 //	type RemoteGuard interface{ Allow(ctx, from, to *apply.Snapshot) (bool, string, error) }
+//	type PathGuard interface{ RemoteGuard; Weakenings(from, to *apply.Snapshot) []apply.Weakening } // holds weakened targets alone
+//	const HoldTaskKeyLog, HoldTaskGuard (= apply.GuardTask); const AlertNonMember, AlertKeyLogRewrite, AlertGuardRefused, AlertPathHeld
 //	type Lease struct{ Holder string; Paths []string; Expires time.Time }
 //	func LeaseOn(leases []Lease, t model.Target, now time.Time) (Lease, bool) // the live lease naming t
 //	(an Unattended Commit skips every path a live stored lease names)

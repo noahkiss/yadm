@@ -131,12 +131,15 @@ func (e *Engine) captureResolved(ctx context.Context, snap *Snapshot, st *State,
 		h := fileHold(st, now, t, scope, reason, ts.ChangedAt, detail)
 		return nil, &h, nil
 	}
+	// Weakened protection first: a fetched commit that moved a sealed file
+	// to a plain source must raise the one stable hold of a held path, not
+	// an uncapturable hold a settle would drop.
+	if detail, weak := e.weakened(st, ts, have, r); weak {
+		h := e.weakHoldFor(st, now, r, scope, ts.ChangedAt, detail)
+		return nil, &h, nil
+	}
 	if have && r.Source != ts.Source {
 		return hold(model.HoldUncapturable, fmt.Sprintf("source moved from %s to %s since last apply", ts.Source, r.Source))
-	}
-	if detail, weak := e.weakened(ts, have, r); weak {
-		h := weakHold(st, now, t, scope, ts.ChangedAt, detail)
-		return nil, &h, nil
 	}
 	if enc := r.Entry.Enclave; enc != "" && !snap.canOpen(enc) {
 		return hold(model.HoldSealGuard, snap.notMemberDetail(enc))
@@ -536,7 +539,7 @@ func (e *Engine) ResolveHold(ctx context.Context, id string, opts ResolveOptions
 			return Result{}, fmt.Errorf("%s: not a regular file; remove it first", t)
 		}
 		ts, have := st.Targets[t]
-		if detail, weak := e.weakened(ts, have, r); weak {
+		if detail, weak := e.weakened(st, ts, have, r); weak {
 			return Result{}, fmt.Errorf("%s: %s", t, detail)
 		}
 		if detail, wide := widenedMode(snap, r); wide {

@@ -807,8 +807,9 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 			return out, err
 		}
 	}
+	var held []apply.Weakening
 	if ref == nil {
-		if ref, err = s.checkRemote(ctx, base, local, remote, snap); err != nil {
+		if ref, held, err = s.checkRemote(ctx, base, local, remote, snap); err != nil {
 			return out, err
 		}
 	}
@@ -835,12 +836,21 @@ func (s *Syncer) integrateAndApply(ctx context.Context, rep *Report, base, local
 		}
 		return out, err
 	}
+	// Held paths are recorded before the accepted remote moves: the next
+	// fetch is judged from the weakened source and would not find them.
+	pathAlert, err := s.holdBack(ctx, held, remote)
+	if err != nil {
+		return out, err
+	}
 	if err := s.setAccepted(remote); err != nil {
 		return out, err
 	}
 	alerts, err := s.nonMemberAlerts(ctx, snap, local, remote, seen)
 	if err != nil {
 		return out, err
+	}
+	if pathAlert != nil {
+		alerts = append(alerts, *pathAlert)
 	}
 	for _, a := range alerts {
 		s.notify(ctx, a)
