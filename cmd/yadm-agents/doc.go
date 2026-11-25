@@ -103,10 +103,46 @@
 //
 // # State
 //
-// gen records, per harness, the file it owns keys in and the trust entries
-// it wrote, in ~/.local/state/yadm-agents/state.json (a task lists it in
-// outputs). --dry-run and --as never write it. Losing it is safe: gen then
-// removes no trust entry.
+// gen records, per harness, the file it owns keys in, the required units
+// this machine gets with their planned handlers, and the trust entries it
+// wrote, in ~/.local/state/yadm-agents/state.json (a task lists it in
+// outputs). It records a harness it refused too, once it knows the plan,
+// keeping the trust entries it owned before. --dry-run and --as never write
+// it. Losing it is safe: gen then removes no trust entry, and the tripwire
+// says it has nothing to compare.
+//
+// # Tripwire
+//
+// tripwire is a SessionStart check. It reads only the state file, each
+// recorded harness file and each required script; it runs no yadm and
+// reads no stdin. It prints one line per required unit that the live file
+// does not wire for every event and tool gen planned, or whose script is
+// missing, and nothing when all are wired. It always exits 0, so it never
+// breaks a session start. --harness limits it to one harness; --format hook
+// prints SessionStart hook JSON (systemMessage for the user,
+// hookSpecificOutput.additionalContext for the model).
+//
+// Claude Code and Codex run it as a hook unit:
+//
+//	[[unit]]
+//	name = "tripwire"
+//	kind = "hook"
+//	run = "yadm-agents tripwire --harness {harness} --format hook"
+//	on = ["SessionStart"]
+//	timeout = 5
+//
+//	[conditions]
+//	"tripwire.claude" = "true"
+//	"tripwire.codex" = "true"
+//
+// A route harness (opencode, pi) has no SessionStart event in its route
+// file. Its plugin runs `yadm-agents tripwire --harness <name>` when a
+// session starts and shows each printed line to the user.
+//
+// The tripwire checks wiring, not Codex hook trust: a wired handler that
+// Codex has not trusted yet does not run, and the tripwire cannot see that.
+// For a route harness it checks the route file, which the runner script
+// must read for the result to mean the guard runs.
 //
 // # Invocation
 //

@@ -171,9 +171,18 @@ func resolveFor(f *File, ev Evaluator, h, machine string) ([]Resolved, error) {
 func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) HarnessResult {
 	h := a.Name()
 	res := HarnessResult{Harness: h, Units: []string{}}
+	// planned is the record once gen knows the plan. A refusal after that
+	// still records what this machine requires, so the tripwire reports
+	// the guard gen could not wire; it keeps the trust gen owned before.
+	var planned *HarnessState
 	refuse := func(format string, args ...any) HarnessResult {
 		res.Status = StatusRefused
 		res.Reason = fmt.Sprintf(format, args...)
+		if planned != nil && o.As == "" {
+			p := *planned
+			p.Trusted = prev.Trusted
+			res.next = &p
+		}
 		return res
 	}
 	units, err := resolveFor(f, ev, h, o.As)
@@ -232,6 +241,7 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 	}
 	path := filepath.Join(o.Home, rel)
 	res.Target = path
+	planned = &HarnessState{Target: filepath.ToSlash(rel), Required: expected(units, rendered)}
 	live, err := os.ReadFile(path)
 	missing := errors.Is(err, fs.ErrNotExist)
 	if o.As != "" && !missing {
@@ -328,7 +338,7 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 		return refuse("this would remove required unit(s) %s; pass --allow-drop if that is intended", strings.Join(uniq(dropped), ", "))
 	}
 
-	record := &HarnessState{Target: filepath.ToSlash(rel), Trusted: owned}
+	record := &HarnessState{Target: planned.Target, Required: planned.Required, Trusted: owned}
 	if len(res.Added) == 0 && len(res.Removed) == 0 {
 		res.Status = StatusUnchanged
 		res.next = record

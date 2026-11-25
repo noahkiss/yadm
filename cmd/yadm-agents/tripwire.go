@@ -1,0 +1,151 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// tripwire is the SessionStart check. It reads only local files: the state
+// gen left and each harness's live file. It never runs yadm, never reads
+// stdin, and always exits 0, so it cannot break or slow a session start.
+func tripwire(args []string, stdout, stderr io.Writer) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stdout, "yadm-agents: tripwire failed (%v); required guards are unchecked\n", r)
+			code = 0
+		}
+	}()
+	fs := flag.NewFlagSet("tripwire", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var harness, format, home, state string
+	fs.StringVar(&harness, "harness", "", "check only this harness")
+	fs.StringVar(&format, "format", "text", "text, or hook (SessionStart hook JSON)")
+	fs.StringVar(&home, "home", "", "home directory (default $YADM_HOME, then $HOME)")
+	fs.StringVar(&state, "state", "", "state file (default ~/.local/state/yadm-agents/state.json)")
+	if err := fs.Parse(args); err != nil {
+		return 0
+	}
+	if home == "" {
+		home = os.Getenv("YADM_HOME")
+	}
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	if state == "" {
+		state = statePath(home)
+	}
+	lines := Tripwire(home, state, harness)
+	if len(lines) == 0 {
+		return 0
+	}
+	text := strings.Join(lines, "\n")
+	if format == "hook" {
+		b, _ := json.Marshal(map[string]any{
+			"systemMessage":      text,
+			"hookSpecificOutput": map[string]string{"hookEventName": "SessionStart", "additionalContext": text},
+		})
+		fmt.Fprintln(stdout, string(b))
+		return 0
+	}
+	fmt.Fprintln(stdout, text)
+	return 0
+}
+
+const tripPrefix = "yadm-agents: REQUIRED GUARD MISSING"
+
+// Tripwire compares the required units gen last planned with what each
+// harness's live file wires, and returns one line per missing guard.
+// harness "" checks every harness gen recorded.
+func Tripwire(home, state, harness string) []string {
+	st, err := readState(state)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return []string{fmt.Sprintf("yadm-agents: no gen state at %s; required guards are unchecked. Run `yadm-agents gen`.", state)}
+	case err != nil:
+		return []string{fmt.Sprintf("yadm-agents: unreadable gen state (%v); required guards are unchecked. Run `yadm-agents gen`.", err)}
+	}
+	hs := sortedKeys(st.Harness)
+	if harness != "" {
+		if _, ok := st.Harness[harness]; !ok {
+			return []string{fmt.Sprintf("yadm-agents: gen has no record for %s; its required guards are unchecked. Run `yadm-agents gen`.", harness)}
+		}
+		hs = []string{harness}
+	}
+	var out []string
+	for _, h := range hs {
+		out = append(out, tripOne(home, h, st.Harness[h])...)
+	}
+	return out
+}
+
+func tripOne(home, h string, rec HarnessState) []string {
+	if len(rec.Required) == 0 {
+		return nil
+	}
+	shown := "~/" + rec.Target
+	var out []string
+	each := func(format string, args ...any) {
+		for _, x := range rec.Required {
+			out = append(out, fmt.Sprintf("%s on %s: %s %s", tripPrefix, h, x.Unit, fmt.Sprintf(format, args...)))
+		}
+	}
+	a, ok := adapterFor(h)
+	if !ok {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(rec.Target)))
+	if err != nil {
+		each("is not loaded: cannot read %s (%v)", shown, errors.Unwrap(err))
+		return out
+	}
+	live, err := a.Load(b)
+	if err != nil {
+		each("is not loaded: %s does not parse (%v)", shown, err)
+		return out
+	}
+	covered := map[string]bool{}
+	for _, e := range live.Entries {
+		for _, k := range coverKeys(e) {
+			covered[k] = true
+		}
+	}
+	for _, x := range rec.Required {
+		if x.Script != "" {
+			if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(x.Script))); err != nil {
+				out = append(out, fmt.Sprintf("%s on %s: %s: its script ~/%s is missing.", tripPrefix, h, x.Unit, x.Script))
+				continue
+			}
+		}
+		var gaps []string
+		for _, hd := range x.Handlers {
+			e := Entry{Event: hd.Event, Matcher: hd.Matcher, Command: hd.Command}
+			if coveredBy(covered, e) {
+				continue
+			}
+			for _, k := range coverKeys(e) {
+				if !covered[k] {
+					ev, rest, _ := strings.Cut(k, "\t")
+					tool, _, _ := strings.Cut(rest, "\t")
+					gaps = append(gaps, ev+" "+tool)
+				}
+			}
+		}
+		if len(gaps) > 0 {
+			out = append(out, fmt.Sprintf("%s on %s: %s is not wired for %s in %s. Run `yadm-agents gen`.", tripPrefix, h, x.Unit, strings.Join(uniq(sorted(gaps)), ", "), shown))
+		}
+	}
+	return out
+}
+
+func sorted(xs []string) []string {
+	sort.Strings(xs)
+	return xs
+}

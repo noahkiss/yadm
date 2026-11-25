@@ -23,6 +23,7 @@ Usage:
   yadm-agents gen    [--dry-run] [--diff] [--as <machine>] [--only h,...] [--prune] [--allow-drop]
   yadm-agents verify [--offline]
   yadm-agents matrix [--format table|json|parity] [--machines a,b]
+  yadm-agents tripwire [--harness h] [--format text|hook]
   yadm-agents version
 
 Common flags: --units <path> (default $YADM_AGENTS_UNITS, then
@@ -42,6 +43,9 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer, ev Evaluator) int {
+	if len(args) > 0 && args[0] == "tripwire" {
+		return tripwire(args[1:], stdout, stderr) // reads no request, runs no yadm
+	}
 	kind := os.Getenv("YADM_KIND")
 	var req *extexec.Request
 	if kind == string(extexec.KindTask) || kind == string(extexec.KindCheck) || kind == string(extexec.KindSubcommand) {

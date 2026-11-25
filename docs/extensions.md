@@ -10,7 +10,7 @@ An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and 
 
 ## First-party extensions
 
-- `yadm-agents` generates every coding-agent harness's hook wiring on a machine from one units file, and shows the unit × harness × machine matrix. `cmd/yadm-agents/doc.go` states its contract.
+- `yadm-agents` generates every coding-agent harness's hook wiring on a machine from one units file, and shows the unit × harness × machine matrix. Its `tripwire` command warns at session start when a required guard is not wired. It ships in the release archive beside `yadm`. `cmd/yadm-agents/doc.go` states its contract.
 
 ## Exec contract (section 12.4)
 

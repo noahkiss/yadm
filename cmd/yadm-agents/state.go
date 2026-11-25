@@ -23,6 +23,46 @@ type State struct {
 type HarnessState struct {
 	Target  string   `json:"target"`            // the file the harness loads, relative to home
 	Trusted []string `json:"trusted,omitempty"` // project paths whose trust entry gen wrote
+	// Required lists the required units gen planned for this machine and
+	// harness, with their handlers: what the tripwire expects to find.
+	Required []Expected `json:"required,omitempty"`
+}
+
+// Expected is one required unit as the tripwire checks it.
+type Expected struct {
+	Unit     string    `json:"unit"`
+	Script   string    `json:"script,omitempty"` // relative to home
+	Handlers []Handler `json:"handlers"`
+}
+
+// Handler is one planned handler: event, matcher and command.
+type Handler struct {
+	Event   string `json:"event"`
+	Matcher string `json:"matcher,omitempty"`
+	Command string `json:"command"`
+}
+
+// expected lists the required units in a rendered wiring.
+func expected(units []Resolved, w Wiring) []Expected {
+	var out []Expected
+	for _, u := range units {
+		if !u.Required || !u.Enabled {
+			continue
+		}
+		x := Expected{Unit: u.Unit}
+		if u.Script != "" {
+			x.Script = homeRel(u.Script)
+		}
+		for _, e := range w.Entries {
+			if e.Unit == u.Unit {
+				x.Handlers = append(x.Handlers, Handler{Event: e.Event, Matcher: e.Matcher, Command: e.Command})
+			}
+		}
+		if len(x.Handlers) > 0 {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // stateRel is the state file, relative to home. A task that runs gen
