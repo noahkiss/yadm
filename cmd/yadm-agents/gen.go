@@ -223,6 +223,11 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions) HarnessResult {
 		res.Status = StatusChange
 		return res
 	}
+	// The harness may rewrite its file while gen runs; never overwrite a
+	// change gen did not see.
+	if again, err := os.ReadFile(path); (err == nil || !missing) && !bytes.Equal(again, live) {
+		return refuse("%s changed while gen ran; run it again", path)
+	}
 	if err := writeAtomic(path, next); err != nil {
 		return refuse("write %s: %v", path, err)
 	}

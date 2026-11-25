@@ -130,3 +130,26 @@ func TestMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// As a plugin, yadm passes stdio through: plain text out, the exit code
+// passed back, no request on stdin.
+func TestPluginMode(t *testing.T) {
+	home := genHome(t)
+	writeFile(t, filepath.Join(home, ".config/yadm-agents/units.toml"), fixtureUnits)
+	t.Setenv("YADM_KIND", "plugin")
+	t.Setenv("YADM_HOME", home)
+	t.Setenv("YADM_AGENTS_UNITS", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("YADM_JSON", "")
+	var out, errb bytes.Buffer
+	if code := run([]string{"gen", "--dry-run", "--prune"}, strings.NewReader("not a request"), &out, &errb, twoMachines()); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out.String(), errb.String())
+	}
+	if !strings.HasPrefix(out.String(), "claude: would change") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"gen", "--dry-run"}, strings.NewReader(""), &out, &errb, twoMachines()); code != 1 {
+		t.Fatalf("a refusal exited %d, want 1: %s", code, out.String())
+	}
+}
