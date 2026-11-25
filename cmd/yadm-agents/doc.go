@@ -79,8 +79,8 @@
 // does not give that machine as missing.
 //
 // verify is the commit check: the file parses; every cell names a real
-// unit; every wired cell asks only for events and effects its harness has;
-// a via names a real unit; required units name a script that exists (or is
+// unit; every wired cell asks only for events and effects its harness has
+// and renders; a via names a real unit; required units name a script that exists (or is
 // staged); every condition evaluates. Unknown harnesses, unknown kinds and
 // unmapped actions without a note are warnings.
 //

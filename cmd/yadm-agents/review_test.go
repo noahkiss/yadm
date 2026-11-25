@@ -284,3 +284,15 @@ func TestScriptPathQuoting(t *testing.T) {
 		}
 	}
 }
+
+// verify catches what gen would refuse to render, such as a regex match
+// on a route harness.
+func TestVerifyCatchesRouteRegex(t *testing.T) {
+	src := "schema = 1\n[harness.opencode]\nconfig = \"~/route.tsv\"\n" + strings.TrimPrefix(oneGuard, "\nschema = 1\n") + "\"guard-a.opencode\" = \"true\"\n"
+	src = strings.Replace(src, `timeout = 10`, "timeout = 10\nmatch = \"^Bash$\"", 1)
+	home := oneGuardHome(t)
+	fs := Verify(mustParse(t, src), nil, VerifyOptions{Home: home, Offline: true})
+	if !hasErrors(fs) {
+		t.Fatalf("findings: %+v", fs)
+	}
+}

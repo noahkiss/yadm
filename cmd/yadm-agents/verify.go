@@ -105,6 +105,12 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 			}
 			if _, isRoute := a.(routeAdapter); isRoute && r.Script == "" {
 				errf("unit %q on %s: a routed guard needs script", u.Name, h)
+			} else {
+				on := r
+				on.Enabled = true
+				if _, err := a.Render([]Resolved{on}); err != nil {
+					errf("%s: %v", h, err)
+				}
 			}
 		}
 		if cells == 0 {
