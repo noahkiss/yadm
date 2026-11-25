@@ -128,8 +128,7 @@ works.
   The current identity signs a `set-recovery` entry that names the new one. Store the new
   directory's two files offline, then delete both directories.
 - **Lost:** no command can replace it. `set-recovery` must be signed by the current recovery
-  identity. A lost identity means the enclave survives only while a member survives. To get a
-  recovery key back, create a new enclave with a new identity and move the files into it.
+  identity. A lost identity means the enclave survives only while a member survives.
 
 What you lose with a recovery identity:
 
