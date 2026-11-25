@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -332,5 +333,27 @@ echo '{"schema":1,"ok":true,"message":"two things","items":["b","a"]}'
 	if code != HookAllow || !strings.Contains(stdout, "slow: news timed out after 3s") ||
 		!strings.Contains(stdout, "not allowed here: chatty, unallowed") || strings.Contains(stdout, "changed") {
 		t.Fatalf("second session-start: exit %d\n%s", code, stdout)
+	}
+}
+
+// TestPluginKeepsParentPID: `yadm <plugin>` run by another yadm (a task of
+// a sync that holds the lock) passes that yadm's pid on as YADM_PARENT_PID,
+// so a yadm the plugin runs fails at once on the parent's lock instead of
+// waiting out its bound. Run directly, the plugin gets this yadm's pid.
+func TestPluginKeepsParentPID(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, pluginTree())
+	a := useMachine(t, root, "a")
+	yadmOK(t, "init", remote, "--machine", "host-a")
+	yadmOK(t, "apply")
+	writeExec(t, filepath.Join(a.Home, "bin/greet"), "#!/bin/sh\ncat >/dev/null\necho \"parent: $YADM_PARENT_PID\"\n")
+	yadmOK(t, "plugin", "allow", "greet")
+	if _, out, _ := runWithStdin(t, "", "greet"); out != fmt.Sprintf("parent: %d\n", os.Getpid()) {
+		t.Fatalf("run directly: %q", out)
+	}
+	t.Setenv("YADM_PARENT_PID", "424242")
+	if _, out, _ := runWithStdin(t, "", "greet"); out != "parent: 424242\n" {
+		t.Fatalf("run by another yadm: %q, want its pid", out)
 	}
 }

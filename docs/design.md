@@ -891,7 +891,7 @@ One contract covers external subcommands, collectors, tasks, checks, the notify 
 
   `target` is the entry's target: the path, or the glob that covers it. `when` is the condition as written, true here or not; `""` means every machine, and `enclave` `""` means plaintext. A file in an owned root gets `"root": true` and the root's path, `when` and `enclave`. A target that no entry or owned root covers has no key. `entries` holds manifest fields only, never file content. A check judges the commit from it, not from `yadm why`, which reads the committed source.
 
-- The environment carries the same context for plain scripts: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES` (comma-separated), `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON=1`, `YADM_PARENT_PID` (the pid of the yadm process that runs it), and `YADM_FACT_<KEY>` per declared fact.
+- The environment carries the same context for plain scripts: `YADM_KIND`, `YADM_NAME`, `YADM_MACHINE`, `YADM_MACHINE_NAME`, `YADM_TYPES` (comma-separated), `YADM_OS`, `YADM_ARCH`, `YADM_HOME`, `YADM_SOURCE`, `YADM_COMMIT`, `YADM_JSON=1`, `YADM_PARENT_PID` (the pid of the yadm process that runs it; a plugin run by a yadm that another yadm runs gets the outer pid, since the dispatcher holds no lock), and `YADM_FACT_<KEY>` per declared fact.
 - On exit 0, stdout is one JSON response when its first non-space byte is `{`:
 
   ```json

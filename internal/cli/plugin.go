@@ -157,12 +157,24 @@ func (a *app) runPlugin(name string, args []string, asJSON bool) bool {
 // pluginEnv is a plugin's environment: the exec contract's variables, plus
 // YADM_ENCLAVES (enclaves this machine applies), YADM_ON_DEMAND (enclaves it
 // reads on demand only) and YADM_PLUGIN_STATE (a private directory, 0700).
+// An inherited YADM_PARENT_PID passes through: the dispatcher holds no lock.
 func (m *machineEnv) pluginEnv(name string, req extexec.Request) ([]string, error) {
 	dir := filepath.Join(m.paths.State, PluginStateDir, name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	env := append(extexec.PassEnv(req), "YADM_PLUGIN_STATE="+dir)
+	if pid := os.Getenv(extexec.EnvParentPID); pid != "" {
+		// This yadm runs under another one (a task, check or collector of
+		// a sync that holds the lock) and holds no lock itself: a yadm the
+		// plugin runs must see that holder as its own (sync.ErrSelfLocked),
+		// not wait out its bound on it.
+		for i, kv := range env {
+			if strings.HasPrefix(kv, extexec.EnvParentPID+"=") {
+				env[i] = extexec.EnvParentPID + "=" + pid
+			}
+		}
+	}
 	if m.snap != nil && m.snap.Fleet != nil {
 		s := enclavesOf(m.snap)
 		env = append(env, "YADM_ENCLAVES="+joinEnclaves(s.Opened), "YADM_ON_DEMAND="+joinEnclaves(s.OnDemand))
