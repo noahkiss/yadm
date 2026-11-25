@@ -126,6 +126,14 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 		}
 	}
 
+	for _, h := range f.Harnesses() {
+		if a, ok := adapterFor(h); ok {
+			for _, m := range firstNotLeading(f, a, h) {
+				warnf("%s", m)
+			}
+		}
+	}
+
 	for _, name := range sortedKeys(f.Conditions) {
 		x, err := expandLocal(f.Conditions[name], f.Conditions)
 		if err != nil {
@@ -159,4 +167,38 @@ func hasErrors(fs []Finding) bool {
 		}
 	}
 	return false
+}
+
+// firstNotLeading renders every unit with a cell for an ordered (route)
+// harness as if all were on, and reports each list a unit marked first does
+// not lead. Only two first units on one list can cause it.
+func firstNotLeading(f *File, a Adapter, h string) []string {
+	if _, ordered := a.(routeAdapter); !ordered {
+		return nil
+	}
+	var units []Resolved
+	for _, u := range f.Units {
+		if _, has := f.Cell(u.Name, h); has {
+			r := u.Resolve(h)
+			r.Enabled = true
+			units = append(units, r)
+		}
+	}
+	w, err := a.Render(units)
+	if err != nil {
+		return nil // the per-unit checks above report it
+	}
+	lead := map[string]string{}
+	var out []string
+	for _, e := range w.Entries {
+		k := e.Event + " " + e.Matcher
+		if _, ok := lead[k]; !ok {
+			lead[k] = e.Unit
+			continue
+		}
+		if u := f.Unit(e.Unit); u != nil && u.First {
+			out = append(out, fmt.Sprintf("unit %q is marked first but %q leads %s %s; only one first unit can lead a list", e.Unit, lead[k], h, k))
+		}
+	}
+	return out
 }

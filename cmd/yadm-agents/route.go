@@ -80,7 +80,7 @@ func routeToolNames(acts []string) []string {
 
 func (a routeAdapter) Render(units []Resolved) (Wiring, error) {
 	var w Wiring
-	for _, u := range wiredUnits(a, units) {
+	for _, u := range firstLeads(wiredUnits(a, units)) {
 		name := u.ScriptName()
 		if name == "" {
 			return w, fmt.Errorf("unit %q: a routed guard needs script", u.Unit)
@@ -103,6 +103,23 @@ func (a routeAdapter) Render(units []Resolved) (Wiring, error) {
 		}
 	}
 	return w, nil
+}
+
+// firstLeads moves units marked first ahead of the rest, keeping file
+// order within each group, so a first unit leads every list it is on.
+func firstLeads(us []Resolved) []Resolved {
+	out := make([]Resolved, 0, len(us))
+	for _, u := range us {
+		if u.First {
+			out = append(out, u)
+		}
+	}
+	for _, u := range us {
+		if !u.First {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 // routeHeader starts every route file gen writes. gen owns the whole

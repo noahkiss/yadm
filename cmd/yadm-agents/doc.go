@@ -15,6 +15,7 @@
 //	name     = "guard-a"        # letters, digits, _ and -; no dots
 //	kind     = "guard"          # open string: guard, hook, mod, plugin, extension, ...
 //	required = true             # gen and verify refuse to lose it
+//	first    = true             # leads every route list it is on
 //	effect   = "deny"           # deny | ask | context | rewrite | none
 //	script   = "~/hooks/a.sh"   # the check; gen quotes it per harness
 //	args     = ["{harness}"]    # appended to script
@@ -58,7 +59,9 @@
 //	          hooks.state. Codex keys hook trust by event and position, so
 //	          gen keeps every live handler at its position and appends new ones.
 //	opencode  a route file (config required): event, Claude tool name and the
-//	pi        guard scripts a shared runner script runs, in unit order.
+//	pi        guard scripts a shared runner script runs, in unit order with
+//	          units marked first ahead. Only route lists have an order that
+//	          first sets; Claude ignores order and Codex keeps live positions.
 //
 // # Commands
 //
@@ -81,8 +84,9 @@
 // verify is the commit check: the file parses; every cell names a real
 // unit; every wired cell asks only for events and effects its harness has
 // and renders; a via names a real unit; required units name a script that exists (or is
-// staged); every condition evaluates. Unknown harnesses, unknown kinds and
-// unmapped actions without a note are warnings.
+// staged); every condition evaluates. Unknown harnesses, unknown kinds,
+// unmapped actions without a note, and a unit marked first that another
+// first unit keeps from leading a route list are warnings.
 //
 // matrix prints unit × harness × machine as a table, JSON, or a parity
 // report (one line per script: harness[tokens]). For file units it compares

@@ -49,6 +49,7 @@ type Fields struct {
 type Unit struct {
 	Name     string            `toml:"name"`
 	Required bool              `toml:"required"`
+	First    bool              `toml:"first"` // leads every route list it is on
 	Fields                     // base values
 	Over     map[string]Fields `toml:"harness"`
 	index    int
@@ -223,6 +224,7 @@ type Resolved struct {
 	Harness  string
 	Enabled  bool // the cell holds on the machine being rendered
 	Required bool
+	First    bool
 	Kind     string
 	Script   string
 	Args     []string
@@ -245,7 +247,7 @@ func (u *Unit) Resolve(h string) Resolved {
 	if o, ok := u.Over[h]; ok {
 		f = merge(f, o)
 	}
-	r := Resolved{Unit: u.Name, Index: u.index, Harness: h, Required: u.Required,
+	r := Resolved{Unit: u.Name, Index: u.index, Harness: h, Required: u.Required, First: u.First,
 		Kind: deref(f.Kind), Script: deref(f.Script), Args: f.Args, Run: deref(f.Run), On: f.On, Actions: f.Actions,
 		Extra: f.Extra, Effect: deref(f.Effect), Dir: deref(f.Dir), File: deref(f.File), Via: deref(f.Via), Note: deref(f.Note)}
 	r.Match, _ = eventMap[string](f.Match, "match")
