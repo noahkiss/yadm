@@ -63,7 +63,10 @@
 //     when this machine never wrote it. One seal_guard hold with Task
 //     GuardTask names it. A full apply drops the floor once the plan
 //     protects the target enough again or the allow exists; a target that
-//     leaves the plan keeps its floor and loses its hold.
+//     leaves the plan keeps its floor and loses its hold. A protected
+//     target that apply stops managing (it left the plan) gets a floor
+//     from its recorded protection, and captureNew never takes a floored
+//     target through a root that protects it less.
 //   - A target whose parent directory resolves outside $HOME (InsideHome,
 //     ErrOutsideHome), or whose name holds a control character, is held:
 //     never read, written or captured.

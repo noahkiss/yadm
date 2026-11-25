@@ -408,6 +408,17 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	if !ok || rerr != nil {
 		return nil, nil, nil
 	}
+	// A floored target (a held path, or a protected target that left the
+	// plan) is never captured with less protection, named or not.
+	if f, floored := st.Floors[d.Target]; floored {
+		if why := weakerBy(f.Protection, protection{Enclave: root.Enclave}); len(why) > 0 {
+			h := floorHold(st, now, d.Target, model.Scope(root.Enclave), f.Since, why)
+			if root.Enclave == "" {
+				h.Scope = model.ScopeShared
+			}
+			return nil, &h, nil
+		}
+	}
 	abs, err := e.abs(d.Target)
 	if err != nil {
 		return nil, nil, err

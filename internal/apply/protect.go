@@ -456,12 +456,21 @@ func (e *Engine) baseline(ctx context.Context, st *State, root manifest.Root) bo
 // forget drops a target from management. A target that had any recorded
 // protection goes into the baseline: if it leaves the plan and the app
 // writes it again inside a plain owned root, it must not be captured in
-// plaintext.
+// plaintext. It keeps a Floor too: a later commit that brings the target
+// back with less protection (an entry removed, or its when turned off
+// here, then added back plain) is held as any fetched weakening is, until
+// the new protection is allowed here.
 func forget(st *State, t model.Target, now time.Time) {
 	ts, ok := st.Targets[t]
 	delete(st.Targets, t)
 	if p := ts.prot(); ok && (p.Enclave != "" || len(p.Seal) > 0 || p.Regions || len(p.Keep) > 0 || len(p.Drop) > 0 || len(p.Volatile) > 0) {
 		st.Baseline[t] = now
+		if _, had := st.Floors[t]; !had && len(weakerBy(p, protection{})) > 0 {
+			if st.Floors == nil {
+				st.Floors = map[model.Target]Floor{}
+			}
+			st.Floors[t] = Floor{Protection: p, Since: now.UTC()}
+		}
 	}
 }
 
