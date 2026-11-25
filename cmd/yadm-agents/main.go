@@ -23,6 +23,7 @@ Usage:
   yadm-agents gen    [--dry-run] [--diff] [--as <machine>] [--only h,...] [--prune] [--allow-drop]
   yadm-agents verify [--offline]
   yadm-agents matrix [--format table|json|parity] [--machines a,b]
+  yadm-agents version
 
 Common flags: --units <path> (default $YADM_AGENTS_UNITS, then
 $XDG_CONFIG_HOME/yadm-agents/units.toml), --home <dir> (default $YADM_HOME,
@@ -32,6 +33,9 @@ gen writes this machine's wiring, only the keys it owns, atomically, and
 only on change. --as renders another machine's wiring and never writes.
 Exit codes: 0 ok, 1 a harness refused or verify found an error, 2 usage.
 `
+
+// version is set at build time with -ldflags "-X main.version=<v>".
+var version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, newYadmEval()))
@@ -50,6 +54,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, ev Evaluator)
 	}
 	if kind == string(extexec.KindCheck) && (len(args) == 0 || args[0] != "verify") {
 		args = append([]string{"verify"}, args...)
+	}
+	if len(args) > 0 && args[0] == "version" {
+		fmt.Fprintln(stdout, "yadm-agents", version)
+		return 0
 	}
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Fprint(stdout, usage)

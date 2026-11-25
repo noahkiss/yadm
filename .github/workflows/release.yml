@@ -178,8 +178,8 @@ jobs:
           while IFS="$(printf '\t')" read -r arch archive; do
             dir="${stage}/darwin_${arch}"
             mkdir -p "$dir"
-            tar -xzf "$archive" -C "$dir" yadm yadm-oracle
-            for pair in yadm:com.nkmkdigital.yadm yadm-oracle:com.nkmkdigital.yadm.oracle; do
+            tar -xzf "$archive" -C "$dir" yadm yadm-agents yadm-oracle
+            for pair in yadm:com.nkmkdigital.yadm yadm-agents:com.nkmkdigital.yadm.agents yadm-oracle:com.nkmkdigital.yadm.oracle; do
               bin="${dir}/${pair%%:*}"
               id="${pair#*:}"
               codesign --verify --strict --verbose=2 "$bin"
@@ -197,9 +197,12 @@ jobs:
           got="$("${stage}/darwin_arm64/yadm" version)"
           [ "$got" = "yadm ${RELEASE_TAG#v}" ] \
             || { echo "::error::the signed yadm reports '${got}', not 'yadm ${RELEASE_TAG#v}'"; exit 1; }
+          got="$("${stage}/darwin_arm64/yadm-agents" version)"
+          [ "$got" = "yadm-agents ${RELEASE_TAG#v}" ] \
+            || { echo "::error::the signed yadm-agents reports '${got}', not 'yadm-agents ${RELEASE_TAG#v}'"; exit 1; }
           echo "NOTARIZE_STAGE=${stage}" >> "$GITHUB_ENV"
 
-      # The notary service takes a zip, never a bare Mach-O, so the four
+      # The notary service takes a zip, never a bare Mach-O, so the six
       # binaries go up in one zip that is then thrown away. A bare binary cannot
       # be stapled; Gatekeeper fetches its ticket online at first run. So
       # nothing in the archives changes here, and notarizing after GoReleaser

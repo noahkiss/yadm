@@ -51,7 +51,7 @@ It works with plain git, macOS (launchd) and Linux (systemd). It hooks into codi
 brew install noahkiss/tap/yadm-nkmk
 ```
 
-The formula runs on macOS and Linux. It installs a `yadm` binary, so it conflicts with Homebrew's core `yadm`. The [releases page](https://github.com/noahkiss/yadm/releases) has signed and notarized macOS binaries and Linux binaries for amd64 and arm64.
+The formula runs on macOS and Linux. It installs `yadm` and `yadm-agents` (see [docs/extensions.md](docs/extensions.md)). Its `yadm` binary conflicts with Homebrew's core `yadm`. The [releases page](https://github.com/noahkiss/yadm/releases) has signed and notarized macOS binaries and Linux binaries for amd64 and arm64.
 
 Then set up each machine:
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
@@ -117,5 +118,13 @@ func TestMatcherTokens(t *testing.T) {
 		if got := matcherTokens(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("matcherTokens(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The release workflow and the formula test read `yadm-agents version`.
+func TestVersion(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"version"}, strings.NewReader(""), &out, &errb, nil); code != 0 || out.String() != "yadm-agents dev\n" {
+		t.Fatalf("exit %d, stdout %q", code, out.String())
 	}
 }

@@ -28,6 +28,19 @@ builds:
       post:
         - cmd: ./scripts/macos-sign.sh {{ .Os }} {{ .Path }} com.nkmkdigital.yadm
           output: true
+  - id: yadm-agents
+    main: ./cmd/yadm-agents
+    binary: yadm-agents
+    env: [CGO_ENABLED=0]
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    hooks:
+      post:
+        - cmd: ./scripts/macos-sign.sh {{ .Os }} {{ .Path }} com.nkmkdigital.yadm.agents
+          output: true
   - id: yadm-oracle
     main: ./cmd/yadm-oracle
     binary: yadm-oracle
