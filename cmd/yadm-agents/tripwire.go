@@ -11,21 +11,24 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // tripwire is the SessionStart check. It reads only local files: the state
 // gen left and each harness's live file. It never runs yadm, never reads
 // stdin, and always exits 0, so it cannot break or slow a session start.
 func tripwire(args []string, stdout, stderr io.Writer) (code int) {
+	format := "text"
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(stdout, "yadm-agents: tripwire failed (%v); required guards are unchecked\n", r)
+			emitTrip(stdout, format, []string{fmt.Sprintf("yadm-agents: tripwire failed (%v); required guards are unchecked", r)})
 			code = 0
 		}
 	}()
 	fs := flag.NewFlagSet("tripwire", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var harness, format, home, state string
+	var harness, home, state string
 	fs.StringVar(&harness, "harness", "", "check only this harness")
 	fs.StringVar(&format, "format", "text", "text, or hook (SessionStart hook JSON)")
 	fs.StringVar(&home, "home", "", "home directory (default $YADM_HOME, then $HOME)")
@@ -42,21 +45,53 @@ func tripwire(args []string, stdout, stderr io.Writer) (code int) {
 	if state == "" {
 		state = statePath(home)
 	}
-	lines := Tripwire(home, state, harness)
+	emitTrip(stdout, format, Tripwire(home, state, harness))
+	return 0
+}
+
+// emitTrip prints the lines as text or as SessionStart hook JSON, each
+// line cleaned first: the harness decodes the JSON and shows the text on
+// a terminal, so JSON escaping alone would not stop a control character.
+func emitTrip(w io.Writer, format string, lines []string) {
 	if len(lines) == 0 {
-		return 0
+		return
 	}
-	text := strings.Join(lines, "\n")
+	clean := make([]string, len(lines))
+	for i, l := range lines {
+		clean[i] = printable(l)
+	}
+	text := strings.Join(clean, "\n")
 	if format == "hook" {
 		b, _ := json.Marshal(map[string]any{
 			"systemMessage":      text,
 			"hookSpecificOutput": map[string]string{"hookEventName": "SessionStart", "additionalContext": text},
 		})
-		fmt.Fprintln(stdout, string(b))
-		return 0
+		fmt.Fprintln(w, string(b))
+		return
 	}
-	fmt.Fprintln(stdout, text)
-	return 0
+	fmt.Fprintln(w, text)
+}
+
+// printable escapes control and format characters (a newline, an escape
+// sequence, a bidi override), so text from a file cannot break a line or
+// drive the terminal.
+func printable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == utf8.RuneError:
+			b.WriteString(`\ufffd`)
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			if r < 0x100 {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 const tripPrefix = "yadm-agents: REQUIRED GUARD MISSING"

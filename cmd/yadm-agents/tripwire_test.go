@@ -232,3 +232,40 @@ func TestRefusalKeepsOwnedTrust(t *testing.T) {
 		t.Fatalf("owned = %v", o)
 	}
 }
+
+// Text from the state and the live files reaches a terminal and a model.
+// No control character survives, in either format, after decoding.
+func TestTripwireStripsControlCharacters(t *testing.T) {
+	home := t.TempDir()
+	st := State{Schema: 1, Harness: map[string]HarnessState{"claude": {
+		Target:   ".claude/set\x1b[2Jtings\n.json",
+		Required: []Expected{{Unit: "guard-a", Handlers: []Handler{{Event: "PreToolUse", Matcher: "Bash", Command: "x"}}}},
+	}}}
+	if err := writeState(statePath(home), st); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := tripwireRun(t, home)
+	hook, _ := tripwireRun(t, home, "--format", "hook")
+	var msg struct {
+		SystemMessage string `json:"systemMessage"`
+		Hook          struct {
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(hook), &msg); err != nil {
+		t.Fatalf("hook output is not JSON: %v\n%s", err, hook)
+	}
+	for _, s := range []string{strings.TrimSuffix(text, "\n"), msg.SystemMessage, msg.Hook.Context} {
+		if s == "" {
+			t.Fatal("no output")
+		}
+		for _, line := range strings.Split(s, "\n") {
+			if !strings.HasPrefix(line, "yadm-agents: ") {
+				t.Fatalf("a field broke a line: %q", s)
+			}
+		}
+		if strings.ContainsAny(s, "\x1b\r\t\x00") {
+			t.Fatalf("control character in %q", s)
+		}
+	}
+}
