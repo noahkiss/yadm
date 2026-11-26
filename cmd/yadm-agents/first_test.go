@@ -77,3 +77,20 @@ func TestVerifyWarnsFirstNotLeading(t *testing.T) {
 		t.Fatalf("errors: %s", findings(fs, "error"))
 	}
 }
+
+// A unit marked first after it was wired moves to the front on the next gen.
+func TestFirstReordersWiredList(t *testing.T) {
+	register(routeAdapter{name: "tool-r"})
+	defer delete(registry, "tool-r")
+	home := genHome(t)
+	plain := strings.Replace(routeOrderUnits, "first = true\n", "", 1)
+	if r := genOnly(t, home, plain, "tool-r", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("tool-r: %s %s", r.Status, r.Reason)
+	}
+	if r := genOnly(t, home, routeOrderUnits, "tool-r", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("tool-r: %s %s", r.Status, r.Reason)
+	}
+	if got := readFile(t, filepath.Join(home, ".local/state/agents/route.tsv")); !strings.Contains(got, "PreToolUse\tBash\tguard-a.sh guard-b.sh\n") {
+		t.Fatalf("route:\n%s", got)
+	}
+}
