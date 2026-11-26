@@ -14,7 +14,7 @@ func genHome(t *testing.T) string {
 	writeFile(t, filepath.Join(home, ".claude/settings.json"), settingsFixture)
 	writeFile(t, filepath.Join(home, ".codex/config.toml"), codexFixture)
 	for _, s := range []string{"guard-a.sh", "guard-b.sh", "logger.sh"} {
-		writeFile(t, filepath.Join(home, ".agent/hooks", s), "#!/bin/sh\nexit 0\n")
+		writeScript(t, filepath.Join(home, ".agent/hooks", s))
 	}
 	return home
 }
@@ -164,7 +164,7 @@ func TestGenCreatesRoute(t *testing.T) {
 func TestGenAsUsesDelivery(t *testing.T) {
 	home := genHome(t)
 	ev := twoMachines()
-	ev.delivered = map[string]map[string]bool{"host-b": {".claude/settings.json": true}}
+	ev.delivered = map[string]map[string]bool{"host-b": setOf(append([]string{".claude/settings.json"}, fixtureScripts...)...)}
 	rs, _ := Gen(mustParse(t, fixtureUnits), ev, GenOptions{Home: home, As: "host-b", Prune: true})
 	m := byHarness(rs)
 	if m["codex"].Status != StatusSkipped || !strings.Contains(m["codex"].Reason, "does not give host-b") {

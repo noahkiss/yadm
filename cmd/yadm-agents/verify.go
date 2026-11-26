@@ -19,12 +19,16 @@ type VerifyOptions struct {
 	Home    string
 	Offline bool              // skip evaluating cells through yadm
 	Staged  map[string]string // check mode: home-relative target -> staged temp file
+	// Planned is check mode's view of the commit under the gate: each
+	// staged target's `when` once it lands. A script tracked in the same
+	// commit as its cell is not in the manifest yet; this says where it goes.
+	Planned map[string]string
 }
 
 // Verify is the commit check (fail closed): the file parses, every cell
 // names a real unit, every wired cell asks only for events and effects its
-// harness has, required units have their check script, and every cell
-// evaluates. Unknown harnesses and kinds are warnings, never errors.
+// harness has, required units have their check script, every wired script
+// reaches each machine its cell is on, and every cell evaluates. Unknown harnesses and kinds are warnings, never errors.
 func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 	var out []Finding
 	errf := func(format string, a ...any) { out = append(out, Finding{"error", fmt.Sprintf(format, a...)}) }
@@ -106,7 +110,7 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 				}
 				continue
 			}
-			if r.Command("", true) == "" {
+			if r.Command("") == "" {
 				errf("unit %q on %s: no script or run", u.Name, h)
 			}
 			if len(r.On) == 0 {
@@ -146,6 +150,12 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 		}
 	}
 
+	if !o.Offline && ev != nil {
+		for _, m := range scriptsTravel(f, ev, o) {
+			errf("%s", m)
+		}
+	}
+
 	for _, name := range sortedKeys(f.Conditions) {
 		x, err := expandLocal(f.Conditions[name], f.Conditions)
 		if err != nil {
@@ -161,6 +171,83 @@ func Verify(f *File, ev Evaluator, o VerifyOptions) []Finding {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Level < out[j].Level })
 	return out
+}
+
+// scriptsTravel checks that each wired cell's script is a managed file the
+// manifest gives every machine where the cell is on, so the wiring never
+// reaches a machine its script does not. In check mode a staged script
+// counts where its planned entry's when holds.
+func scriptsTravel(f *File, ev Evaluator, o VerifyOptions) []string {
+	home := o.Home
+	d, ok := ev.(deliverer)
+	if !ok {
+		return []string{"cannot check that wired scripts reach their machines: no manifest to ask"}
+	}
+	machines, err := ev.Machines()
+	if err != nil {
+		return []string{fmt.Sprintf("cannot list the fleet to check that wired scripts reach their machines: %v", err)}
+	}
+	var out []string
+	broken := map[string]bool{}
+	for _, u := range f.Units {
+		for _, h := range f.Harnesses() {
+			a, ok := adapterFor(h)
+			if _, has := f.Cell(u.Name, h); !has || !ok {
+				continue
+			}
+			r := u.Resolve(h)
+			if r.Via != "" || !a.Wires(r.Kind) || r.Kind == "mod" || r.Run != "" || r.Script == "" {
+				continue
+			}
+			target, ok := scriptTarget(r.Script, home)
+			if !ok {
+				out = append(out, fmt.Sprintf("unit %q on %s: script %s is outside home, so yadm cannot deliver it with the wiring", u.Name, h, r.Script))
+				continue
+			}
+			var miss []string
+			for _, m := range machines {
+				on, _, err := cellOn(f, ev, u.Name, h, m)
+				if err != nil || !on {
+					continue // the condition check reports an error
+				}
+				if when, ok := o.Planned[target]; ok {
+					if when == "" {
+						continue
+					}
+					if in, err := ev.Eval(when, m); err == nil && in {
+						continue
+					}
+				}
+				s, err := d.Delivered(m)
+				if err != nil {
+					if !broken[m] {
+						broken[m] = true
+						out = append(out, fmt.Sprintf("cannot check that wired scripts reach %s: %v", m, err))
+					}
+					continue
+				}
+				if !s[target] {
+					miss = append(miss, m)
+				}
+			}
+			if len(miss) > 0 {
+				out = append(out, fmt.Sprintf("unit %q on %s: the cell wires script %s on %s, but the manifest does not deliver it there; track the script for every machine the cell is on", u.Name, h, r.Script, strings.Join(miss, ", ")))
+			}
+		}
+	}
+	return out
+}
+
+// scriptTarget is the manifest target a script path names.
+func scriptTarget(s, home string) (string, bool) {
+	if filepath.IsAbs(s) {
+		rel, err := filepath.Rel(home, s)
+		if err != nil || !filepath.IsLocal(rel) {
+			return "", false
+		}
+		return filepath.ToSlash(rel), true
+	}
+	return filepath.ToSlash(homeRel(s)), true
 }
 
 func scriptPresent(o VerifyOptions, s string) bool {

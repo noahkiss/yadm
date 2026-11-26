@@ -160,8 +160,10 @@ func tripOne(home, h string, rec HarnessState) []string {
 	}
 	for _, x := range rec.Required {
 		if x.Script != "" {
-			if _, err := os.Stat(filepath.Join(home, filepath.FromSlash(x.Script))); err != nil {
-				out = append(out, fmt.Sprintf("%s on %s: %s: its script ~/%s is missing.", tripPrefix, h, x.Unit, x.Script))
+			// The guarded form skips a script it cannot run, so a missing
+			// one fails no tool call; this line is where it shows.
+			if why := scriptProblem(filepath.Join(home, filepath.FromSlash(x.Script))); why != "" {
+				out = append(out, fmt.Sprintf("%s on %s: %s: its script ~/%s %s, so the guard does not run.", tripPrefix, h, x.Unit, x.Script, why))
 				continue
 			}
 		}

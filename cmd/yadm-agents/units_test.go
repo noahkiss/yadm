@@ -71,21 +71,48 @@ func TestResolveOverride(t *testing.T) {
 	}
 }
 
+// Every script unit's command is guarded: a script that has not reached
+// the machine skips the call instead of failing it.
 func TestCommand(t *testing.T) {
 	f := mustParse(t, fixtureUnits)
-	if got := f.Unit("guard-a").Resolve("claude").Command("PreToolUse", true); got != `"$HOME/.agent/hooks/guard-a.sh"` {
-		t.Fatalf("quoted = %s", got)
+	want := `[ -x "$HOME/.agent/hooks/guard-a.sh" ] || exit 0; exec "$HOME/.agent/hooks/guard-a.sh"`
+	for _, h := range []string{"claude", "codex"} {
+		if got := f.Unit("guard-a").Resolve(h).Command("PreToolUse"); got != want {
+			t.Fatalf("%s = %s", h, got)
+		}
 	}
-	if got := f.Unit("guard-a").Resolve("codex").Command("PreToolUse", false); got != `$HOME/.agent/hooks/guard-a.sh` {
-		t.Fatalf("plain = %s", got)
-	}
-	got := f.Unit("greeter").Resolve("codex").Command("Stop", false)
+	got := f.Unit("greeter").Resolve("codex").Command("Stop")
 	if !strings.HasSuffix(got, `exec "$HOME/bin/greet" codex Stop`) {
 		t.Fatalf("templated = %s", got)
 	}
 	u := Resolved{Harness: "h", Script: "~/s.sh", Args: []string{"{harness}", "x"}}
-	if got := u.Command("E", false); got != "$HOME/s.sh h x" {
+	if got := u.Command("E"); got != `[ -x "$HOME/s.sh" ] || exit 0; exec "$HOME/s.sh" h x` {
 		t.Fatalf("args = %s", got)
+	}
+}
+
+// The guarded form and both plain forms name one script call; anything
+// else is its own name.
+func TestCanonCommand(t *testing.T) {
+	one := `"$HOME/s.sh" a b`
+	for _, c := range []string{
+		`[ -x "$HOME/s.sh" ] || exit 0; exec "$HOME/s.sh" a b`,
+		`"$HOME/s.sh" a b`,
+		`$HOME/s.sh a b`,
+	} {
+		if got := canonCommand(c); got != one {
+			t.Errorf("canonCommand(%q) = %q", c, got)
+		}
+	}
+	for _, c := range []string{
+		`[ -x "$HOME/s.sh" ] || exit 0; exec "$HOME/other.sh" a b`,
+		`[ -x "$HOME/s.sh" ] && exec "$HOME/s.sh" a b || exit 0`,
+		`"$HOME/bin/seat" gate "$HOME/s.sh"`,
+		`sh "$HOME/s.sh" a b`,
+	} {
+		if got := canonCommand(c); got == one {
+			t.Errorf("canonCommand(%q) matched the script call", c)
+		}
 	}
 }
 

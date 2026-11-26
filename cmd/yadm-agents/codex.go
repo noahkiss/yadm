@@ -76,7 +76,7 @@ func (a codexAdapter) Render(units []Resolved) (Wiring, error) {
 	var w Wiring
 	for _, u := range wiredUnits(a, units) {
 		for _, ev := range u.On {
-			cmd := u.Command(ev, false)
+			cmd := u.Command(ev)
 			if cmd == "" {
 				return w, fmt.Errorf("unit %q: no script or run", u.Unit)
 			}
@@ -89,9 +89,10 @@ func (a codexAdapter) Render(units []Resolved) (Wiring, error) {
 }
 
 // Order keeps live handlers where they are, identified by matcher and
-// command, and appends handlers the live file lacks in unit order.
+// command (canonCommand, so a plain live form keeps its place guarded), and
+// appends handlers the live file lacks in unit order.
 func (codexAdapter) Order(live, w Wiring) Wiring {
-	key := func(e Entry) string { return e.Event + "\x00" + e.Matcher + "\x00" + e.Command }
+	key := func(e Entry) string { return e.Event + "\x00" + e.Matcher + "\x00" + canonCommand(e.Command) }
 	pending := map[string][]int{}
 	var events []string
 	byEvent := map[string][]Entry{}

@@ -214,9 +214,9 @@ func TestCodexApplyOwnsEventTablesOnly(t *testing.T) {
 		t.Fatalf("unowned content lost:\n%s", out)
 	}
 	pre := hooks["PreToolUse"].([]any)
-	// guard-a kept position 0 (live), guard-b appended
+	// guard-a kept position 0 (live, now guarded), guard-b appended
 	first := pre[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"]
-	if first != "$HOME/.agent/hooks/guard-a.sh" || len(pre) != 2 {
+	if first != `[ -x "$HOME/.agent/hooks/guard-a.sh" ] || exit 0; exec "$HOME/.agent/hooks/guard-a.sh"` || len(pre) != 2 {
 		t.Fatalf("PreToolUse = %v", pre)
 	}
 	ss := hooks["SessionStart"].([]any)[0].(map[string]any)

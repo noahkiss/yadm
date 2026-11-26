@@ -44,6 +44,7 @@ type HarnessResult struct {
 	Removed  []string            `json:"removed,omitempty"`
 	Foreign  []string            `json:"foreign,omitempty"`
 	Lacks    map[string][]string `json:"lacks,omitempty"` // unit -> actions this harness has no tool for
+	Warnings []string            `json:"warnings,omitempty"`
 	Rendered []byte              `json:"-"`
 
 	next      *HarnessState // the state to record; nil keeps the old record
@@ -203,6 +204,43 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 	if err != nil {
 		return refuse("%v", err)
 	}
+	// gen runs as a task after apply, so a script apply has not written
+	// here is not on this machine yet: wiring it would land the handler
+	// first. A required unit refuses; any other unit waits for a later gen.
+	ready := func(script string) (string, error) {
+		if o.As == "" {
+			return scriptProblem(filepath.Join(o.Home, homeRel(script))), nil
+		}
+		d, ok := ev.(deliverer)
+		if !ok {
+			return "", nil
+		}
+		s, err := d.Delivered(o.As)
+		if err != nil {
+			return "", err
+		}
+		if !s[filepath.ToSlash(homeRel(script))] {
+			return "is not delivered to " + o.As, nil
+		}
+		return "", nil
+	}
+	for i, u := range units {
+		if !u.Enabled || u.Via != "" || !a.Wires(u.Kind) || u.Kind == "mod" || u.Run != "" || u.Script == "" {
+			continue
+		}
+		why, err := ready(u.Script)
+		if err != nil {
+			return refuse("%v", err)
+		}
+		switch {
+		case why == "":
+		case u.Required:
+			return refuse("required unit %q: script %s %s", u.Unit, u.Script, why)
+		default:
+			units[i].Enabled = false
+			res.Warnings = append(res.Warnings, fmt.Sprintf("unit %q not wired: script %s %s", u.Unit, u.Script, why))
+		}
+	}
 	for _, u := range wiredUnits(a, units) {
 		res.Units = append(res.Units, u.Unit)
 		if err := checkWired(a, u); err != nil {
@@ -213,11 +251,6 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 				res.Lacks = map[string][]string{}
 			}
 			res.Lacks[u.Unit] = l
-		}
-		if o.As == "" && u.Required && u.Script != "" {
-			if _, err := os.Stat(filepath.Join(o.Home, homeRel(u.Script))); err != nil {
-				return refuse("required unit %q: script %s is missing here", u.Unit, u.Script)
-			}
 		}
 	}
 	rendered, err := a.Render(units)
@@ -338,12 +371,13 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 	foreign := map[string]bool{}
 	var dropped []string
 	for _, e := range cur.Entries {
+		c := canonCommand(e.Command)
 		switch {
-		case required[e.Command] != "":
+		case required[c] != "":
 			if !coveredBy(covered, e) {
-				dropped = append(dropped, required[e.Command])
+				dropped = append(dropped, required[c])
 			}
-		case !known[e.Command]:
+		case !known[c]:
 			foreign[e.Command] = true
 		}
 	}
@@ -402,19 +436,21 @@ func checkWired(a Adapter, u Resolved) error {
 	return nil
 }
 
-// coverKeys lists what one handler covers: event, tool and command, one
-// key per matcher alternative. A server list `mcp__(a|b)__.*` counts per
+// coverKeys lists what one handler covers: event, tool and command (by
+// canonCommand, so the guarded and plain forms match), one key per matcher
+// alternative. A server list `mcp__(a|b)__.*` counts per
 // server, so adding a server is not a drop.
 func coverKeys(e Entry) []string {
 	var out []string
+	cmd := canonCommand(e.Command)
 	for _, t := range matcherTokens(e.Matcher) {
 		if m := serverList.FindStringSubmatch(t); m != nil {
 			for _, s := range strings.Split(m[1], "|") {
-				out = append(out, e.Event+"\t"+"mcp__"+s+"__.*"+"\t"+e.Command)
+				out = append(out, e.Event+"\t"+"mcp__"+s+"__.*"+"\t"+cmd)
 			}
 			continue
 		}
-		out = append(out, e.Event+"\t"+t+"\t"+e.Command)
+		out = append(out, e.Event+"\t"+t+"\t"+cmd)
 	}
 	return out
 }
@@ -426,7 +462,7 @@ var serverList = regexp.MustCompile(`^mcp__\(([A-Za-z0-9_|-]+)\)__\.\*$`)
 // covers any tool, and one for every MCP tool covers any one server.
 func coveredBy(covered map[string]bool, e Entry) bool {
 	pre := e.Event + "\t"
-	post := "\t" + e.Command
+	post := "\t" + canonCommand(e.Command)
 	if covered[pre+"*"+post] {
 		return true
 	}
@@ -451,6 +487,7 @@ func hasUnit(w Wiring, unit string) bool {
 
 // commandsOf renders every unit with a cell for h as if it were on, so gen
 // knows which live commands are its own and which belong to required units.
+// Keys are canonCommand names, so a plain live form is the unit's too.
 // A required unit with no cell for h still claims its commands: removing
 // its cell drops it, which needs --allow-drop, never --prune.
 func commandsOf(f *File, a Adapter, h string) (known map[string]bool, required map[string]string, err error) {
@@ -470,9 +507,10 @@ func commandsOf(f *File, a Adapter, h string) (known map[string]bool, required m
 			return nil, nil, err
 		}
 		for _, e := range w.Entries {
-			known[e.Command] = true
+			c := canonCommand(e.Command)
+			known[c] = true
 			if u.Required {
-				required[e.Command] = u.Name
+				required[c] = u.Name
 			}
 		}
 	}
@@ -569,6 +607,21 @@ func writeAtomic(path string, b []byte) error {
 	return os.Rename(name, path)
 }
 
+// scriptProblem says why the guarded form would skip the script at path,
+// or "" when it is an executable file.
+func scriptProblem(path string) string {
+	st, err := os.Stat(path)
+	switch {
+	case err != nil:
+		return "is missing here"
+	case !st.Mode().IsRegular():
+		return "is not a file"
+	case st.Mode().Perm()&0o111 == 0:
+		return "is not executable"
+	}
+	return ""
+}
+
 func homeRel(p string) string {
 	p = strings.TrimPrefix(p, "~/")
 	p = strings.TrimPrefix(p, "$HOME/")
@@ -602,6 +655,9 @@ func formatResults(rs []HarnessResult, diff bool) string {
 		}
 		for _, c := range r.Foreign {
 			fmt.Fprintf(&b, "  foreign: %s\n", c)
+		}
+		for _, w := range r.Warnings {
+			fmt.Fprintf(&b, "  warning: %s\n", w)
 		}
 		for _, u := range sortedKeys(r.Lacks) {
 			fmt.Fprintf(&b, "  lacks: %s has no tool for %s\n", u, strings.Join(r.Lacks[u], ", "))

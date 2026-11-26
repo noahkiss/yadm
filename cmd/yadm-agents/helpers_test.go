@@ -59,8 +59,15 @@ func twoMachines() *fakeEval {
 			"host-a": {"type:work": true, "type:client": false},
 			"host-b": {"type:work": false, "type:client": true},
 		},
+		delivered: map[string]map[string]bool{
+			"host-a": setOf(fixtureScripts...),
+			"host-b": setOf(fixtureScripts...),
+		},
 	}
 }
+
+// fixtureScripts are the targets the fake manifest gives every machine.
+var fixtureScripts = []string{".agent/hooks/guard-a.sh", ".agent/hooks/guard-b.sh", ".agent/hooks/logger.sh"}
 
 func mustParse(t *testing.T, src string) *File {
 	t.Helper()
@@ -77,6 +84,15 @@ func writeFile(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeScript writes an executable script, as apply leaves one.
+func writeScript(t *testing.T, path string) {
+	t.Helper()
+	writeFile(t, path, "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
 }

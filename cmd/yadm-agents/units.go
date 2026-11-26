@@ -336,9 +336,14 @@ func (r Resolved) TimeoutFor(ev string) int64 {
 }
 
 // Command builds the handler command for event ev. A verbatim `run` wins;
-// otherwise the adapter formats `script` and `args`. `{harness}` and
+// otherwise the command runs `script` with `args` in the guarded form
+//
+//	[ -x "<script>" ] || exit 0; exec "<script>" <args>
+//
+// so a script that has not reached the machine yet skips the call instead
+// of failing it; the tripwire reports the missing script. `{harness}` and
 // `{event}` are replaced in both.
-func (r Resolved) Command(ev string, quote bool) string {
+func (r Resolved) Command(ev string) string {
 	sub := strings.NewReplacer("{harness}", r.Harness, "{event}", ev)
 	if r.Run != "" {
 		return sub.Replace(r.Run)
@@ -346,14 +351,35 @@ func (r Resolved) Command(ev string, quote bool) string {
 	if r.Script == "" {
 		return ""
 	}
-	s := homeVar(r.Script)
-	if quote || strings.ContainsAny(s, shellSplit) {
-		s = `"` + s + `"`
-	}
+	q := `"` + homeVar(r.Script) + `"`
+	s := "[ -x " + q + " ] || exit 0; exec " + q
 	for _, a := range r.Args {
 		s += " " + sub.Replace(a)
 	}
 	return s
+}
+
+// guarded matches the guarded form of a script command.
+var guarded = regexp.MustCompile(`^\[ -x "([^"]+)" \] \|\| exit 0; exec "([^"]+)"(.*)$`)
+
+// canonCommand names the script call a command makes, so the guarded form
+// and the plain forms gen wrote before it (`"<script>" <args>` and, where
+// nothing needed quoting, `<script> <args>`) count as one handler. Any
+// other command is its own name.
+func canonCommand(c string) string {
+	if m := guarded.FindStringSubmatch(c); m != nil && m[1] == m[2] {
+		return `"` + m[1] + `"` + m[3]
+	}
+	if strings.HasPrefix(c, "$HOME/") || strings.HasPrefix(c, "/") {
+		tok, rest, _ := strings.Cut(c, " ")
+		if !strings.ContainsAny(strings.TrimPrefix(tok, "$HOME/"), shellSplit+scriptUnsafe) {
+			if rest != "" {
+				rest = " " + rest
+			}
+			return `"` + tok + `"` + rest
+		}
+	}
+	return c
 }
 
 // shellSplit holds the characters a shell would split or glob on in an

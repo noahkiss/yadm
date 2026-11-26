@@ -41,7 +41,7 @@ func oneGuardHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	writeFile(t, filepath.Join(home, ".claude/settings.json"), "{\n  \"model\": \"x\",\n  \"hooks\": {}\n}\n")
-	writeFile(t, filepath.Join(home, ".agent/hooks/guard-a.sh"), "#!/bin/sh\n")
+	writeScript(t, filepath.Join(home, ".agent/hooks/guard-a.sh"))
 	return home
 }
 
@@ -274,8 +274,8 @@ func TestGenServersToAllIsNotDrop(t *testing.T) {
 // unquoted: a space works everywhere, and quoting characters are refused.
 func TestScriptPathQuoting(t *testing.T) {
 	u := Resolved{Harness: "h", Script: "~/Application Support/g.sh", Args: []string{"x"}}
-	if got := u.Command("E", false); got != `"$HOME/Application Support/g.sh" x` {
-		t.Fatalf("spaced, unquoted harness = %s", got)
+	if got := u.Command("E"); got != `[ -x "$HOME/Application Support/g.sh" ] || exit 0; exec "$HOME/Application Support/g.sh" x` {
+		t.Fatalf("spaced = %s", got)
 	}
 	for _, s := range []string{`~/a"b.sh`, "~/a`id`.sh", "~/$(id).sh", `~/a\b.sh`, "~/a\nb.sh"} {
 		src := strings.Replace(oneGuard, `script = "~/.agent/hooks/guard-a.sh"`, "script = '''"+s+"'''", 1)

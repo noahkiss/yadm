@@ -317,6 +317,12 @@ func (c *cli) verify(args []string) int {
 		for t, p := range c.req.Staged {
 			o.Staged[string(t)] = p
 		}
+		o.Planned = map[string]string{}
+		for t, e := range c.req.Entries {
+			if _, ok := c.req.Staged[t]; ok {
+				o.Planned[string(t)] = e.When
+			}
+		}
 	}
 	fs2 := Verify(f, c.ev, o)
 	var b strings.Builder

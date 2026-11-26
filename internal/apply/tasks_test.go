@@ -2,6 +2,8 @@ package apply
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -174,5 +176,52 @@ func TestTaskHoldOfRemovedTaskIsPruned(t *testing.T) {
 	st := w.state()
 	if len(taskHolds(st.Holds)) != 0 || !st.FirstApplyDone {
 		t.Fatalf("stale task hold kept: done=%v holds=%+v", st.FirstApplyDone, st.Holds)
+	}
+}
+
+// seeExec records, for each task run, whether the named targets were
+// already on disk as executable files when the task started.
+type seeExec struct {
+	home    string
+	targets []model.Target
+	saw     []map[model.Target]bool
+}
+
+func (s *seeExec) Run(_ context.Context, _ extexec.Spec, _ extexec.Request) (extexec.Result, error) {
+	m := map[model.Target]bool{}
+	for _, t := range s.targets {
+		st, err := os.Stat(filepath.Join(s.home, filepath.FromSlash(string(t))))
+		m[t] = err == nil && st.Mode().Perm()&0o111 != 0
+	}
+	s.saw = append(s.saw, m)
+	return extexec.Result{}, nil
+}
+
+// A path task runs after every write of its apply: a generator task that
+// the config file fires sees a script the same apply delivers, so it never
+// runs ahead of a file its output names.
+func TestPathTaskRunsAfterAllWrites(t *testing.T) {
+	w := newWorld(t)
+	script := model.Target(".local/agent/hooks/guard.sh")
+	exec := &seeExec{home: w.home, targets: []model.Target{script}}
+	w.eng.Tasks = &tasks.Runner{Exec: exec, Allow: tasks.FileAllowList(w.stateDir)}
+	def := manifest.TaskDef{On: []string{".config/agents/units.toml"}, Command: []string{"gen-tool"}}
+	hash, err := tasks.DefinitionHash(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.eng.Tasks.Allow.Allow(extexec.KindTask, "gen", hash); err != nil {
+		t.Fatal(err)
+	}
+	// The script sorts after the config file, so a task run between writes
+	// would miss it.
+	c := w.commit(map[model.SourcePath]string{
+		"files/.config/agents/units.toml":   "units\n",
+		"files/.local/agent/hooks/guard.sh": "#!/bin/sh\n",
+	}, manifest.Entry{Target: ".config/agents/units.toml"}, manifest.Entry{Target: script, Mode: 0o755})
+	w.plans[c].Tasks = map[string]manifest.TaskDef{"gen": def}
+	w.apply(c)
+	if len(exec.saw) != 1 || !exec.saw[0][script] {
+		t.Fatalf("task runs %d, saw %v", len(exec.saw), exec.saw)
 	}
 }

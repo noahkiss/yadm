@@ -113,7 +113,7 @@ func (a claudeAdapter) Render(units []Resolved) (Wiring, error) {
 			continue
 		}
 		for _, ev := range u.On {
-			cmd := u.Command(ev, true)
+			cmd := u.Command(ev)
 			if cmd == "" {
 				return w, fmt.Errorf("unit %q: no script or run", u.Unit)
 			}
