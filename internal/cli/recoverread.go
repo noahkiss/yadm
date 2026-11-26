@@ -44,18 +44,21 @@ stored). Sealed values and regions inside plain files are not opened.
             must be outside the clone, yadm's source, state and config
             directories and ~/.local, and no file in it may be a path the
             manifest manages. "-" prints exactly one file to stdout instead.
---expect    the fingerprint of any entry of the enclave's key log, kept with
-            the recovery identity ("enclave create" prints entry 1's). The log
-            must contain that entry.
+--expect    the fingerprint of the enclave's newest key-log entry, kept with
+            the recovery identity: the "fingerprint" of "enclave list --json"
+            on a member. The log must contain that entry.
 
 Trust: every file is authenticated under the keys the log wraps, so files
 sealed under the enclave's real keys never open to other content. But a
 writer to the remote can replace the key log and the sealed files together
 with its own, and the recovery identity opens both: without --expect, the
-output proves only that the log and the files agree. With --expect the log
-is the enclave's own, so every file was sealed by a holder of the enclave's
-keys; a writer can still roll a file back to an older sealed version.
-Output "anchored" says which.
+output proves only that the log and the files agree. With --expect on the
+head entry the log is the enclave's own, so every file was sealed by a
+holder of the enclave's current keys; a writer can still roll a file back
+to an older sealed version. With --expect on an older entry, the entries
+after it are trusted only by their signatures: a machine removed after that
+entry still holds its signing key and can fork the log from there. Output
+"anchored" is true only when --expect names the head.
 
 All or nothing: recover opens every selected file in memory first and writes
 nothing when any fails. It writes only the output: nothing to the clone or
@@ -71,7 +74,8 @@ type recoverData struct {
 	Epoch       model.Epoch       `json:"epoch"`
 	Fingerprint string            `json:"fingerprint"`      // the head entry's
 	Root        string            `json:"root_fingerprint"` // entry 1's, the value to keep for --expect
-	Anchored    bool              `json:"anchored"`         // --expect matched an entry of the log
+	Anchored    bool              `json:"anchored"`         // --expect matched the log's head entry
+	AnchoredSeq uint64            `json:"anchored_seq"`     // the seq of the entry --expect matched; 0 without --expect
 	Out         string            `json:"out"`
 	Files       []string          `json:"files"`
 	Content     string            `json:"content,omitempty"`  // --out - only
@@ -138,7 +142,15 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	if err != nil {
 		return result{}, fmt.Errorf("enclave %s: %w", enc, err)
 	}
-	d := recoverData{Enclave: enc, Repo: repo, Commit: commit, HeadSeq: head.Seq, Epoch: head.Epoch, Anchored: pin != nil, Out: out, Files: []string{}}
+	// Only a pin on the head anchors the whole log. Entries after an older
+	// pinned entry are trusted only by their signatures, and a machine that
+	// was a member there and was removed later still holds its signing key:
+	// it can truncate the log and sign a fork with keys of its own.
+	d := recoverData{Enclave: enc, Repo: repo, Commit: commit, HeadSeq: head.Seq, Epoch: head.Epoch, Out: out, Files: []string{}}
+	if pin != nil {
+		d.AnchoredSeq = pin.Seq
+		d.Anchored = pin.Seq == head.Seq
+	}
 	d.Fingerprint, _ = crypt.Fingerprint(head)
 	d.Root, _ = crypt.Fingerprint(entries[0])
 
@@ -173,10 +185,8 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 			ErrRefused, len(failed), len(names), enc, strings.Join(failed, "\n  "))
 	}
 	d.Files = names
-	if !d.Anchored {
-		if !a.json {
-			fmt.Fprintf(a.stderr, "yadm enclave recover: not anchored: without --expect, a writer to the remote could have replaced the key log and these files together; root fingerprint %s\n", d.Root)
-		}
+	if !d.Anchored && !a.json {
+		fmt.Fprintf(a.stderr, "yadm enclave recover: not anchored: %s\n", unanchoredWhy(d))
 	}
 
 	if out == "-" {
@@ -197,11 +207,27 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	d.Out = abs
 	next := []string{"delete " + abs + " and the restored recovery identity when you are done"}
 	if !d.Anchored {
-		next = append(next, "keep root fingerprint "+d.Root+" with the recovery identity, and pass it as --expect next time")
+		next = append(next, "after every key-log change, keep the head fingerprint a member prints with the recovery identity, and pass it as --expect")
+	}
+	anchor := "anchored by --expect"
+	switch {
+	case d.AnchoredSeq == 0:
+		anchor = "NOT anchored (no --expect)"
+	case !d.Anchored:
+		anchor = fmt.Sprintf("NOT anchored (--expect matched entry %d, not the head)", d.AnchoredSeq)
 	}
 	text := fmt.Sprintf("enclave %s: key log verified to seq %d (epoch %d), %s\nhead fingerprint %s\nroot fingerprint %s\nwrote %d files to %s",
-		enc, head.Seq, head.Epoch, map[bool]string{true: "anchored by --expect", false: "NOT anchored (no --expect)"}[d.Anchored], d.Fingerprint, d.Root, len(names), abs)
+		enc, head.Seq, head.Epoch, anchor, d.Fingerprint, d.Root, len(names), abs)
 	return result{data: d, next: next, text: text}, nil
+}
+
+// unanchoredWhy says what an unanchored read does not prove.
+func unanchoredWhy(d recoverData) string {
+	if d.AnchoredSeq == 0 {
+		return "without --expect, a writer to the remote could have replaced the key log and these files together"
+	}
+	return fmt.Sprintf("--expect matched entry %d of %d; a machine that was a member at entry %d and was removed later could have written entries %d to %d and these files; pass the newest head fingerprint you kept",
+		d.AnchoredSeq, d.HeadSeq, d.AnchoredSeq, d.AnchoredSeq+1, d.HeadSeq)
 }
 
 // recoverPrefixes cleans the path arguments: slash paths relative to $HOME,

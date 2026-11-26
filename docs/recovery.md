@@ -117,16 +117,24 @@ sealed under the enclave's real keys never opens to other content. But anyone wh
 the remote can replace the key log and the sealed files together. Your recovery recipient is
 public, so a forged log can wrap the forger's keys to it. Without `--expect`, recover reports
 `not anchored`: the files match the log, but the log may not be yours. With `--expect` the log
-must contain the entry with that fingerprint, which no forger can produce. Then every file was
-sealed by a holder of the enclave's keys. A writer can still put back an older sealed version
-of a file.
+must contain the entry with that fingerprint, which no forger can produce.
 
-So keep a fingerprint with each recovery identity:
+Use the fingerprint of the newest entry. Entries after the one you pin are trusted only by
+their signatures. A machine you removed after that entry still holds its signing key. It can
+cut the log back to an entry where it was a member, sign a new entry with keys it chose, and
+reseal files under them. So recover reports `anchored` only when `--expect` names the head
+entry. Then every file was sealed by a holder of the enclave's current keys. A writer can
+still put back an older sealed version of a file.
 
-- `yadm enclave create` prints entry 1's fingerprint. It never changes.
-- On an existing enclave, run `yadm enclave list --json` on a member. Each row's
-  `fingerprint` is the head that member verified against its pin.
-- Any entry's fingerprint works for `--expect`, as long as the log still contains it.
+So keep the newest fingerprint with each recovery identity, and replace it after every
+key-log change:
+
+- After `yadm enclave create`, `add`, `remove`, `retire` or `set-recovery`, run
+  `yadm enclave list --json` on a member. Each row's `fingerprint` is the head that member
+  verified against its pin. `remove` writes a second entry, the retire, so the fingerprint
+  it prints is not the head.
+- An older entry's fingerprint still refuses a log forged from scratch, but recover then
+  reports `not anchored`.
 
 ### Re-admit a machine
 
@@ -189,7 +197,8 @@ What you lose with a recovery identity:
 1. Restore each enclave's recovery identity into a scratch directory.
 2. Run the check above: the `age1…` matches the newest key-log entry.
 3. Run the read (Case 2) with `--expect` into a scratch directory. It must report
-   `anchored`. Delete the directory.
+   `anchored`. If it does not, the kept fingerprint is not the head: replace it with the one
+   `yadm enclave list --json` shows on a member. Delete the directory.
 4. Confirm the paper copy matches the password manager copy, line by line.
 5. Confirm at least two members are alive: `yadm enclave list`.
 6. Delete the scratch directories.

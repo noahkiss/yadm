@@ -419,3 +419,107 @@ func TestRecoverReadNewMachine(t *testing.T) {
 	secrecytest.AssertRepoClean(t, m.Source, fx.AllCanaries()...)
 	secrecytest.AssertRepoClean(t, remote, fx.AllCanaries()...)
 }
+
+// TestRecoverReadFormerMemberFork: a machine that was a member at the
+// pinned entry and was removed later keeps its signing key. It truncates
+// the log to an entry where it was still a member, signs a rotate of its
+// own, and reseals a file under keys it chose. --expect with the root
+// fingerprint still matches, so recover must not call that log anchored;
+// --expect with the genuine head refuses it.
+func TestRecoverReadFormerMemberFork(t *testing.T) {
+	w := newRecoverWorld(t)
+	a, b := w.fx.Identities[fixture.HostA], w.fx.Identities[fixture.HostB]
+	log := w.fx.Logs["personal"]
+	pins := crypt.MemPins()
+	if err := pins.Set("personal", mustPinOf(t, log[len(log)-1])); err != nil {
+		t.Fatal(err)
+	}
+	ring := w.fx.Rings["personal"]
+	added, err := ring.Add(log[len(log)-1], b.Member(), a, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, ring2, err := ring.Remove(added, b.Machine, a, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := model.SourcePath("sealed/personal/" + privateNotes)
+	genuine, err := ring2.SealFile(p, []byte("genuine guide\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := ring2.Retire(removed, a, pins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{"sealed/personal/" + privateNotes: genuine}
+	for _, e := range []crypt.LogEntry{added, removed, retired} {
+		b, err := crypt.MarshalLogEntry(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[string(crypt.LogPath("personal", e.Seq))] = b
+	}
+	commitClone(t, w.clone, files, "add b, remove b, retire")
+	root, _ := crypt.Fingerprint(log[0])
+	head, _ := crypt.Fingerprint(retired)
+
+	env := yadmOK(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "genuine"), "--expect", head)...)
+	if d := decode[recoverData](t, env.Data); !d.Anchored || d.AnchoredSeq != retired.Seq {
+		t.Fatalf("genuine log, head pin: %+v", d)
+	}
+
+	// The removed machine forks after the entry that added it.
+	bring, err := crypt.Open(added, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bpins := crypt.MemPins()
+	if err := bpins.Set("personal", mustPinOf(t, added)); err != nil {
+		t.Fatal(err)
+	}
+	fork, xring, err := bring.Rotate(added, b, bpins)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evil, err := xring.SealFile(p, []byte("attacker guide\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb, err := crypt.MarshalLogEntry(fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitClone(t, w.clone, map[string][]byte{
+		string(crypt.LogPath("personal", retired.Seq)): nil,
+		string(crypt.LogPath("personal", fork.Seq)):    fb,
+		"sealed/personal/" + privateNotes:              evil,
+	}, "fork")
+
+	out := filepath.Join(w.root, "forked")
+	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", w.key(), out, "--expect", root)...)
+	if code != ExitOK {
+		t.Fatalf("root pin on the fork: exit %d %s %s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "anchored by --expect") || !strings.Contains(stderr, "not anchored") {
+		t.Fatalf("a fork after the pinned entry reads as anchored:\n%s\n%s", stdout, stderr)
+	}
+	env = yadmOK(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "forked-json"), "--expect", root)...)
+	if d := decode[recoverData](t, env.Data); d.Anchored || d.AnchoredSeq != 1 || d.HeadSeq != fork.Seq {
+		t.Fatalf("root pin on the fork: %+v", d)
+	}
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "refused"), "--expect", head)...); code != ExitRefused {
+		t.Fatalf("head pin on the fork: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, filepath.Join(w.root, "refused"))
+	secrecytest.AssertRepoClean(t, w.clone, w.fx.AllCanaries()...)
+}
+
+func mustPinOf(t *testing.T, e crypt.LogEntry) crypt.Pin {
+	t.Helper()
+	p, err := crypt.PinOf(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
