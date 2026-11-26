@@ -132,11 +132,33 @@ func (c *cli) resolvePaths() {
 // unitsTarget names the units file relative to home, as a check request
 // keys staged files.
 func (c *cli) unitsTarget() string {
-	rel, err := filepath.Rel(c.home, c.units)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if t := homeTarget(c.home, c.units); t != "" {
+		return t
+	}
+	// A symlink (XDG_CONFIG_HOME through a link to ~/.config, or a home
+	// reached by two paths) still names the managed file.
+	return homeTarget(resolveExisting(c.home), resolveExisting(c.units))
+}
+
+func homeTarget(home, p string) string {
+	rel, err := filepath.Rel(home, p)
+	if err != nil || !filepath.IsLocal(rel) {
 		return ""
 	}
 	return filepath.ToSlash(rel)
+}
+
+// resolveExisting resolves symlinks in the longest existing prefix of p.
+func resolveExisting(p string) string {
+	for d := p; ; d = filepath.Dir(d) {
+		if r, err := filepath.EvalSymlinks(d); err == nil {
+			rest, _ := filepath.Rel(d, p)
+			return filepath.Join(r, rest)
+		}
+		if d == filepath.Dir(d) {
+			return p
+		}
+	}
 }
 
 // finish prints text or, under the exec contract, one response object.

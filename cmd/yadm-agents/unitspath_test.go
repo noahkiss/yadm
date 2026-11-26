@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,5 +90,33 @@ func TestTaskModeUnitsPathMismatch(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message lacks %q: %s", want, msg)
 		}
+	}
+}
+
+// XDG_CONFIG_HOME through a symlink that resolves to ~/.config names the
+// managed file: no mismatch, and the check reads the staged copy.
+func TestCheckModeUnitsPathThroughSymlink(t *testing.T) {
+	home := genHome(t)
+	writeFile(t, filepath.Join(home, ".config/yadm-agents/units.toml"), "schema = [[[\n") // live copy is broken
+	link := filepath.Join(t.TempDir(), "cfg")
+	if err := os.Symlink(filepath.Join(home, ".config"), link); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(t.TempDir(), "staged")
+	writeFile(t, staged, fixtureUnits)
+	req, _ := json.Marshal(map[string]any{"schema": 1, "kind": "check", "home": home,
+		"staged": map[string]string{".config/yadm-agents/units.toml": staged}})
+	t.Setenv("YADM_KIND", "check")
+	t.Setenv("YADM_HOME", "")
+	t.Setenv("YADM_AGENTS_UNITS", "")
+	t.Setenv("XDG_CONFIG_HOME", link)
+	var out, errb bytes.Buffer
+	run([]string{"verify", "--offline"}, bytes.NewReader(req), &out, &errb, twoMachines())
+	var resp extexec.Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("response %q: %v", out.String(), err)
+	}
+	if !resp.OK {
+		t.Fatalf("a symlinked XDG_CONFIG_HOME failed: %s", resp.Message)
 	}
 }
