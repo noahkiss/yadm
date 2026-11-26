@@ -239,6 +239,11 @@ func (c *cli) gen(args []string) int {
 	f, err := c.load()
 	if err != nil {
 		fmt.Fprintln(c.stderr, "yadm-agents:", err)
+		if !o.DryRun && o.As == "" {
+			if serr := recordFailure(statePath(c.home), err); serr != nil {
+				fmt.Fprintln(c.stderr, "yadm-agents: state:", serr)
+			}
+		}
 		return 1
 	}
 	o.Home = c.home

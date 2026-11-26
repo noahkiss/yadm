@@ -17,6 +17,9 @@ import (
 type State struct {
 	Schema  int                     `json:"schema"`
 	Harness map[string]HarnessState `json:"harness"`
+	// Failed is why the last gen stopped before any harness (a units file
+	// that does not load). The next gen that runs clears it.
+	Failed string `json:"failed,omitempty"`
 }
 
 // HarnessState is one harness's record.
@@ -26,6 +29,9 @@ type HarnessState struct {
 	// Required lists the required units gen planned for this machine and
 	// harness, with their handlers: what the tripwire expects to find.
 	Required []Expected `json:"required,omitempty"`
+	// Refused is why the last gen refused this harness. The record then
+	// keeps the plan if gen had one, else the previous record.
+	Refused string `json:"refused,omitempty"`
 }
 
 // Expected is one required unit as the tripwire checks it.
@@ -114,4 +120,12 @@ func writeState(path string, st State) error {
 		return nil
 	}
 	return writeAtomic(path, append(b, '\n'))
+}
+
+// recordFailure notes in the state file that gen stopped before any
+// harness, so the tripwire does not report the old wiring as current.
+func recordFailure(path string, err error) error {
+	st := loadState(path)
+	st.Failed = err.Error()
+	return writeState(path, st)
 }

@@ -89,6 +89,7 @@ func Gen(f *File, ev Evaluator, o GenOptions) ([]HarnessResult, error) {
 			delete(st.Harness, r.Harness)
 		}
 	}
+	st.Failed = ""
 	if err := writeState(o.State, st); err != nil {
 		return out, fmt.Errorf("state %s: %w", o.State, err)
 	}
@@ -180,16 +181,20 @@ func resolveFor(f *File, ev Evaluator, h, machine string) ([]Resolved, error) {
 func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) HarnessResult {
 	h := a.Name()
 	res := HarnessResult{Harness: h, Units: []string{}}
-	// planned is the record once gen knows the plan. A refusal after that
-	// still records what this machine requires, so the tripwire reports
-	// the guard gen could not wire; it keeps the trust gen owned before.
+	// planned is the record once gen knows the plan. A refusal records the
+	// plan (or, before there is one, the previous record) with the reason,
+	// so the tripwire reports it; it keeps the trust gen owned before.
 	var planned *HarnessState
 	refuse := func(format string, args ...any) HarnessResult {
 		res.Status = StatusRefused
 		res.Reason = fmt.Sprintf(format, args...)
-		if planned != nil && o.As == "" {
-			p := *planned
-			p.Trusted = prev.Trusted
+		if o.As == "" {
+			p := prev
+			if planned != nil {
+				p = *planned
+				p.Trusted = prev.Trusted
+			}
+			p.Refused = res.Reason
 			res.next = &p
 		}
 		return res

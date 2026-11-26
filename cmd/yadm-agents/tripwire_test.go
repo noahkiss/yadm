@@ -157,3 +157,78 @@ func TestTripwireAfterRefusedGen(t *testing.T) {
 		t.Fatalf("out %q", out)
 	}
 }
+
+// A gen that refuses before it knows the plan still leaves a mark the
+// tripwire reports, even when the guards gen wired earlier are still in
+// place. Otherwise a session starts with "all good" after a failed gen.
+func TestTripwireReportsRefusalBeforePlan(t *testing.T) {
+	home := genTripwireHome(t)
+	bad := strings.Replace(oneGuard, "schema = 1\n", "schema = 1\n\n[harness.claude]\ntrusted_projects = [\"~/dev/x\"]\n", 1)
+	if r := genOnly(t, home, bad, "claude", GenOptions{DryRun: true}); r.Status != StatusRefused {
+		t.Fatalf("claude: %s", r.Status)
+	}
+	if out, _ := tripwireRun(t, home); out != "" {
+		t.Fatalf("a dry run left a mark: %q", out)
+	}
+	if r := genOnly(t, home, bad, "claude", GenOptions{}); r.Status != StatusRefused {
+		t.Fatalf("claude: %s", r.Status)
+	}
+	out, _ := tripwireRun(t, home, "--harness", "claude")
+	if !strings.Contains(out, "gen refused claude") || !strings.Contains(out, "trusted_projects") {
+		t.Fatalf("out %q", out)
+	}
+	// A gen that succeeds again clears it.
+	if r := genOnly(t, home, oneGuard, "claude", GenOptions{}); r.Status == StatusRefused {
+		t.Fatalf("claude: %s", r.Reason)
+	}
+	if out, _ := tripwireRun(t, home); out != "" {
+		t.Fatalf("out %q", out)
+	}
+}
+
+// A units file that does not load fails gen before any harness; the
+// tripwire must say so rather than report the old wiring as fine.
+func TestTripwireReportsGenLoadFailure(t *testing.T) {
+	home := genTripwireHome(t)
+	units := filepath.Join(home, ".config/yadm-agents/units.toml")
+	writeFile(t, units, "schema = 1\n[[unit]\n")
+	t.Setenv("YADM_KIND", "")
+	var out, errb bytes.Buffer
+	if code := run([]string{"gen", "--dry-run", "--home", home, "--units", units}, strings.NewReader(""), &out, &errb, twoMachines()); code == 0 {
+		t.Fatal("gen loaded a broken units file")
+	}
+	if got, _ := tripwireRun(t, home); got != "" {
+		t.Fatalf("a dry run left a mark: %q", got)
+	}
+	if code := run([]string{"gen", "--home", home, "--units", units}, strings.NewReader(""), &out, &errb, twoMachines()); code == 0 {
+		t.Fatal("gen loaded a broken units file")
+	}
+	got, _ := tripwireRun(t, home, "--harness", "claude")
+	if !strings.Contains(got, "gen failed") {
+		t.Fatalf("out %q", got)
+	}
+	writeFile(t, units, oneGuard)
+	if code := run([]string{"gen", "--home", home, "--units", units}, strings.NewReader(""), &out, &errb, twoMachines()); code != 0 {
+		t.Fatalf("gen: %s %s", out.String(), errb.String())
+	}
+	if got, _ := tripwireRun(t, home); got != "" {
+		t.Fatalf("out %q", got)
+	}
+}
+
+// A refusal keeps the trust gen owned, so a later run can still take back
+// what it wrote.
+func TestRefusalKeepsOwnedTrust(t *testing.T) {
+	home := trustHome(t)
+	abs := filepath.Join(home, "dev/x")
+	if r := genOnly(t, home, trustUnits("~/dev/x"), "codex", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("codex: %s %s", r.Status, r.Reason)
+	}
+	if r := genOnly(t, home, trustUnits("~/dev/x", "/elsewhere"), "codex", GenOptions{}); r.Status != StatusRefused {
+		t.Fatalf("codex: %s", r.Status)
+	}
+	st, _ := readState(statePath(home))
+	if o := st.Harness["codex"].Trusted; len(o) != 1 || o[0] != abs {
+		t.Fatalf("owned = %v", o)
+	}
+}

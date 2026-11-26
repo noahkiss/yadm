@@ -108,9 +108,11 @@
 // gen records, per harness, the file it owns keys in, the required units
 // this machine gets with their planned handlers, and the trust entries it
 // wrote, in ~/.local/state/yadm-agents/state.json (a task lists it in
-// outputs). It records a harness it refused too, once it knows the plan,
-// keeping the trust entries it owned before. --dry-run and --as never write
-// it. Losing it is safe: gen then removes no trust entry, and the tripwire
+// outputs). It records a harness it refused too, with the reason: the plan
+// if it had one, else the previous record, keeping the trust entries it
+// owned before. A units file that does not load is recorded as a failure
+// of the whole run. The next gen that succeeds clears both. --dry-run and
+// --as never write it. Losing it is safe: gen then removes no trust entry, and the tripwire
 // says it has nothing to compare.
 //
 // # Tripwire
@@ -119,7 +121,8 @@
 // recorded harness file and each required script; it runs no yadm and
 // reads no stdin. It prints one line per required unit that the live file
 // does not wire for every event and tool gen planned, or whose script is
-// missing, and nothing when all are wired. It always exits 0, so it never
+// missing, one line when the last gen refused a harness or failed, and
+// nothing when all are wired. It always exits 0, so it never
 // breaks a session start. --harness limits it to one harness; --format hook
 // prints SessionStart hook JSON (systemMessage for the user,
 // hookSpecificOutput.additionalContext for the model).

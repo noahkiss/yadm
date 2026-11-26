@@ -72,14 +72,17 @@ func Tripwire(home, state, harness string) []string {
 	case err != nil:
 		return []string{fmt.Sprintf("yadm-agents: unreadable gen state (%v); required guards are unchecked. Run `yadm-agents gen`.", err)}
 	}
+	var out []string
+	if st.Failed != "" {
+		out = append(out, fmt.Sprintf("yadm-agents: the last gen failed (%s); required guards may not match the units file. Run `yadm-agents gen`.", st.Failed))
+	}
 	hs := sortedKeys(st.Harness)
 	if harness != "" {
 		if _, ok := st.Harness[harness]; !ok {
-			return []string{fmt.Sprintf("yadm-agents: gen has no record for %s; its required guards are unchecked. Run `yadm-agents gen`.", harness)}
+			return append(out, fmt.Sprintf("yadm-agents: gen has no record for %s; its required guards are unchecked. Run `yadm-agents gen`.", harness))
 		}
 		hs = []string{harness}
 	}
-	var out []string
 	for _, h := range hs {
 		out = append(out, tripOne(home, h, st.Harness[h])...)
 	}
@@ -87,11 +90,14 @@ func Tripwire(home, state, harness string) []string {
 }
 
 func tripOne(home, h string, rec HarnessState) []string {
-	if len(rec.Required) == 0 {
-		return nil
+	var out []string
+	if rec.Refused != "" {
+		out = append(out, fmt.Sprintf("yadm-agents: the last gen refused %s (%s); its required guards may be unwired. Run `yadm-agents gen`.", h, rec.Refused))
+	}
+	if len(rec.Required) == 0 || rec.Target == "" {
+		return out
 	}
 	shown := "~/" + rec.Target
-	var out []string
 	each := func(format string, args ...any) {
 		for _, x := range rec.Required {
 			out = append(out, fmt.Sprintf("%s on %s: %s %s", tripPrefix, h, x.Unit, fmt.Sprintf(format, args...)))
