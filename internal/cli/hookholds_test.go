@@ -180,6 +180,31 @@ func TestHookPostEditReportsHoldAfterBusyLock(t *testing.T) {
 	if code, _, stderr := hookRun(t, payload(payloadEdit, "session-l", a.Home, file), HookPostEdit, "--format", "text"); code != HookBlock || !strings.Contains(stderr, "check_failed") {
 		t.Fatalf("post-edit of the held file: exit %d\n%s", code, stderr)
 	}
+	// Later timer ticks keep the hold's id: the session is not told again.
+	yadm(t, "sync", "--auto")
+	yadm(t, "sync", "--auto")
+	if code, stdout, stderr := hookRun(t, payload(payloadBash, "session-l", a.Home, ""), HookPostTool, "--format", "text"); code != HookAllow || stdout != "" || stderr != "" {
+		t.Fatalf("post-tool after more ticks: exit %d %q %q", code, stdout, stderr)
+	}
+	// Under a busy lock, post-edit still raises the decision open on its own path.
+	done = holdLock(t, a.State, time.Second)
+	code, _, stderr = hookRun(t, payload(payloadEdit, "session-m", a.Home, file), HookPostEdit, "--format", "text")
+	<-done
+	if code != HookBlock || !strings.Contains(stderr, "check_failed: .config/tool/config") {
+		t.Fatalf("post-edit of the held file under a busy lock: exit %d\n%s", code, stderr)
+	}
+	// A deferred decision is not raised.
+	env = yadmOK(t, "hold", "list")
+	var id string
+	for _, h := range decode[holdsOnly](t, env.Data).Holds {
+		if h.Reason == "check_failed" {
+			id = h.ID
+		}
+	}
+	yadmOK(t, "defer", id, "--reason", "waits for the owner")
+	if code, stdout, stderr := hookRun(t, payload(payloadEdit, "session-n", a.Home, file), HookPostEdit, "--format", "text"); code != HookAllow || stdout != "" || stderr != "" {
+		t.Fatalf("post-edit of a deferred hold: exit %d %q %q", code, stdout, stderr)
+	}
 }
 
 func hasReason(hs []model.Hold, r model.HoldReason) bool {
