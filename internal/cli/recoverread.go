@@ -95,6 +95,9 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 		return result{}, usagef("name the enclave: yadm enclave recover <enclave> --read-only --identity <file|-> --out <dir>")
 	}
 	enc := model.EnclaveName(args[0])
+	if !validEnclaveArg(args[0]) {
+		return result{}, usagef("%q is not an enclave name", args[0])
+	}
 	idArg, _ := cmd.Flags().GetString("identity")
 	out, _ := cmd.Flags().GetString("out")
 	expect, _ := cmd.Flags().GetString("expect")
@@ -133,6 +136,9 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	head, err := crypt.VerifyLog(entries, pin)
 	if err != nil {
 		return result{}, fmt.Errorf("enclave %s: %w", enc, err)
+	}
+	if head.Enclave != enc {
+		return result{}, fmt.Errorf("%w: the key log under %s names enclave %q", crypt.ErrInvalidLog, crypt.LogDir(enc), head.Enclave)
 	}
 	key, err := recoverKey(idArg)
 	if err != nil {
@@ -376,19 +382,31 @@ func pinFor(entries []crypt.LogEntry, expect string) (*crypt.Pin, error) {
 	return nil, fmt.Errorf("%w: no entry of the key log has fingerprint %s: this is not the log you kept the fingerprint for", crypt.ErrBrokenChain, expect)
 }
 
+// validEnclaveArg refuses a name that is not a plain path segment, so it is
+// never read as a git pathspec pattern or magic.
+func validEnclaveArg(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\: \t\n\r\"*?[]!") && !model.HasControl(s)
+}
+
 // recoverKey reads the recovery key from a file or, for "-", from stdin.
+// An argument that is itself a key is refused without being echoed: the
+// file error would quote it.
 func recoverKey(arg string) (*crypt.RecoveryKey, error) {
 	var (
 		k   *crypt.RecoveryKey
 		err error
 	)
-	if arg == "-" {
+	switch {
+	case strings.HasPrefix(strings.ToUpper(strings.TrimSpace(arg)), "AGE-SECRET-KEY-"):
+		return nil, fmt.Errorf("%w: --identity takes the path of the identity.age.key file, or - for stdin, never the key itself; the key is now in your shell history", ErrRefused)
+	case arg == "-":
 		var b []byte
-		b, err = io.ReadAll(io.LimitReader(hooks.stdin(), 64<<10))
+		b, err = io.ReadAll(io.LimitReader(hooks.stdin(), crypt.MaxKeyFile+1))
 		if err == nil {
 			k, err = crypt.ParseRecoveryKey(b)
 		}
-	} else {
+		clear(b)
+	default:
 		k, err = crypt.LoadRecoveryKey(arg)
 	}
 	if err != nil {

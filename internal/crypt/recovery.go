@@ -21,7 +21,7 @@ type RecoveryKey struct{ age *age.X25519Identity }
 // names another machine: a member's key is not a recovery key. Its errors
 // never quote the key.
 func ParseRecoveryKey(b []byte) (*RecoveryKey, error) {
-	if len(b) > maxKeyFile {
+	if len(b) > MaxKeyFile {
 		return nil, errors.New("recovery key: input is too large for an age identity")
 	}
 	var key string
@@ -58,6 +58,7 @@ func LoadRecoveryKey(path string) (*RecoveryKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(b)
 	return ParseRecoveryKey(b)
 }
 

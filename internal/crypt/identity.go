@@ -137,11 +137,11 @@ func readSecretFile(p string) ([]byte, error) {
 	if after, err := f.Stat(); err != nil || !os.SameFile(fi, after) {
 		return nil, fmt.Errorf("%s: changed while it was read", filepath.Base(p))
 	}
-	return io.ReadAll(io.LimitReader(f, maxKeyFile+1))
+	return io.ReadAll(io.LimitReader(f, MaxKeyFile+1))
 }
 
-// maxKeyFile bounds a key file read; an identity file is under 200 bytes.
-const maxKeyFile = 64 << 10
+// MaxKeyFile bounds a key file read; an identity file is under 200 bytes.
+const MaxKeyFile = 64 << 10
 
 // Save writes the identity files with mode 0600.
 func (id *Identity) Save(stateDir string) error {

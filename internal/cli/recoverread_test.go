@@ -523,3 +523,72 @@ func mustPinOf(t *testing.T, e crypt.LogEntry) crypt.Pin {
 	}
 	return p
 }
+
+// TestRecoverReadIdentityInput: a key typed as --identity by mistake is
+// refused without being echoed, stdin larger than a key file is refused as
+// too large, and a key log under keys/<enclave> that names another enclave
+// is refused. None of them writes --out.
+func TestRecoverReadIdentityInput(t *testing.T) {
+	w := newRecoverWorld(t)
+	out := filepath.Join(w.root, "plain")
+	key, err := os.ReadFile(w.key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secret string
+	for _, l := range strings.Split(string(key), "\n") {
+		if strings.HasPrefix(l, "AGE-SECRET-KEY-") {
+			secret = l
+		}
+	}
+	if secret == "" {
+		t.Fatal("no key line in the identity file")
+	}
+	for _, arg := range []string{secret, strings.ToLower(secret)} {
+		env, code, _ := yadm(t, w.recoverArgs("personal", arg, out)...)
+		if code == ExitOK || env.Error == nil {
+			t.Fatalf("a key as --identity: exit %d", code)
+		}
+		if strings.Contains(strings.ToUpper(env.Error.Message), strings.ToUpper(secret[len("AGE-SECRET-KEY-1"):])) {
+			t.Fatalf("the error echoes the key: %s", env.Error.Message)
+		}
+		_, stderr, _ := yadmRaw(t, w.recoverArgs("personal", arg, out)...)
+		if strings.Contains(strings.ToUpper(stderr), strings.ToUpper(secret[len("AGE-SECRET-KEY-1"):])) {
+			t.Fatalf("stderr echoes the key: %s", stderr)
+		}
+		assertNoOut(t, out)
+	}
+
+	saved := hooks.stdin
+	t.Cleanup(func() { hooks.stdin = saved })
+	big := append(append([]byte{}, key...), bytes.Repeat([]byte("# padding\n"), 7000)...)
+	hooks.stdin = func() io.Reader { return bytes.NewReader(big) }
+	if env, code, _ := yadm(t, w.recoverArgs("personal", "-", out)...); code != ExitRefused || !strings.Contains(env.Error.Message, "too large") {
+		t.Fatalf("oversize stdin: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, out)
+
+	// The client enclave's log, moved under keys/personal. The fixture's
+	// enclaves share one recovery identity, so only the name check stops it.
+	files := map[string][]byte{"keys/personal": nil}
+	for _, e := range w.fx.Logs["client"] {
+		b, err := crypt.MarshalLogEntry(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[string(crypt.LogPath("personal", e.Seq))] = b
+	}
+	commitClone(t, w.clone, map[string][]byte{"keys/personal": nil}, "drop the log")
+	delete(files, "keys/personal")
+	commitClone(t, w.clone, files, "client's log as personal's")
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out)...); code == ExitOK || !strings.Contains(env.Error.Message, "names enclave") {
+		t.Fatalf("another enclave's log: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, out)
+	for _, bad := range []string{"*", "personal/../work", ":(top)personal"} {
+		if _, code, _ := yadm(t, w.recoverArgs(bad, w.key(), out)...); code != ExitUsage {
+			t.Fatalf("enclave name %q: exit %d", bad, code)
+		}
+	}
+	assertNoOut(t, out)
+}
