@@ -57,6 +57,8 @@
 //	                               sync.Syncer.Run with Options.Carry; backups: reroot.List / Prune
 //	hook post-edit|stop|session-start  sync.Syncer.Commit/Run (unattended, bounded lock wait); own
 //	                               exit codes 0/1/2 and a verdict instead of an envelope (docs/hooks.md);
+//	hook post-tool                 the session record and apply.FileStateDB only (no lock, no source);
+//	                               post-edit ends with the same pass; told hold ids go in the session record;
 //	                               session-start repairs a broken schedule as sync does, then adds plugin news
 //	                               (extexec.Runner, KindNews, all plugins at once, NewsTimeout, NewsLines, NewsTotalLines)
 //	defer                          deferred.json in the state directory; review list shows it
