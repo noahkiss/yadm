@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/noahkiss/yadm/internal/manifest"
 	"github.com/noahkiss/yadm/internal/model"
@@ -103,4 +104,42 @@ func TestHoldsHideGoneFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("Holds after the file came back", hs)
+}
+
+// TestHoldsDoesNotHangOnSlowMount: Holds stats a held file to see whether
+// it is gone. Every stat of a target is bounded, so a hung mount neither
+// hangs `status`, `hold list` and the hooks nor hides the hold.
+func TestHoldsDoesNotHangOnSlowMount(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t)
+	st := w.state()
+	now := w.clock
+	st.Holds = append(st.Holds, fileHold(st, now, ".slow", model.ScopeShared, model.HoldProtected, now, "protected; commit it by name"))
+	if err := w.eng.State.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	cfs := &countFS{hang: w.path(".slow"), block: make(chan struct{})}
+	defer close(cfs.block)
+	w.eng.fs = cfs
+	w.eng.StatTimeout = 100 * time.Millisecond
+
+	done := make(chan []model.Hold, 1)
+	go func() {
+		hs, err := w.eng.Holds(ctx)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- hs
+	}()
+	select {
+	case hs := <-done:
+		if len(hs) != 1 || hs[0].Target != ".slow" {
+			t.Fatalf("Holds on a hung mount: %+v", hs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Holds hangs on a stat of a held file")
+	}
+	if n, err := w.eng.SettleHolds(ctx, nil); err != nil || n != 0 {
+		t.Fatalf("SettleHolds on a hung mount: settled %d, %v", n, err)
+	}
 }

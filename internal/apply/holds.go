@@ -125,7 +125,7 @@ func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
 	}
 	out := make([]model.Hold, 0, len(st.Holds))
 	for _, h := range st.Holds {
-		if goesWithFile(st, h) && e.gone(h.Target) {
+		if goesWithFile(st, h) && e.gone(ctx, h.Target) {
 			continue
 		}
 		out = append(out, h)
@@ -218,7 +218,7 @@ func goesWithFile(st *State, h model.Hold) bool {
 // plan). A hold that goes with its file (goesWithFile) goes when the file
 // is gone; while the file exists it stays. It returns the number of holds
 // dropped.
-func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
+func (e *Engine) SettleHolds(ctx context.Context, drift []Drift) (int, error) {
 	for _, d := range drift {
 		if d.Kind == DriftUnreadable {
 			return 0, nil // incomplete scan: absence proves nothing
@@ -240,7 +240,7 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 			n++
 			continue
 		}
-		if !drifting[h.Target] && goesWithFile(st, h) && e.gone(h.Target) {
+		if !drifting[h.Target] && goesWithFile(st, h) && e.gone(ctx, h.Target) {
 			n++
 			continue
 		}
@@ -253,13 +253,15 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 	return n, e.State.Save(st)
 }
 
-// gone reports whether nothing is at target t in $HOME.
-func (e *Engine) gone(t model.Target) bool {
+// gone reports whether nothing is at target t in $HOME. The stat is
+// bounded (Deps.StatTimeout): a stat that does not return proves nothing,
+// so the file counts as there.
+func (e *Engine) gone(ctx context.Context, t model.Target) bool {
 	abs, err := e.abs(t)
 	if err != nil {
 		return false
 	}
-	_, err = e.fs.Lstat(abs)
+	_, err = bounded(ctx, e.StatTimeout, func() (fs.FileInfo, error) { return e.fs.Lstat(abs) })
 	return errors.Is(err, fs.ErrNotExist)
 }
 
