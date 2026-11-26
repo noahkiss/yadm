@@ -495,18 +495,31 @@ func deferrals(stateDir string) []sync.Deferral {
 	return out
 }
 
-// openDeferred returns the deferred decisions whose holds are still open,
-// and drops the rest from the file. A new file's decision takes the id of
-// its current hold.
-func openDeferred(stateDir string, holds []model.Hold, managed map[model.Target]bool) []Deferred {
-	d := loadDeferred(stateDir)
-	open := map[string]string{}
-	for _, h := range withHoldNext(holds) {
-		open[h.ID] = h.ID
-		if newFileHold(h, managed) {
-			open[newFileKey(h.Target)] = h.ID
-		}
+// openDeferred returns the deferred decisions whose holds are open in
+// shown (Engine.Holds), and drops from the file the decisions whose holds
+// have left the state. A hold Engine.Holds leaves out because its file is
+// gone is still in the state until a sync settles it, so its decision stays
+// on file: the file may be gone only for a moment. A new file's decision
+// takes the id of its current hold.
+func (m *machineEnv) openDeferred(ctx context.Context, shown []model.Hold) []Deferred {
+	stored, err := m.eng.StoredHolds(ctx)
+	if err != nil {
+		stored = shown
 	}
+	managed := m.managedTargets()
+	stateDir := m.paths.State
+	d := loadDeferred(stateDir)
+	ids := func(holds []model.Hold) map[string]string {
+		open := map[string]string{}
+		for _, h := range withHoldNext(holds) {
+			open[h.ID] = h.ID
+			if newFileHold(h, managed) {
+				open[newFileKey(h.Target)] = h.ID
+			}
+		}
+		return open
+	}
+	open, visible := ids(stored), ids(shown)
 	out := []Deferred{}
 	changed := false
 	for k, x := range d {
@@ -521,7 +534,9 @@ func openDeferred(stateDir string, holds []model.Hold, managed map[model.Target]
 			d[k] = x
 			changed = true
 		}
-		out = append(out, x)
+		if _, ok := visible[k]; ok {
+			out = append(out, x)
+		}
 	}
 	if changed {
 		_ = saveDeferred(stateDir, d)
@@ -864,7 +879,7 @@ func (a *app) hookSessionStart(ctx context.Context, in HookInput) (Verdict, erro
 	m.snap = nil
 	snap, _ := m.load(ctx)
 	hs, _ := m.eng.Holds(ctx)
-	deferred := openDeferred(m.paths.State, hs, m.managedTargets())
+	deferred := m.openDeferred(ctx, hs)
 	skip := map[string]bool{}
 	expired := 0
 	for _, d := range deferred {

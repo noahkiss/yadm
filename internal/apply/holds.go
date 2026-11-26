@@ -114,8 +114,29 @@ func heldFile(st *State, t model.Target) bool {
 	return false
 }
 
-// Holds lists current holds from the state.
+// Holds lists current holds from the state, without the holds that went
+// with their file (goesWithFile): the file is gone, so the next complete
+// scan drops them. Holds never writes the state; callers need not hold the
+// sync lock.
 func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
+	st, err := e.loadState()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Hold, 0, len(st.Holds))
+	for _, h := range st.Holds {
+		if goesWithFile(st, h) && e.gone(ctx, h.Target) {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+// StoredHolds lists every hold in the state, those Holds leaves out
+// included. A caller that prunes its own records by the open holds uses it:
+// a file that is gone only for a moment must not end what its hold covers.
+func (e *Engine) StoredHolds(ctx context.Context) ([]model.Hold, error) {
 	st, err := e.loadState()
 	if err != nil {
 		return nil, err
@@ -149,17 +170,55 @@ var goneReasons = map[model.HoldReason]bool{
 	model.HoldTaskUntrusted: true, // only a gate hold on a target
 }
 
+// newInEnclaveRootDetail starts the detail of the seal_guard hold capture
+// puts on a new file in an enclave root this machine cannot seal for.
+const newInEnclaveRootDetail = "new file in an enclave root: "
+
+// goesWithFile reports whether hold h has no cause left once its file is
+// gone. It holds a file nothing manages here (no state record), and is one
+// of:
+//
+//   - protected, check_failed or task_untrusted (goneReasons): a new file
+//     or a file a refused track or commit named; nothing is left to commit
+//     or check;
+//   - seal_guard from `yadm commit --expect-enclave` (Task ExpectTask);
+//   - seal_guard on a new file in an enclave root this machine cannot seal
+//     for.
+//
+// Everything else outlives the file. A managed target's hold stays when the
+// file is gone, since its deletion is what is held. A conflict carries the
+// incoming change. A weakened-protection or held-path hold (Task GuardTask)
+// comes from the manifest, not the file. Other seal_guard, drifted,
+// needs_decision and uncapturable holds belong to apply, which decides
+// them again from the plan. Holds without a target are not about a file.
+func goesWithFile(st *State, h model.Hold) bool {
+	if h.Target == "" {
+		return false
+	}
+	if _, managed := st.Targets[h.Target]; managed {
+		return false
+	}
+	switch {
+	case goneReasons[h.Reason]:
+		return true
+	case h.Reason == model.HoldSealGuard && h.Task == ExpectTask:
+		return true
+	case h.Reason == model.HoldSealGuard && h.Task == "" && strings.HasPrefix(h.Detail, newInEnclaveRootDetail):
+		return true
+	}
+	return false
+}
+
 // SettleHolds drops the holds on managed targets whose cause is gone: drift
 // is the result of a complete scan (no named paths), and a managed target
 // it does not list equals what this machine last wrote or captured, so a
 // check that failed, a capture that failed or a drift no longer applies.
 // Conflict holds stay (they carry the incoming change), and so do holds
 // for a manifest that weakened protection (apply sets them again from the
-// plan). A protected or commit-gate hold on an unmanaged file (a new file in
-// an owned root, or a file a refused track named) goes when the file is
-// gone. A gate hold on a file that still exists stays. It returns the
-// number of holds dropped.
-func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
+// plan). A hold that goes with its file (goesWithFile) goes when the file
+// is gone; while the file exists it stays. It returns the number of holds
+// dropped.
+func (e *Engine) SettleHolds(ctx context.Context, drift []Drift) (int, error) {
 	for _, d := range drift {
 		if d.Kind == DriftUnreadable {
 			return 0, nil // incomplete scan: absence proves nothing
@@ -181,7 +240,7 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 			n++
 			continue
 		}
-		if h.Target != "" && !managed && !drifting[h.Target] && (goneReasons[h.Reason] || h.Task == ExpectTask) && e.gone(h.Target) {
+		if !drifting[h.Target] && goesWithFile(st, h) && e.gone(ctx, h.Target) {
 			n++
 			continue
 		}
@@ -194,13 +253,15 @@ func (e *Engine) SettleHolds(_ context.Context, drift []Drift) (int, error) {
 	return n, e.State.Save(st)
 }
 
-// gone reports whether nothing is at target t in $HOME.
-func (e *Engine) gone(t model.Target) bool {
+// gone reports whether nothing is at target t in $HOME. The stat is
+// bounded (Deps.StatTimeout): a stat that does not return proves nothing,
+// so the file counts as there.
+func (e *Engine) gone(ctx context.Context, t model.Target) bool {
 	abs, err := e.abs(t)
 	if err != nil {
 		return false
 	}
-	_, err = e.fs.Lstat(abs)
+	_, err = bounded(ctx, e.StatTimeout, func() (fs.FileInfo, error) { return e.fs.Lstat(abs) })
 	return errors.Is(err, fs.ErrNotExist)
 }
 

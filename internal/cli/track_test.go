@@ -154,7 +154,8 @@ command = ["false"]
 
 // TestGateHoldOnRemovedFileSettles: a track the gate refused leaves a
 // check_failed hold on a file nothing manages. While the file exists, sync
-// keeps the hold. Once the file is removed, the next sync drops it: there is
+// keeps the hold. Once the file is removed, `hold list` and `status` no
+// longer show it, and the next sync drops it from the state: there is
 // nothing left to commit, and no command could settle it.
 func TestGateHoldOnRemovedFileSettles(t *testing.T) {
 	hermetic(t)
@@ -198,6 +199,16 @@ command = ["false"]
 	}
 	if err := os.Remove(p); err != nil {
 		t.Fatal(err)
+	}
+	if got := held(); len(got) != 0 {
+		t.Fatalf("hold list before a sync, after the file was removed: %v", got)
+	}
+	for _, h := range decode[struct {
+		Holds []struct{ Target, Reason string }
+	}](t, yadmOK(t, "status").Data).Holds {
+		if h.Target == ".gated" {
+			t.Fatalf("status before a sync, after the file was removed: %+v", h)
+		}
 	}
 	yadmOK(t, "sync", "--no-push")
 	if got := held(); len(got) != 0 {

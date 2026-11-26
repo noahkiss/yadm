@@ -120,7 +120,7 @@
 //	func (e *Engine) Render(ctx, snap *Snapshot, t model.Target, live []byte) ([]byte, error) // the one render pipeline; ErrNotPlanned, crypt.ErrNotMember
 //	func (e *Engine) OpenSource(ctx, snap *Snapshot, t model.Target) ([]byte, error) // the source as stored, a whole sealed file opened in memory; refuses what Render refuses
 //	func (e *Engine) Ignore(ctx, snap *Snapshot, t model.Target) error; func (e *Engine) Ignored(t) bool // State.Ignored; ErrManaged, ErrNotIgnorable
-//	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write, and an unmanaged file's protected or gate hold once the file is gone
+//	func (e *Engine) SettleHolds(ctx, drift []Drift) (int, error) // drop holds whose target is back at its last write, and a hold that goes with its unmanaged file once the file is gone
 //	func (s *Snapshot) CanOpen(e model.EnclaveName) bool // delivery: false for an on-demand enclave
 //	func (s *Snapshot) CanRead(e) bool; func (s *Snapshot) Readable() *crypt.Set; func (s *Snapshot) IsOnDemand(e) bool // stdout and key-log writes only
 //	type Guard struct{ List tasks.AllowList } // sync.RemoteGuard and PathGuard: names a fetched manifest's weakenings that are not allowed
@@ -142,7 +142,8 @@
 //	func Forget(st *State, t model.Target, now time.Time, onDisk bool) // stop managing t here, file kept; ignored inside an accepted root
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
-//	func (e *Engine) Holds(ctx) ([]model.Hold, error)
+//	func (e *Engine) Holds(ctx) ([]model.Hold, error) // read-only; leaves out a hold that went with its file
+//	func (e *Engine) StoredHolds(ctx) ([]model.Hold, error) // every hold in the state; for pruning records by open holds
 //	func (e *Engine) ResolveHold(ctx, id string, opts ResolveOptions) (Result, error) // Result.Capture carries a take-target capture
 //	func HoldID(h model.Hold) string
 //
