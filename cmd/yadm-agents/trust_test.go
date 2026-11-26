@@ -152,3 +152,79 @@ func TestVerifyTrustOnlyOnCodex(t *testing.T) {
 		t.Fatalf("findings: %+v", fs)
 	}
 }
+
+// A level the owner set by hand (Codex writes "untrusted" when the owner
+// declines) is a machine-local decision: a listed path never overrides it,
+// and gen never owns or removes it.
+func TestGenKeepsHandSetUntrusted(t *testing.T) {
+	home := oneGuardHome(t)
+	abs := filepath.Join(home, "dev/x")
+	writeFile(t, filepath.Join(home, ".codex/config.toml"), trustCodex+"\n[projects.\""+abs+"\"]\ntrust_level = \"untrusted\"\n")
+	r := genOnly(t, home, trustUnits("~/dev/x"), "codex", GenOptions{})
+	if r.Status == StatusRefused {
+		t.Fatalf("codex: %s", r.Reason)
+	}
+	if got := projectTrust(t, home); got[abs] != "untrusted" {
+		t.Fatalf("overrode a hand-set level: %v", got)
+	}
+	if !strings.Contains(r.Reason, abs) {
+		t.Fatalf("gen did not say it kept %s: %q", abs, r.Reason)
+	}
+	if st, _ := readState(statePath(home)); len(st.Harness["codex"].Trusted) != 0 {
+		t.Fatalf("owns %v", st.Harness["codex"].Trusted)
+	}
+	genOnly(t, home, trustUnits(), "codex", GenOptions{})
+	if got := projectTrust(t, home); got[abs] != "untrusted" {
+		t.Fatalf("removed a hand-set level: %v", got)
+	}
+}
+
+// An entry gen wrote that the owner later set to another level by hand is
+// the owner's again: gen neither resets it nor removes it.
+func TestGenYieldsOwnedTrustChangedByHand(t *testing.T) {
+	home := trustHome(t)
+	abs := filepath.Join(home, "dev/x")
+	cfg := filepath.Join(home, ".codex/config.toml")
+	if r := genOnly(t, home, trustUnits("~/dev/x"), "codex", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("codex: %s %s", r.Status, r.Reason)
+	}
+	b := readFile(t, cfg)
+	i := strings.Index(b, abs)
+	if i < 0 {
+		t.Fatalf("no entry:\n%s", b)
+	}
+	j := i + strings.Index(b[i:], `"trusted"`)
+	writeFile(t, cfg, b[:j]+`"untrusted"`+b[j+len(`"trusted"`):])
+	genOnly(t, home, trustUnits("~/dev/x"), "codex", GenOptions{})
+	if got := projectTrust(t, home); got[abs] != "untrusted" {
+		t.Fatalf("reset a hand change: %v", got)
+	}
+	genOnly(t, home, trustUnits(), "codex", GenOptions{})
+	if got := projectTrust(t, home); got[abs] != "untrusted" {
+		t.Fatalf("removed a hand change: %v", got)
+	}
+}
+
+// A star, a dot, a space and a quote stay literal through the key path and
+// the TOML key: no glob, and the entry gen wrote is the one it removes.
+func TestTrustKeyRoundTrip(t *testing.T) {
+	home := trustHome(t)
+	odd := `dev/cloned/*/a.b c"q`
+	abs := filepath.Join(home, odd)
+	units := strings.Replace(oneGuard, "schema = 1\n", "schema = 1\n\n[harness.codex]\ntrusted_projects = ['~/"+odd+"']\n", 1)
+	writeFile(t, filepath.Join(home, ".codex/config.toml"), trustCodex+"\n[projects.\""+filepath.Join(home, "dev/cloned/other")+"\"]\ntrust_level = \"trusted\"\n")
+	if r := genOnly(t, home, units, "codex", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("codex: %s %s", r.Status, r.Reason)
+	}
+	got := projectTrust(t, home)
+	if got[abs] != "trusted" || len(got) != 3 {
+		t.Fatalf("projects = %v", got)
+	}
+	if r := genOnly(t, home, trustUnits(), "codex", GenOptions{}); r.Status != StatusWritten {
+		t.Fatalf("unlist: %s %s", r.Status, r.Reason)
+	}
+	got = projectTrust(t, home)
+	if _, ok := got[abs]; ok || got[filepath.Join(home, "dev/cloned/other")] != "trusted" || len(got) != 2 {
+		t.Fatalf("projects = %v", got)
+	}
+}

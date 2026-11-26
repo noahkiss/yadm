@@ -124,29 +124,38 @@ func trustPaths(list []string, home string) ([]string, error) {
 	return out, nil
 }
 
-// planTrust sets the trust entries gen owns: every listed path is trusted,
-// and a path gen trusted earlier that left the list loses its entry. It
-// returns the paths gen owns after this run: listed paths it wrote or
-// already owned. A path trusted before gen listed it stays unowned.
-func planTrust(tr truster, cur Wiring, vals map[string]string, want, prevOwned []string) (map[string]string, []string) {
+// planTrust sets the trust entries gen owns. A listed path with no entry
+// gets one, and gen owns it. A listed path already trusted keeps its owner.
+// A path with any other level was set by hand (Codex writes "untrusted"
+// when the owner declines), so gen leaves it and stops owning it; kept
+// lists those. A path gen owned that left the list loses its entry, but
+// only while it still says "trusted".
+func planTrust(tr truster, cur Wiring, vals map[string]string, want, prevOwned []string) (_ map[string]string, owned, kept []string) {
 	if vals == nil {
 		vals = map[string]string{}
 	}
 	listed, prev := setOf(want...), setOf(prevOwned...)
-	var owned []string
 	for _, p := range want {
 		k := tr.TrustKey(p)
-		if prev[p] || cur.Values[k] != trustedLevel {
+		switch cur.Values[k] {
+		case "":
 			owned = append(owned, p)
+			vals[k] = trustedLevel
+		case trustedLevel:
+			if prev[p] {
+				owned = append(owned, p)
+			}
+			vals[k] = trustedLevel
+		default:
+			kept = append(kept, p)
 		}
-		vals[k] = trustedLevel
 	}
 	for _, p := range prevOwned {
 		if k := tr.TrustKey(p); !listed[p] && cur.Values[k] == trustedLevel {
 			vals[k] = "" // gen wrote it; take it back
 		}
 	}
-	return vals, owned
+	return vals, owned, kept
 }
 
 // resolveFor lists every unit with a cell for harness h, resolved, with
@@ -285,7 +294,11 @@ func genOne(f *File, ev Evaluator, a Adapter, o GenOptions, prev HarnessState) H
 	}
 	var owned []string
 	if trusts {
-		rendered.Values, owned = planTrust(tr, cur, rendered.Values, want, prev.Trusted)
+		var kept []string
+		rendered.Values, owned, kept = planTrust(tr, cur, rendered.Values, want, prev.Trusted)
+		if len(kept) > 0 {
+			res.Reason = fmt.Sprintf("trusted_projects: kept the trust level set by hand for %s", strings.Join(kept, ", "))
+		}
 	}
 	// A live owned value the units file does not render (a mod list with
 	// no mod unit for this harness) stays as it is.

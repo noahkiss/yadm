@@ -65,8 +65,10 @@
 //	          gen keeps every live handler at its position and appends new ones.
 //	          It also owns projects."<abs path>".trust_level = "trusted" for
 //	          each trusted_projects path, and removes only an entry it wrote
-//	          (the state file records which). An entry that was there before
-//	          gen listed the path stays when the path leaves the list.
+//	          (the state file records which) and that still says "trusted".
+//	          An entry that was there before gen listed the path stays when
+//	          the path leaves the list. A level other than "trusted" set by
+//	          hand wins over the list: gen keeps it and says so.
 //	opencode  a route file (config required): event, Claude tool name and the
 //	pi        guard scripts a shared runner script runs, in unit order with
 //	          units marked first ahead. Only route lists have an order that
