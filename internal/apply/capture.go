@@ -436,7 +436,7 @@ func (e *Engine) captureNew(ctx context.Context, snap *Snapshot, st *State, d Dr
 	}
 	scope := model.Scope(root.Enclave)
 	if !snap.canOpen(root.Enclave) {
-		h := fileHold(st, now, d.Target, scope, model.HoldSealGuard, d.Since, "new file in an enclave root: "+snap.notMemberDetail(root.Enclave))
+		h := fileHold(st, now, d.Target, scope, model.HoldSealGuard, d.Since, newInEnclaveRootDetail+snap.notMemberDetail(root.Enclave))
 		return nil, &h, nil
 	}
 	p := model.SourcePath("sealed/" + string(root.Enclave) + "/" + string(d.Target))
