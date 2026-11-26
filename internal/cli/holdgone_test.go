@@ -86,3 +86,40 @@ command = ["false"]
 		t.Fatalf("%d holds on the removed file left in the state after a timer sync", n)
 	}
 }
+
+// TestDeferSurvivesBriefRemoval: an editor that saves by removing the file
+// and writing it again leaves it gone for a moment. A read command in that
+// moment hides the hold, but the hold is still in the state, so the defer
+// that covers it must stay: once the file is back, the stop hook still
+// treats the decision as deferred.
+func TestDeferSurvivesBriefRemoval(t *testing.T) {
+	hermetic(t)
+	root := t.TempDir()
+	remote := seedRemote(t, root, hookTree())
+	a := hookMachine(t, root, remote, "a", "host-a")
+
+	file := filepath.Join(a.Home, ".config/tool/new.conf")
+	writeFile(t, file, "fresh = 1\n")
+	code, stdout, _ := hookRun(t, payload(payloadWrite, "session-s", a.Home, file), HookPostEdit)
+	if code != HookBlock {
+		t.Fatalf("post-edit on a new file: exit %d", code)
+	}
+	p := verdictOf(t, stdout).Packets[0]
+	yadmOK(t, "defer", p.ID, "--reason", "decide with the owner")
+
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	// Read commands in the window. (A sync in the window, such as the
+	// session-start hook's, settles the hold itself; that is not a read.)
+	yadmOK(t, "review", "list")
+	yadm(t, "check")
+	writeFile(t, file, "fresh = 2\n")
+
+	if ds := deferredOf(t); len(ds) != 1 {
+		t.Fatalf("deferred after the file came back: %+v", ds)
+	}
+	if code, stdout, stderr := hookRun(t, payload(payloadStop, "session-s", a.Home, ""), HookStop); code != HookAllow || stdout != "" {
+		t.Fatalf("stop after the file came back: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+}

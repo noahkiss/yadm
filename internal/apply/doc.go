@@ -143,6 +143,7 @@
 //	func (e *Engine) MergeSealed(ctx, snap *Snapshot, c store.Conflict) (*store.Change, *model.Hold, error)
 //	func (e *Engine) Reseal(ctx, snap *Snapshot, enclave model.EnclaveName) (Capture, error)
 //	func (e *Engine) Holds(ctx) ([]model.Hold, error) // read-only; leaves out a hold that went with its file
+//	func (e *Engine) StoredHolds(ctx) ([]model.Hold, error) // every hold in the state; for pruning records by open holds
 //	func (e *Engine) ResolveHold(ctx, id string, opts ResolveOptions) (Result, error) // Result.Capture carries a take-target capture
 //	func HoldID(h model.Hold) string
 //

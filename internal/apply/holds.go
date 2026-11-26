@@ -133,6 +133,19 @@ func (e *Engine) Holds(ctx context.Context) ([]model.Hold, error) {
 	return out, nil
 }
 
+// StoredHolds lists every hold in the state, those Holds leaves out
+// included. A caller that prunes its own records by the open holds uses it:
+// a file that is gone only for a moment must not end what its hold covers.
+func (e *Engine) StoredHolds(ctx context.Context) ([]model.Hold, error) {
+	st, err := e.loadState()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Hold, len(st.Holds))
+	copy(out, st.Holds)
+	return out, nil
+}
+
 // settleReasons are the hold reasons whose cause is the target's content.
 // When a complete scan finds the target back at what this machine last
 // wrote or captured, the cause is gone and SettleHolds drops them.
