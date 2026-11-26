@@ -64,7 +64,8 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	rc.Flags().Bool("read-only", false, "required: read the enclave; writes nothing but --out (re-admitting a machine is not built yet)")
 	rc.Flags().String("identity", "", "the recovery identity.age.key file (mode 0600), or - to read it from stdin")
 	rc.Flags().String("out", "", "a new directory for the opened files (mode 0700, files 0600), or - to print one file to stdout")
-	rc.Flags().String("expect", "", "fingerprint of the newest key-log entry, kept with the recovery identity; the log must contain it, and only the head anchors the log")
+	rc.Flags().String("expect", "", "fingerprint of the newest key-log entry, kept with the recovery identity; the log's head must be that entry (or give --unanchored)")
+	rc.Flags().Bool("unanchored", false, "read without --expect, or with --expect on an older entry, and accept that the key log may be forged")
 	rc.Flags().String("repo", "", "a clone of the remote to read main from (default: the source clone)")
 }
 

@@ -97,6 +97,9 @@ You need the remote, read access to it, and the enclave's recovery identity. Two
      --expect <fingerprint> --repo ~/dotfiles-src --out ~/personal-plain
    ```
 
+   - `--expect` is required: the newest key-log entry's fingerprint you kept with the
+     identity (see "Why `--expect`" below). Without one, pass `--unanchored` to accept that the
+     log may be forged. With neither, recover refuses before it reads the key.
    - `--identity -` reads the key from stdin instead, so it never touches the disk.
    - Name paths after the enclave to open only those files or directories, for example
      `.config/notes`. `--out -` prints one file to stdout.
@@ -115,16 +118,19 @@ You need the remote, read access to it, and the enclave's recovery identity. Two
 **Why `--expect`.** Every file is authenticated under the keys the key log wraps, so a file
 sealed under the enclave's real keys never opens to other content. But anyone who can push to
 the remote can replace the key log and the sealed files together. Your recovery recipient is
-public, so a forged log can wrap the forger's keys to it. Without `--expect`, recover reports
+public, so a forged log can wrap the forger's keys to it. So a recovery read must be anchored:
+recover refuses to run without `--expect` or `--unanchored`. With `--unanchored` it reports
 `not anchored`: the files match the log, but the log may not be yours. With `--expect` the log
-must contain the entry with that fingerprint, which no forger can produce.
+must contain the entry with that fingerprint, which no forger can produce. A pinned log names
+the recovery recipient, so a wrong or substituted recovery identity is refused too.
 
 Use the fingerprint of the newest entry. Entries after the one you pin are trusted only by
 their signatures. A machine you removed after that entry still holds its signing key. It can
 cut the log back to an entry where it was a member, sign a new entry with keys it chose, and
 reseal files under them. So recover reports `anchored` only when `--expect` names the head
 entry. Then every file was sealed by a holder of the enclave's current keys. A writer can
-still put back an older sealed version of a file.
+still put back an older sealed version of a file. Recover refuses a match on an older entry
+unless you also pass `--unanchored`.
 
 So keep the newest fingerprint with each recovery identity, and replace it after every
 key-log change:
@@ -133,8 +139,8 @@ key-log change:
   `yadm enclave list --json` on a member. Each row's `fingerprint` is the head that member
   verified against its pin. `remove` writes a second entry, the retire, so the fingerprint
   it prints is not the head.
-- An older entry's fingerprint still refuses a log forged from scratch, but recover then
-  reports `not anchored`.
+- An older entry's fingerprint still refuses a log forged from scratch. Recover accepts it only
+  with `--unanchored`, and then reports `not anchored`.
 
 ### Re-admit a machine
 
@@ -197,8 +203,9 @@ What you lose with a recovery identity:
 1. Restore each enclave's recovery identity into a scratch directory.
 2. Run the check above: the `age1…` matches the newest key-log entry.
 3. Run the read (Case 2) with `--expect` into a scratch directory. It must report
-   `anchored`. If it does not, the kept fingerprint is not the head: replace it with the one
-   `yadm enclave list --json` shows on a member. Delete the directory.
+   `anchored`. If it refuses because the fingerprint matched an older entry, the kept
+   fingerprint is not the head: replace it with the one `yadm enclave list --json` shows on a
+   member. Delete the directory.
 4. Confirm the paper copy matches the password manager copy, line by line.
 5. Confirm at least two members are alive: `yadm enclave list`.
 6. Delete the scratch directories.

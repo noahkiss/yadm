@@ -145,7 +145,7 @@ func TestRecoverReadRoundTrip(t *testing.T) {
 	out := filepath.Join(w.root, "plain", "personal")
 	before := treeState(t, "", w.clone, w.remote, home, w.recDir)
 
-	env := yadmOK(t, w.recoverArgs("personal", w.key(), out)...)
+	env := yadmOK(t, w.recoverArgs("personal", w.key(), out, "--unanchored")...)
 	d := decode[recoverData](t, env.Data)
 	root, _ := crypt.Fingerprint(w.fx.Logs["personal"][0])
 	if d.Anchored || d.Root != root || len(d.Files) != 1 || d.Files[0] != privateNotes || d.Out != out {
@@ -180,7 +180,7 @@ func TestRecoverReadRoundTrip(t *testing.T) {
 	if d := decode[recoverData](t, env.Data); !d.Anchored || len(d.Files) != 1 {
 		t.Fatalf("anchored: %+v", d)
 	}
-	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "plain", "none"), ".config/missing")...); code == ExitOK {
+	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "plain", "none"), ".config/missing", "--unanchored")...); code == ExitOK {
 		t.Fatal("a path that matches no sealed file succeeded")
 	}
 	assertNoOut(t, filepath.Join(w.root, "plain", "none"))
@@ -194,12 +194,12 @@ func TestRecoverReadRoundTrip(t *testing.T) {
 	saved := hooks.stdin
 	t.Cleanup(func() { hooks.stdin = saved })
 	hooks.stdin = func() io.Reader { return bytes.NewReader(key) }
-	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", "-", "-", privateNotes)...)
+	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", "-", "-", privateNotes, "--unanchored")...)
 	if code != ExitOK || stdout != got || !strings.Contains(stderr, "not anchored") {
 		t.Fatalf("stdout: exit %d %q stderr %q", code, stdout, stderr)
 	}
 	hooks.stdin = func() io.Reader { return bytes.NewReader(key) }
-	if _, code, _ := yadm(t, w.recoverArgs("personal", "-", "-")...); code != ExitOK {
+	if _, code, _ := yadm(t, w.recoverArgs("personal", "-", "-", "--unanchored")...); code != ExitOK {
 		t.Fatalf("--out - with the enclave's only file: exit %d", code)
 	}
 	sameState(t, "recover to stdout", before, treeState(t, "", w.clone, w.remote, home, w.recDir))
@@ -242,7 +242,7 @@ func TestRecoverReadRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	vkey := filepath.Join(vdir, crypt.AgeIdentityFile)
-	yadmOK(t, w.recoverArgs("vault", vkey, filepath.Join(w.root, "vault-out"))...)
+	yadmOK(t, w.recoverArgs("vault", vkey, filepath.Join(w.root, "vault-out"), "--unanchored")...)
 	if got := readFile(t, filepath.Join(w.root, "vault-out", ".vault", "key")); got != "vault secret\n" {
 		t.Fatalf("vault: %q", got)
 	}
@@ -256,7 +256,7 @@ func TestRecoverReadRefusals(t *testing.T) {
 		{"vault's identity on personal", "personal", vkey},
 		{"a member's key", "personal", filepath.Join(memberDir, crypt.AgeIdentityFile)},
 	} {
-		if env, code, _ := yadm(t, w.recoverArgs(c.enc, c.key, out)...); code != ExitRefused {
+		if env, code, _ := yadm(t, w.recoverArgs(c.enc, c.key, out, "--unanchored")...); code != ExitRefused {
 			t.Fatalf("%s: exit %d %+v", c.name, code, env.Error)
 		}
 		assertNoOut(t, out)
@@ -264,7 +264,7 @@ func TestRecoverReadRefusals(t *testing.T) {
 	if err := os.Chmod(w.key(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out)...); code != ExitRefused {
+	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--unanchored")...); code != ExitRefused {
 		t.Fatalf("a world-readable identity: exit %d", code)
 	}
 	assertNoOut(t, out)
@@ -277,12 +277,12 @@ func TestRecoverReadRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{filepath.Join(w.clone, "plain"), filepath.Join(w.clone, ".git", "plain"), filepath.Join(p.State, "plain"), filepath.Join(w.root, "vault-out")} {
-		if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), bad)...); code != ExitUsage {
+		if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), bad, "--unanchored")...); code != ExitUsage {
 			t.Fatalf("--out %s: exit %d %+v", bad, code, env.Error)
 		}
 	}
 	assertNoOut(t, filepath.Join(w.clone, "plain"))
-	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "../escape")...); code != ExitUsage {
+	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "../escape", "--unanchored")...); code != ExitUsage {
 		t.Fatalf("a path outside $HOME: exit %d", code)
 	}
 	if _, code, _ := yadm(t, "enclave", "recover", "personal", "--read-only", "--out", out, "--repo", w.clone); code != ExitUsage {
@@ -325,7 +325,7 @@ func TestRecoverReadForgedLog(t *testing.T) {
 	commitClone(t, w.clone, map[string][]byte{string(crypt.LogPath("personal", 1)): flog}, "forged log")
 
 	out := filepath.Join(w.root, "plain")
-	env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out)...)
+	env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--unanchored")...)
 	if code != ExitRefused || !strings.Contains(env.Error.Message, "nothing was written") {
 		t.Fatalf("forged log, genuine files: exit %d %+v", code, env.Error)
 	}
@@ -336,13 +336,13 @@ func TestRecoverReadForgedLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	commitClone(t, w.clone, map[string][]byte{"sealed/personal/" + privateNotes: evil}, "replace one file")
-	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out)...); code != ExitRefused {
+	if _, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--unanchored")...); code != ExitRefused {
 		t.Fatalf("forged log, one genuine file left: exit %d", code)
 	}
 	assertNoOut(t, out)
 	// Naming only the replaced file is the attack a writer can win
 	// without a pin: the output says it is not anchored.
-	env = yadmOK(t, w.recoverArgs("personal", w.key(), out, privateNotes)...)
+	env = yadmOK(t, w.recoverArgs("personal", w.key(), out, privateNotes, "--unanchored")...)
 	if d := decode[recoverData](t, env.Data); d.Anchored {
 		t.Fatalf("a forged read claims to be anchored: %+v", d)
 	}
@@ -368,13 +368,13 @@ func TestRecoverReadManagedOut(t *testing.T) {
 	}
 	key := filepath.Join(recDir, crypt.AgeIdentityFile)
 	managed := filepath.Join(b.Home, ".config", "shell", "rec")
-	if env, code, _ := yadm(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--out", managed); code != ExitUsage || !strings.Contains(env.Error.Message, "manages") {
+	if env, code, _ := yadm(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--unanchored", "--out", managed); code != ExitUsage || !strings.Contains(env.Error.Message, "manages") {
 		t.Fatalf("managed --out: exit %d %+v", code, env.Error)
 	}
 	assertNoOut(t, managed)
 	out := filepath.Join(b.Home, "recovered")
 	before := treeState(t, out, b.Home, b.Source, b.State)
-	yadmOK(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--out", out)
+	yadmOK(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--unanchored", "--out", out)
 	if !strings.Contains(readFile(t, filepath.Join(out, filepath.FromSlash(privateNotes))), fx.Canaries["personal"].String()) {
 		t.Fatal("no plaintext in --out")
 	}
@@ -401,7 +401,7 @@ func TestRecoverReadNewMachine(t *testing.T) {
 	root1, _ := crypt.Fingerprint(fx.Logs["personal"][0])
 	key := filepath.Join(recDir, crypt.AgeIdentityFile)
 	inHome := filepath.Join(m.Home, "personal-plain")
-	if env, code, _ := yadm(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--out", inHome); code == ExitOK || !strings.Contains(env.Error.Message, "outside $HOME") {
+	if env, code, _ := yadm(t, "enclave", "recover", "personal", "--read-only", "--identity", key, "--unanchored", "--out", inHome); code == ExitOK || !strings.Contains(env.Error.Message, "outside $HOME") {
 		t.Fatalf("--out in $HOME without a manifest: exit %d %+v", code, env.Error)
 	}
 	assertNoOut(t, inHome)
@@ -424,8 +424,9 @@ func TestRecoverReadNewMachine(t *testing.T) {
 // pinned entry and was removed later keeps its signing key. It truncates
 // the log to an entry where it was still a member, signs a rotate of its
 // own, and reseals a file under keys it chose. --expect with the root
-// fingerprint still matches, so recover must not call that log anchored;
-// --expect with the genuine head refuses it.
+// fingerprint still matches, so recover refuses it without --unanchored
+// and, with it, does not call that log anchored; --expect with the genuine
+// head refuses it.
 func TestRecoverReadFormerMemberFork(t *testing.T) {
 	w := newRecoverWorld(t)
 	a, b := w.fx.Identities[fixture.HostA], w.fx.Identities[fixture.HostB]
@@ -497,14 +498,18 @@ func TestRecoverReadFormerMemberFork(t *testing.T) {
 	}, "fork")
 
 	out := filepath.Join(w.root, "forked")
-	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", w.key(), out, "--expect", root)...)
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--expect", root)...); code != ExitRefused || !strings.Contains(env.Error.Message, "--unanchored") {
+		t.Fatalf("root pin on the fork without --unanchored: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, out)
+	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", w.key(), out, "--expect", root, "--unanchored")...)
 	if code != ExitOK {
 		t.Fatalf("root pin on the fork: exit %d %s %s", code, stdout, stderr)
 	}
 	if strings.Contains(stdout, "anchored by --expect") || !strings.Contains(stderr, "not anchored") {
 		t.Fatalf("a fork after the pinned entry reads as anchored:\n%s\n%s", stdout, stderr)
 	}
-	env = yadmOK(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "forked-json"), "--expect", root)...)
+	env = yadmOK(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "forked-json"), "--expect", root, "--unanchored")...)
 	if d := decode[recoverData](t, env.Data); d.Anchored || d.AnchoredSeq != 1 || d.HeadSeq != fork.Seq {
 		t.Fatalf("root pin on the fork: %+v", d)
 	}
@@ -513,6 +518,85 @@ func TestRecoverReadFormerMemberFork(t *testing.T) {
 	}
 	assertNoOut(t, filepath.Join(w.root, "refused"))
 	secrecytest.AssertRepoClean(t, w.clone, w.fx.AllCanaries()...)
+}
+
+// TestRecoverReadAnchor: a recovery read needs --expect or --unanchored.
+// With neither it refuses before it reads the key. --expect refuses a
+// fingerprint no entry has, a recipient given in its place, and a recovery
+// identity the pinned log does not name. The head fingerprint anchors the
+// read; --unanchored reads without one. A refusal writes nothing.
+func TestRecoverReadAnchor(t *testing.T) {
+	w := newRecoverWorld(t)
+	log := w.fx.Logs["personal"]
+	head, _ := crypt.Fingerprint(log[len(log)-1])
+	out := filepath.Join(w.root, "plain")
+
+	// Neither flag: a usage error naming both, before the key is read.
+	read := false
+	saved := hooks.stdin
+	t.Cleanup(func() { hooks.stdin = saved })
+	hooks.stdin = func() io.Reader { read = true; return strings.NewReader("") }
+	for _, key := range []string{w.key(), "-"} {
+		env, code, _ := yadm(t, w.recoverArgs("personal", key, out)...)
+		if code != ExitUsage || !strings.Contains(env.Error.Message, "--expect") || !strings.Contains(env.Error.Message, "--unanchored") {
+			t.Fatalf("neither flag: exit %d %+v", code, env.Error)
+		}
+		assertNoOut(t, out)
+	}
+	if read {
+		t.Fatal("recover read the key without an anchor")
+	}
+	hooks.stdin = saved
+
+	// Mismatch: a fingerprint no entry has.
+	other, _ := crypt.Fingerprint(w.fx.Logs["client"][0])
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--expect", other)...); code != ExitRefused {
+		t.Fatalf("--expect with another log's fingerprint: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, out)
+	// The recipient in place of the fingerprint.
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--expect", w.fx.Recovery.Member().Recipient)...); code != ExitUsage || !strings.Contains(env.Error.Message, "not the recovery recipient") {
+		t.Fatalf("--expect with the recipient: exit %d %+v", code, env.Error)
+	}
+	assertNoOut(t, out)
+	// The genuine head, but a recovery identity that log does not name.
+	wrong, err := crypt.GenerateIdentity(crypt.RecoveryMachine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongDir := filepath.Join(w.root, "offline", "wrong")
+	if err := wrong.Save(wrongDir); err != nil {
+		t.Fatal(err)
+	}
+	for _, extra := range [][]string{{"--expect", head}, {"--unanchored"}} {
+		args := append(w.recoverArgs("personal", filepath.Join(wrongDir, crypt.AgeIdentityFile), out), extra...)
+		if env, code, _ := yadm(t, args...); code != ExitRefused || !strings.Contains(env.Error.Message, "not the recovery identity") {
+			t.Fatalf("a wrong recovery identity with %v: exit %d %+v", extra, code, env.Error)
+		}
+		assertNoOut(t, out)
+	}
+
+	// Match: the head fingerprint anchors the read.
+	env := yadmOK(t, w.recoverArgs("personal", w.key(), out, "--expect", head)...)
+	if d := decode[recoverData](t, env.Data); !d.Anchored || d.AnchoredSeq != log[len(log)-1].Seq || d.Fingerprint != head {
+		t.Fatalf("head pin: %+v", d)
+	}
+	if !strings.Contains(readFile(t, filepath.Join(out, filepath.FromSlash(privateNotes))), w.fx.Canaries["personal"].String()) {
+		t.Fatal("head pin: no plaintext in --out")
+	}
+
+	// --unanchored: the read succeeds and says it is not anchored.
+	out2 := filepath.Join(w.root, "plain-unanchored")
+	stdout, stderr, code := yadmRaw(t, w.recoverArgs("personal", w.key(), out2, "--unanchored")...)
+	if code != ExitOK || !strings.Contains(stdout, "NOT anchored (--unanchored)") || !strings.Contains(stderr, "not anchored") {
+		t.Fatalf("--unanchored: exit %d\n%s\n%s", code, stdout, stderr)
+	}
+	env = yadmOK(t, w.recoverArgs("personal", w.key(), filepath.Join(w.root, "plain-json"), "--unanchored")...)
+	if d := decode[recoverData](t, env.Data); d.Anchored || d.AnchoredSeq != 0 || len(d.Files) != 1 {
+		t.Fatalf("--unanchored: %+v", d)
+	}
+	secrecytest.AssertRepoClean(t, w.clone, w.fx.AllCanaries()...)
+	secrecytest.AssertTreeClean(t, wrongDir, w.fx.AllCanaries()...)
 }
 
 func mustPinOf(t *testing.T, e crypt.LogEntry) crypt.Pin {
@@ -545,14 +629,14 @@ func TestRecoverReadIdentityInput(t *testing.T) {
 		t.Fatal("no key line in the identity file")
 	}
 	for _, arg := range []string{secret, strings.ToLower(secret)} {
-		env, code, _ := yadm(t, w.recoverArgs("personal", arg, out)...)
+		env, code, _ := yadm(t, w.recoverArgs("personal", arg, out, "--unanchored")...)
 		if code == ExitOK || env.Error == nil {
 			t.Fatalf("a key as --identity: exit %d", code)
 		}
 		if strings.Contains(strings.ToUpper(env.Error.Message), strings.ToUpper(secret[len("AGE-SECRET-KEY-1"):])) {
 			t.Fatalf("the error echoes the key: %s", env.Error.Message)
 		}
-		_, stderr, _ := yadmRaw(t, w.recoverArgs("personal", arg, out)...)
+		_, stderr, _ := yadmRaw(t, w.recoverArgs("personal", arg, out, "--unanchored")...)
 		if strings.Contains(strings.ToUpper(stderr), strings.ToUpper(secret[len("AGE-SECRET-KEY-1"):])) {
 			t.Fatalf("stderr echoes the key: %s", stderr)
 		}
@@ -563,7 +647,7 @@ func TestRecoverReadIdentityInput(t *testing.T) {
 	t.Cleanup(func() { hooks.stdin = saved })
 	big := append(append([]byte{}, key...), bytes.Repeat([]byte("# padding\n"), 7000)...)
 	hooks.stdin = func() io.Reader { return bytes.NewReader(big) }
-	if env, code, _ := yadm(t, w.recoverArgs("personal", "-", out)...); code != ExitRefused || !strings.Contains(env.Error.Message, "too large") {
+	if env, code, _ := yadm(t, w.recoverArgs("personal", "-", out, "--unanchored")...); code != ExitRefused || !strings.Contains(env.Error.Message, "too large") {
 		t.Fatalf("oversize stdin: exit %d %+v", code, env.Error)
 	}
 	assertNoOut(t, out)
@@ -581,12 +665,12 @@ func TestRecoverReadIdentityInput(t *testing.T) {
 	commitClone(t, w.clone, map[string][]byte{"keys/personal": nil}, "drop the log")
 	delete(files, "keys/personal")
 	commitClone(t, w.clone, files, "client's log as personal's")
-	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out)...); code == ExitOK || !strings.Contains(env.Error.Message, "names enclave") {
+	if env, code, _ := yadm(t, w.recoverArgs("personal", w.key(), out, "--unanchored")...); code == ExitOK || !strings.Contains(env.Error.Message, "names enclave") {
 		t.Fatalf("another enclave's log: exit %d %+v", code, env.Error)
 	}
 	assertNoOut(t, out)
 	for _, bad := range []string{"*", "personal/../work", ":(top)personal"} {
-		if _, code, _ := yadm(t, w.recoverArgs(bad, w.key(), out)...); code != ExitUsage {
+		if _, code, _ := yadm(t, w.recoverArgs(bad, w.key(), out, "--unanchored")...); code != ExitUsage {
 			t.Fatalf("enclave name %q: exit %d", bad, code)
 		}
 	}

@@ -27,7 +27,7 @@ machine is left. Only the read-only mode exists: re-admitting a machine is not
 built yet, so --read-only is required.
 
   yadm enclave recover <enclave> [path...] --read-only --identity <file|-> \
-    --out <new dir|-> [--expect <fingerprint>] [--repo <clone>]
+    --out <new dir|-> (--expect <fingerprint> | --unanchored) [--repo <clone>]
 
 recover reads main of the clone (default: the source clone; any plain
 "git clone" of the remote works, and needs no "yadm init"). It verifies the
@@ -46,7 +46,14 @@ stored). Sealed values and regions inside plain files are not opened.
             manifest manages. "-" prints exactly one file to stdout instead.
 --expect    the fingerprint of the enclave's newest key-log entry, kept with
             the recovery identity: the "fingerprint" of "enclave list --json"
-            on a member. The log must contain that entry.
+            on a member. The log's head must be that entry. It is the entry
+            fingerprint, not the recovery recipient (age1...).
+--unanchored
+            read without an anchor, and accept that the log may be forged.
+            With --expect, it also accepts a match on an older entry.
+
+A recovery read must be anchored: give --expect or --unanchored. With
+neither, recover refuses before it reads the key.
 
 Trust: every file is authenticated under the keys the log wraps, so files
 sealed under the enclave's real keys never open to other content. But a
@@ -54,11 +61,13 @@ writer to the remote can replace the key log and the sealed files together
 with its own, and the recovery identity opens both: without --expect, the
 output proves only that the log and the files agree. With --expect on the
 head entry the log is the enclave's own, so every file was sealed by a
-holder of the enclave's current keys; a writer can still roll a file back
-to an older sealed version. With --expect on an older entry, the entries
-after it are trusted only by their signatures: a machine removed after that
-entry still holds its signing key and can fork the log from there. Output
-"anchored" is true only when --expect names the head.
+holder of the enclave's current keys, and only the recovery identity that
+log names opens it; a writer can still roll a file back to an older sealed
+version. With --expect on an older entry, the entries after it are trusted
+only by their signatures: a machine removed after that entry still holds
+its signing key and can fork the log from there. So recover refuses that
+match unless --unanchored is also given. Output "anchored" is true only
+when --expect names the head.
 
 All or nothing: recover opens every selected file in memory first and writes
 nothing when any fails. It writes only the output: nothing to the clone or
@@ -73,7 +82,7 @@ type recoverData struct {
 	HeadSeq     uint64            `json:"head_seq"`
 	Epoch       model.Epoch       `json:"epoch"`
 	Fingerprint string            `json:"fingerprint"`      // the head entry's
-	Root        string            `json:"root_fingerprint"` // entry 1's, the value to keep for --expect
+	Root        string            `json:"root_fingerprint"` // entry 1's; --expect wants the head's
 	Anchored    bool              `json:"anchored"`         // --expect matched the log's head entry
 	AnchoredSeq uint64            `json:"anchored_seq"`     // the seq of the entry --expect matched; 0 without --expect
 	Out         string            `json:"out"`
@@ -101,12 +110,17 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	idArg, _ := cmd.Flags().GetString("identity")
 	out, _ := cmd.Flags().GetString("out")
 	expect, _ := cmd.Flags().GetString("expect")
+	unanchored, _ := cmd.Flags().GetBool("unanchored")
 	repoArg, _ := cmd.Flags().GetString("repo")
 	switch {
 	case idArg == "":
 		return result{}, usagef("--identity is required: the recovery identity.age.key file, or - for stdin")
 	case out == "":
 		return result{}, usagef("--out is required: a new directory, or - for stdout")
+	case expect == "" && !unanchored:
+		return result{}, usagef("a recovery read must be anchored: give --expect <fingerprint>, the newest key-log entry's fingerprint kept with the recovery identity, or --unanchored to accept that the key log may be forged")
+	case strings.HasPrefix(strings.ToLower(strings.TrimSpace(expect)), "age1"):
+		return result{}, usagef("--expect takes a key-log entry fingerprint (the \"fingerprint\" of \"enclave list --json\" on a member), not the recovery recipient")
 	}
 	prefixes, err := recoverPrefixes(args[1:])
 	if err != nil {
@@ -139,6 +153,11 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	}
 	if head.Enclave != enc {
 		return result{}, fmt.Errorf("%w: the key log under %s names enclave %q", crypt.ErrInvalidLog, crypt.LogDir(enc), head.Enclave)
+	}
+	if pin != nil && pin.Seq != head.Seq && !unanchored {
+		return result{next: []string{"yadm enclave list --json on a member prints the head fingerprint"}},
+			fmt.Errorf("%w: enclave %s: --expect matched entry %d of %d, not the head, so the read is not anchored: a machine removed after entry %d could have written the rest; pass the head fingerprint, or add --unanchored to accept that",
+				ErrRefused, enc, pin.Seq, head.Seq, pin.Seq)
 	}
 	key, err := recoverKey(idArg)
 	if err != nil {
@@ -218,7 +237,7 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 	anchor := "anchored by --expect"
 	switch {
 	case d.AnchoredSeq == 0:
-		anchor = "NOT anchored (no --expect)"
+		anchor = "NOT anchored (--unanchored)"
 	case !d.Anchored:
 		anchor = fmt.Sprintf("NOT anchored (--expect matched entry %d, not the head)", d.AnchoredSeq)
 	}
@@ -230,7 +249,7 @@ func (a *app) cmdEnclaveRecover(cmd *cobra.Command, args []string) (result, erro
 // unanchoredWhy says what an unanchored read does not prove.
 func unanchoredWhy(d recoverData) string {
 	if d.AnchoredSeq == 0 {
-		return "without --expect, a writer to the remote could have replaced the key log and these files together"
+		return "with --unanchored, a writer to the remote could have replaced the key log and these files together"
 	}
 	return fmt.Sprintf("--expect matched entry %d of %d; a machine that was a member at entry %d and was removed later could have written entries %d to %d and these files; pass the newest head fingerprint you kept",
 		d.AnchoredSeq, d.HeadSeq, d.AnchoredSeq, d.AnchoredSeq+1, d.HeadSeq)
