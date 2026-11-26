@@ -102,28 +102,7 @@ func checkStateDir(dir string) error {
 }
 
 func readKeyFile(p string) (model.MachineID, string, error) {
-	fi, err := os.Lstat(p)
-	if err != nil {
-		return "", "", err
-	}
-	if !fi.Mode().IsRegular() {
-		return "", "", fmt.Errorf("%s: not a regular file (a symlink or other type is refused)", filepath.Base(p))
-	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return "", "", fmt.Errorf("%s: mode %04o is readable by group or others; want 0600", filepath.Base(p), fi.Mode().Perm())
-	}
-	if !ownedByMe(fi) {
-		return "", "", fmt.Errorf("%s: owned by another user", filepath.Base(p))
-	}
-	f, err := openNoFollow(p)
-	if err != nil {
-		return "", "", err
-	}
-	defer f.Close()
-	if after, err := f.Stat(); err != nil || !os.SameFile(fi, after) {
-		return "", "", fmt.Errorf("%s: changed while it was read", filepath.Base(p))
-	}
-	b, err := io.ReadAll(f)
+	b, err := readSecretFile(p)
 	if err != nil {
 		return "", "", err
 	}
@@ -133,6 +112,36 @@ func readKeyFile(p string) (model.MachineID, string, error) {
 	}
 	return model.MachineID(strings.TrimPrefix(lines[0], machineComment)), strings.TrimSpace(lines[1]), nil
 }
+
+// readSecretFile reads a key file. It refuses a symlink, a file that is not
+// regular, one owned by another user, and one readable by group or others.
+func readSecretFile(p string) ([]byte, error) {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file (a symlink or other type is refused)", filepath.Base(p))
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%s: mode %04o is readable by group or others; want 0600", filepath.Base(p), fi.Mode().Perm())
+	}
+	if !ownedByMe(fi) {
+		return nil, fmt.Errorf("%s: owned by another user", filepath.Base(p))
+	}
+	f, err := openNoFollow(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if after, err := f.Stat(); err != nil || !os.SameFile(fi, after) {
+		return nil, fmt.Errorf("%s: changed while it was read", filepath.Base(p))
+	}
+	return io.ReadAll(io.LimitReader(f, maxKeyFile+1))
+}
+
+// maxKeyFile bounds a key file read; an identity file is under 200 bytes.
+const maxKeyFile = 64 << 10
 
 // Save writes the identity files with mode 0600.
 func (id *Identity) Save(stateDir string) error {

@@ -1,7 +1,8 @@
 // Package crypt owns enclave secrecy: machine identities, the signed key log
 // per enclave, epoch keys, and deterministic sealing of whole files, values and
 // text regions. Nothing here is a git filter; the tool seals and opens in
-// memory, and plaintext is written only to a member's $HOME or to stdout.
+// memory, and plaintext is written only to a member's $HOME, to stdout, or
+// to the new directory a recovery read writes.
 //
 // Construction (docs/design.md has the full rationale):
 //
@@ -64,6 +65,10 @@
 //	func Recover(head LogEntry, recovery *Identity, members []Member, pins PinStore) (LogEntry, *Keyring, error)
 //	func SetRecovery(head LogEntry, recovery *Identity, to Member, pins PinStore) (LogEntry, error)
 //	func Open(head LogEntry, id *Identity) (*Keyring, error)
+//	type RecoveryKey                    // the age half of a recovery identity: reads, never signs
+//	func ParseRecoveryKey(b []byte) (*RecoveryKey, error); func LoadRecoveryKey(path string) (*RecoveryKey, error)
+//	func (*RecoveryKey) Recipient() string
+//	func OpenRecovery(head LogEntry, r *RecoveryKey) (*Keyring, error) // the caller pins the log when it must trust the plaintext
 //	func LoadSet(logs map[model.EnclaveName][]LogEntry, pins PinStore, id *Identity) (*Set, map[model.EnclaveName]EnclaveLoad, error)
 //	type Keyring                        // one enclave's epoch keys
 //	func (*Keyring) SealFile(path, pt) / OpenFile(path, ct) / SealValue / OpenValue / SealRegion / OpenRegion

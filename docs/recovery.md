@@ -80,147 +80,69 @@ This is the normal "add a machine" flow. `yadm enclave --help` has the full text
 
 ## Case 2: no member machine survives
 
-You need the remote, read access to it, and the enclave's recovery identity.
+You need the remote, read access to it, and the enclave's recovery identity. Two steps exist:
+**read** the enclave, which works today, and **re-admit** a machine, which has no command yet.
 
-1. Install yadm and `age`, then run `yadm init <remote>` on the new machine.
-2. Restore the recovery identity into a directory (above) and check it (above).
-3. Make the new machine a member with the recovery identity: a `recover` entry, signed by the
-   recovery key, that names the new machine as the only member and starts a new epoch.
+### Read the enclave
 
-**Status: step 3 has no command yet.** The key-log format and the library support `recover`
-(design.md, section 7.3), but the CLI does not expose it. Until it does, no machine can become a
-member again, but you can still **read** the enclave with its recovery identity:
-
-1. Install Go, and clone this repository (the steps below were tested at commit `c82944e`):
+1. Install yadm and clone the remote with git: `git clone <remote> ~/dotfiles-src`. Reading
+   needs no `yadm init`. Read before you run `init`, or see the note on `--out` below.
+2. Restore the recovery identity (above) and check it (above). Reading needs only
+   `identity.age.key`.
+3. Open the enclave's sealed files into a new directory:
 
    ```sh
-   git clone https://github.com/noahkiss/yadm ~/yadm-src
-   git clone <remote> ~/dotfiles-src      # any clone of your dotfiles remote
+   yadm enclave recover personal --read-only \
+     --identity ~/recovery-personal/identity.age.key \
+     --expect <fingerprint> --repo ~/dotfiles-src --out ~/personal-plain
    ```
 
-2. Save the file below as `~/yadm-src/internal/crypt/zz_recoverread_test.go`. It uses the
-   package's internal API, so it must live inside that package.
-3. Run it. Choose a new output directory:
+   - `--identity -` reads the key from stdin instead, so it never touches the disk.
+   - Name paths after the enclave to open only those files or directories, for example
+     `.config/notes`. `--out -` prints one file to stdout.
+   - `--repo` defaults to the source clone.
+   - `--out` must be a new directory outside the clone and yadm's own directories, and
+     must hold no path the manifest manages. recover creates it with mode 0700 and writes
+     each file with mode 0600. On a machine that ran `yadm init` but cannot load its
+     manifest yet (for example, it is not in `fleet.toml`), `--out` must be outside `$HOME`.
 
-   ```sh
-   cd ~/yadm-src
-   BG_SOURCE=~/dotfiles-src BG_REC=~/recovery-personal BG_ENCLAVE=personal \
-     BG_OUT=~/personal-plain go test ./internal/crypt -run TestRecoveryRead -count=1 -v
-   ```
+   It verifies the key-log chain, opens the epoch keys with the recovery identity, and
+   opens every selected file in memory. It writes them only when all open. It writes nothing
+   to the clone or the key log and adds no member. It opens whole sealed files only, not
+   sealed values or regions inside plain files.
+4. Delete the output directory and the recovery directory when you are done.
 
-   It verifies the key-log chain, opens the epoch keys with the recovery identity, and writes every
-   sealed file of the enclave to `BG_OUT/<target path>`, mode 0600. `BG_PREFIX=<path>` limits it
-   to one subtree. It writes nothing to the clone or the key log. A wrong identity or a tampered
-   file fails: every file is authenticated.
-4. Delete `BG_OUT`, the recovery directory and the test file when you are done.
+**Why `--expect`.** Every file is authenticated under the keys the key log wraps, so a file
+sealed under the enclave's real keys never opens to other content. But anyone who can push to
+the remote can replace the key log and the sealed files together. Your recovery recipient is
+public, so a forged log can wrap the forger's keys to it. Without `--expect`, recover reports
+`not anchored`: the files match the log, but the log may not be yours. With `--expect` the log
+must contain the entry with that fingerprint, which no forger can produce. Then every file was
+sealed by a holder of the enclave's keys. A writer can still put back an older sealed version
+of a file.
 
-```go
-package crypt
+So keep a fingerprint with each recovery identity:
 
-// Break-glass read: open an enclave's sealed files with its recovery identity,
-// with no member machine left. Read-only: it writes nothing to the dotfiles
-// clone or its key log. Put this file at internal/crypt/zz_recoverread_test.go
-// in a clone of github.com/noahkiss/yadm, then run:
-//
-//   BG_SOURCE=<dotfiles clone> BG_REC=<0700 dir with identity.age.key and
-//   identity.sign.key> BG_ENCLAVE=personal BG_OUT=<new dir> [BG_PREFIX=<path>] \
-//   go test ./internal/crypt -run TestRecoveryRead -count=1 -v
-//
-// It verifies the key-log chain, unwraps the epoch keys with the recovery
-// identity, and writes every sealed file of the enclave (or only those under
-// BG_PREFIX) to BG_OUT/<target path>, mode 0600. A wrong identity or a
-// tampered file fails: AES-SIV authenticates every file.
+- `yadm enclave create` prints entry 1's fingerprint. It never changes.
+- On an existing enclave, run `yadm enclave list --json` on a member. Each row's
+  `fingerprint` is the head that member verified against its pin.
+- Any entry's fingerprint works for `--expect`, as long as the log still contains it.
 
-import (
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-	"testing"
+### Re-admit a machine
 
-	"github.com/noahkiss/yadm/internal/model"
-)
+Make the new machine a member with the recovery identity: a `recover` entry, signed by the
+recovery key, that names the new machine as the only member and starts a new epoch.
 
-func TestRecoveryRead(t *testing.T) {
-	src, rec, enc, out := os.Getenv("BG_SOURCE"), os.Getenv("BG_REC"), os.Getenv("BG_ENCLAVE"), os.Getenv("BG_OUT")
-	if src == "" || rec == "" || enc == "" || out == "" {
-		t.Skip("set BG_SOURCE, BG_REC, BG_ENCLAVE and BG_OUT")
-	}
-	prefix := os.Getenv("BG_PREFIX")
-	files, _ := filepath.Glob(filepath.Join(src, "keys", enc, "*.toml"))
-	sort.Strings(files)
-	if len(files) == 0 {
-		t.Fatalf("no key log under %s/keys/%s", src, enc)
-	}
-	var entries []LogEntry
-	for _, f := range files {
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		e, err := ParseLogEntry(raw)
-		if err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		entries = append(entries, e)
-	}
-	head, err := VerifyLog(entries, nil)
-	if err != nil {
-		t.Fatalf("key log does not verify: %v", err)
-	}
-	id, err := LoadIdentity(rec)
-	if err != nil {
-		t.Fatalf("recovery identity: %v", err)
-	}
-	k, err := Open(head, id)
-	if err != nil {
-		t.Fatalf("this identity does not open enclave %s: %v", enc, err)
-	}
-	t.Logf("enclave %s: chain verified to seq %d, epoch %d; keys opened", enc, head.Seq, head.Epoch)
-	root := filepath.Join(src, "sealed", enc)
-	n := 0
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		rel = filepath.ToSlash(rel)
-		if prefix != "" && !strings.HasPrefix(rel, prefix) {
-			return nil
-		}
-		ct, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		pt, err := k.OpenFile(model.SourcePath("sealed/"+enc+"/"+rel), ct)
-		if err != nil {
-			t.Errorf("%s: %v", rel, err)
-			return nil
-		}
-		dst := filepath.Join(out, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-			return err
-		}
-		n++
-		return os.WriteFile(dst, pt, 0o600)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("wrote %d files to %s", n, out)
-}
-```
+**Status: no command writes it yet.** The key-log format and the library support `recover`
+(design.md, section 7.3), but the CLI does not expose it. Until it does:
 
-Until the command exists:
-
+- read the enclave as above; no machine can become a member again;
 - the recovery identity is still the only key to the enclave. Keep it, and keep checking it
   yearly;
 - keep at least two member machines, ideally in two places, so Case 1 always applies.
 
-When the command ships, this section will give the exact invocation. It will also say how the
-new machine trusts the key log it has no pin for: a forged log can name your public recovery
-key, so the command must prove the log is yours before it seals anything new.
+When the command ships, this section will give the exact invocation. Like a read, it must
+prove the log is yours before it seals anything new.
 
 ## Retire a lost machine
 
@@ -259,16 +181,19 @@ What you lose with a recovery identity:
 | Lost | Effect |
 |---|---|
 | the recovery identity, members alive | nothing yet. The next total loss is unrecoverable |
-| every member, identity kept | nothing is lost: read with the procedure in Case 2; a new member needs the `recover` command |
+| every member, identity kept | nothing is lost: `enclave recover --read-only` reads it (Case 2); a new member needs the `recover` command |
 | every member and the identity | every sealed file of that enclave, for good |
 
 ## Yearly test
 
 1. Restore each enclave's recovery identity into a scratch directory.
 2. Run the check above: the `age1…` matches the newest key-log entry.
-3. Confirm the paper copy matches the password manager copy, line by line.
-4. Confirm at least two members are alive: `yadm enclave list`.
-5. Delete the scratch directory.
+3. Run the read (Case 2) with `--expect` into a scratch directory. It must report
+   `anchored`. Delete the directory.
+4. Confirm the paper copy matches the password manager copy, line by line.
+5. Confirm at least two members are alive: `yadm enclave list`.
+6. Delete the scratch directories.
 
-A full no-member drill belongs in a throwaway copy of the remote, never the real one: `recover`
-writes to an append-only key log.
+A full no-member drill, one that re-admits a machine, belongs in a throwaway copy of the remote,
+never the real one: re-admitting writes to an append-only key log. The read in step 3 writes
+nothing to the remote.

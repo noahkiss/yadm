@@ -59,6 +59,13 @@ func (a *app) registerEnclave(root *cobra.Command) {
 	sr.Flags().String("enclave", "", "enclave whose recovery identity changes")
 	sr.Flags().String("recovery-dir", "", "required: directory holding the current recovery identity")
 	addRecoveryFlags(sr)
+	rc := leaf(en, "recover <enclave> [path...]", "Read an enclave's sealed files with its recovery identity, when no member is left (--read-only)", a.cmdEnclaveRecover)
+	rc.Long = enclaveRecoverLong
+	rc.Flags().Bool("read-only", false, "required: read the enclave; writes nothing but --out (re-admitting a machine is not built yet)")
+	rc.Flags().String("identity", "", "the recovery identity.age.key file (mode 0600), or - to read it from stdin")
+	rc.Flags().String("out", "", "a new directory for the opened files (mode 0700, files 0600), or - to print one file to stdout")
+	rc.Flags().String("expect", "", "fingerprint of an entry of the enclave's key log, kept with the recovery identity; the log must contain it")
+	rc.Flags().String("repo", "", "a clone of the remote to read main from (default: the source clone)")
 }
 
 const enclaveLong = `An enclave is a set of files only its member machines can read. Members hold
@@ -197,6 +204,12 @@ func (m *machineEnv) recoveryGuard() recoveryGuard {
 // symlink or a case-insensitive file system leads nowhere else, and also
 // lexically, for a forbidden directory that does not exist yet.
 func (g recoveryGuard) check(dir, what string) error {
+	return g.checkFiles(dir, what, []string{crypt.AgeIdentityFile, crypt.SigningKeyFile})
+}
+
+// checkFiles is check for a directory that will hold the files names,
+// slash paths relative to dir.
+func (g recoveryGuard) checkFiles(dir, what string, names []string) error {
 	real := resolveExisting(dir)
 	for _, f := range g.forbidden {
 		if f == "" {
@@ -229,8 +242,8 @@ func (g recoveryGuard) check(dir, what string) error {
 	homes := []string{g.home, resolveExisting(g.home)}
 	for _, c := range []string{dir, real} {
 		for _, h := range homes {
-			for _, f := range []string{crypt.AgeIdentityFile, crypt.SigningKeyFile} {
-				t, err := target(h, filepath.Join(c, f))
+			for _, f := range names {
+				t, err := target(h, filepath.Join(c, filepath.FromSlash(f)))
 				if err != nil {
 					continue
 				}
