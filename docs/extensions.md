@@ -8,6 +8,10 @@ An extension is a separate `yadm-<name>` executable. `yadm <name>` runs it, and 
 - A first-party extension lives in `cmd/yadm-<name>`. It may import only `internal/cond`, `internal/rules`, `internal/extexec`, `internal/model` and `internal/render`. A test enforces this with `go list`. Everything else goes through the commands below.
 - An extension never reads enclave plaintext from the source clone. It reads targets in `$HOME` like any program on the machine, and asks yadm for everything else.
 
+## First-party extensions
+
+- `yadm-agents` generates every coding-agent harness's hook wiring on a machine from one units file, and shows the unit × harness × machine matrix. Its `tripwire` command warns at session start when a required guard is not wired. It ships in the release archive beside `yadm`. `cmd/yadm-agents/doc.go` states its contract.
+
 ## Exec contract (section 12.4)
 
 - Request on stdin: `schema = 1`, with `kind` (`subcommand`, `task`, `check`, `collector`, `nudge`, `notify`, `busy`, `news`), `name`, `session` (news), `machine`, `home`, `source`, `commit`, `changed`, `removed`, `trigger` and `args`; a check also gets `staged` and `entries`.
