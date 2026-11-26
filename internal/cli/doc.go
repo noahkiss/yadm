@@ -89,6 +89,10 @@
 //	                               committed with its entry atomically (sync.CommitOptions.Atomic), retired only once it landed;
 //	                               add without keys: crypt.Vouched over pinned logs, signer this machine or a member
 //	enclave new-recovery           crypt.GenerateIdentity + Save into a new directory; DefaultPaths only, no init
+//	enclave recover --read-only    git reads of main in --repo (store.Output), crypt.VerifyLog (--expect as the pin; neither
+//	                               --expect nor --unanchored, or a pin short of the head without --unanchored, refuses),
+//	                               crypt.LoadRecoveryKey or ParseRecoveryKey (stdin), crypt.OpenRecovery; opens every
+//	                               selected whole sealed file before it writes any, into a new --out (os.Root); no init
 //	review list|ok|revert          sync.Unreviewed (Snapshot.Readable), sync.Ack, store.CommitTree
 //	hold list|show|resolve         apply.Engine.Holds, ResolveHold; conflicts through sync.Commit{Resolve}
 //	lease take|release|list        sync.FileLeases

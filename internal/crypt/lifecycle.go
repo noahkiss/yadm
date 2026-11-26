@@ -60,7 +60,13 @@ func Open(head LogEntry, id *Identity) (*Keyring, error) {
 	if !holds(head, id) {
 		return nil, ErrNotMember
 	}
-	r, err := age.Decrypt(bytes.NewReader(head.Wrapped), id.age)
+	return unwrap(head, id.age)
+}
+
+// unwrap decrypts a head entry's wrapped keys with an age identity and
+// checks each key against the head's key commitments.
+func unwrap(head LogEntry, a age.Identity) (*Keyring, error) {
+	r, err := age.Decrypt(bytes.NewReader(head.Wrapped), a)
 	if err != nil {
 		return nil, fmt.Errorf("%w: unwrap: %v", ErrNotMember, err)
 	}
