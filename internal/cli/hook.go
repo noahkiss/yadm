@@ -33,6 +33,7 @@ const (
 	HookPostEdit     = "post-edit"
 	HookStop         = "stop"
 	HookSessionStart = "session-start"
+	HookPostTool     = "post-tool"
 
 	HookAllow = 0 // nothing to decide; stdout is empty or carries context
 	HookError = 1 // the hook failed; the harness goes on
@@ -144,7 +145,7 @@ type Option struct {
 func (a *app) registerHooks(root *cobra.Command) {
 	h := &cobra.Command{
 		Use:   "hook <event>",
-		Short: "Agent harness hook: post-edit, stop or session-start; reads harness JSON on stdin",
+		Short: "Agent harness hook: post-edit, post-tool, stop or session-start; reads harness JSON on stdin",
 		Args:  cobra.ArbitraryArgs,
 	}
 	h.Flags().String("format", "json", "json: one verdict object on stdout; text: the reason or context as plain text")
@@ -172,7 +173,7 @@ func (a *app) runHook(cmd *cobra.Command, args []string) int {
 		return HookError
 	}
 	if len(args) != 1 {
-		return fail(fmt.Errorf("want one event: %s, %s or %s", HookPostEdit, HookStop, HookSessionStart))
+		return fail(fmt.Errorf("want one event: %s, %s, %s or %s", HookPostEdit, HookPostTool, HookStop, HookSessionStart))
 	}
 	if format != "json" && format != "text" {
 		return fail(fmt.Errorf("--format %q: want json or text", format))
@@ -189,12 +190,17 @@ func (a *app) runHook(cmd *cobra.Command, args []string) int {
 	switch args[0] {
 	case HookPostEdit:
 		v, err = a.hookPostEdit(ctx, in)
+		if err == nil {
+			v, err = a.reportUntold(ctx, in, v)
+		}
 	case HookStop:
 		v, err = a.hookStop(ctx, in)
 	case HookSessionStart:
 		v, err = a.hookSessionStart(ctx, in)
+	case HookPostTool:
+		v, err = a.hookPostTool(ctx, in)
 	default:
-		return fail(fmt.Errorf("unknown event %q: want %s, %s or %s", args[0], HookPostEdit, HookStop, HookSessionStart))
+		return fail(fmt.Errorf("unknown event %q: want %s, %s, %s or %s", args[0], HookPostEdit, HookPostTool, HookStop, HookSessionStart))
 	}
 	if err != nil {
 		if errors.Is(err, errNotInitialized) {
@@ -279,9 +285,10 @@ func editedPath(in HookInput) string {
 // sessionRecord is one line of a session's record file.
 type sessionRecord struct {
 	At     time.Time    `json:"at"`
-	Target model.Target `json:"target"`
+	Target model.Target `json:"target,omitempty"`
 	Agent  string       `json:"agent,omitempty"`
 	Tool   string       `json:"tool,omitempty"`
+	Told   string       `json:"told,omitempty"` // a hold id a hook reported to Agent; such a line has no Target
 }
 
 func sessionFile(stateDir, session string) string {
@@ -312,20 +319,33 @@ func recordEdit(stateDir, session string, r sessionRecord) error {
 	return err
 }
 
-// sessionTargets lists the targets a session (or one of its agents) edited.
-func sessionTargets(stateDir, session, agent string) []model.Target {
+// sessionRecords reads a session's record file. A missing file is no
+// records: the session edited nothing a hook saw.
+func sessionRecords(stateDir, session string) []sessionRecord {
 	b, err := os.ReadFile(sessionFile(stateDir, session))
 	if err != nil {
 		return nil
 	}
-	seen := map[model.Target]bool{}
-	var out []model.Target
+	var out []sessionRecord
 	for _, l := range strings.Split(string(b), "\n") {
 		var r sessionRecord
-		if l == "" || json.Unmarshal([]byte(l), &r) != nil || r.Target == "" {
-			continue
+		if l != "" && json.Unmarshal([]byte(l), &r) == nil {
+			out = append(out, r)
 		}
-		if agent != "" && r.Agent != agent {
+	}
+	return out
+}
+
+// sessionTargets lists the targets a session (or one of its agents) edited.
+func sessionTargets(stateDir, session, agent string) []model.Target {
+	return editedTargets(sessionRecords(stateDir, session), agent)
+}
+
+func editedTargets(rs []sessionRecord, agent string) []model.Target {
+	seen := map[model.Target]bool{}
+	var out []model.Target
+	for _, r := range rs {
+		if r.Target == "" || (agent != "" && r.Agent != agent) {
 			continue
 		}
 		if !seen[r.Target] {
@@ -335,6 +355,113 @@ func sessionTargets(stateDir, session, agent string) []model.Target {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
+}
+
+// ---- untold decisions ----
+
+// untold returns the open decisions on the paths a session recorded that
+// no hook has reported to it yet: a hold the timer raised after the edit's
+// post-edit returned (a sync held the lock), or a conflict a later sync
+// met. A subagent (agent_id set) sees only its own paths. It reads the
+// session record, the state's holds, the defers and the leases, and takes
+// no lock, so it fits every tool call. Only a caller that builds a packet
+// from its result reads the source. Without a session_id nothing is
+// recorded, so nothing is untold; the told set comes back empty, not nil.
+func untold(stateDir string, in HookInput) ([]model.Hold, map[string]bool, error) {
+	if in.SessionID == "" {
+		return nil, map[string]bool{}, nil
+	}
+	rs := sessionRecords(stateDir, in.SessionID)
+	told := map[string]bool{}
+	for _, r := range rs {
+		if r.Told != "" && r.Agent == in.AgentID {
+			told[r.Told] = true
+		}
+	}
+	ts := editedTargets(rs, in.AgentID)
+	if len(ts) == 0 {
+		return nil, told, nil
+	}
+	st, err := apply.FileStateDB(stateDir).Load()
+	if err != nil {
+		return nil, nil, err
+	}
+	managed := map[model.Target]bool{}
+	for t := range st.Targets {
+		managed[t] = true
+	}
+	leasedTo := liveLeases(stateDir, ts)
+	var free, leased []model.Target
+	for _, t := range ts {
+		if _, ok := leasedTo[t]; ok {
+			leased = append(leased, t)
+		} else {
+			free = append(free, t)
+		}
+	}
+	deferred := running(loadDeferred(stateDir), hooks.now())
+	var out []model.Hold
+	for _, h := range mergeHolds(decisionsFor(st.Holds, free, deferred, managed), decisionsFor(leaseProof(st.Holds), leased, deferred, managed)) {
+		if !told[h.ID] {
+			out = append(out, h)
+		}
+	}
+	return out, told, nil
+}
+
+// reportUntold adds the session's untold decisions to v and records every
+// packet of the result as told, so each one reaches the agent once through
+// post-edit or post-tool. A post-edit raises the decisions on the path it
+// names on every edit, told or not; stop raises all of them.
+func (a *app) reportUntold(ctx context.Context, in HookInput, v Verdict) (Verdict, error) {
+	p, err := DefaultPaths()
+	if err != nil {
+		return v, err
+	}
+	hs, told, err := untold(p.State, in)
+	if err != nil {
+		return v, err
+	}
+	have := map[string]bool{}
+	for _, x := range v.Packets {
+		have[x.ID] = true
+	}
+	var fresh []model.Hold
+	for _, h := range hs {
+		if !have[h.ID] {
+			fresh = append(fresh, h)
+		}
+	}
+	if len(fresh) > 0 {
+		m, err := open(ctx)
+		if err != nil {
+			return v, err
+		}
+		_, _ = m.load(ctx)
+		ps := m.packets(ctx, fresh)
+		text := renderPackets(fmt.Sprintf("%d decision(s) on files this session edited are open; settle each one before you go on, or move it to the review queue with yadm defer", len(ps)), ps)
+		if v.Decision == DecisionBlock {
+			v.Reason += "\n" + text
+		} else {
+			v.Decision, v.Reason = DecisionBlock, text
+		}
+		v.Packets = append(v.Packets, ps...)
+	}
+	for _, x := range v.Packets {
+		if in.SessionID != "" && !told[x.ID] {
+			told[x.ID] = true
+			if err := recordEdit(p.State, in.SessionID, sessionRecord{At: hooks.now().UTC(), Agent: in.AgentID, Told: x.ID}); err != nil {
+				return v, err
+			}
+		}
+	}
+	return v, nil
+}
+
+// hookPostTool reports, once, each open decision on a path this session
+// edited that no hook has reported to it yet. It never commits.
+func (a *app) hookPostTool(ctx context.Context, in HookInput) (Verdict, error) {
+	return a.reportUntold(ctx, in, Verdict{})
 }
 
 // ---- leases ----
@@ -649,10 +776,9 @@ func (a *app) hookPostEdit(ctx context.Context, in HookInput) (Verdict, error) {
 		Paths: []model.Target{t}, Unattended: true, Trigger: sync.TriggerHook,
 		Session: in.SessionID, Tool: in.ToolName, Message: in.Intent, Push: false,
 	}, hooks.hookWait)
-	if errors.Is(err, sync.ErrLocked) || errors.Is(err, pause.ErrHeld) {
-		return Verdict{}, nil // a sync is running, or a fleet pause holds this machine; the path is recorded for stop and the timer
-	}
-	if err != nil {
+	// A running sync or a fleet pause leaves the path recorded for stop and
+	// the timer; a decision already open on it is still raised.
+	if err != nil && !errors.Is(err, sync.ErrLocked) && !errors.Is(err, pause.ErrHeld) {
 		return Verdict{}, err
 	}
 	hs, err := m.eng.Holds(ctx)
