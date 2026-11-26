@@ -72,6 +72,12 @@ func TestHookGateRefusalBlocksEdit(t *testing.T) {
 	if !strings.Contains(stderr, "check_failed: .config/tool/config") || !strings.Contains(stderr, "yadm defer") {
 		t.Fatalf("stderr lacks the check_failed packet:\n%s", stderr)
 	}
+	// Without a session_id (every input field is optional) the refusal
+	// still blocks with its packet; nothing is recorded as told.
+	code, stdout, stderr = hookRun(t, payload(payloadEdit, "", a.Home, file), HookPostEdit, "--format", "text")
+	if code != HookBlock || stdout != "" || !strings.Contains(stderr, "check_failed: .config/tool/config") {
+		t.Fatalf("post-edit without session_id: exit %d stdout %q stderr %q", code, stdout, stderr)
+	}
 }
 
 // TestHookPostToolReportsLaterHold: a hold the timer raises on a path a

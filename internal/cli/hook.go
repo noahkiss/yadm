@@ -363,11 +363,13 @@ func editedTargets(rs []sessionRecord, agent string) []model.Target {
 // no hook has reported to it yet: a hold the timer raised after the edit's
 // post-edit returned (a sync held the lock), or a conflict a later sync
 // met. A subagent (agent_id set) sees only its own paths. It reads the
-// session record, the state's holds, the defers and the leases; it takes
-// no lock and reads no source, so it fits every tool call.
+// session record, the state's holds, the defers and the leases, and takes
+// no lock, so it fits every tool call. Only a caller that builds a packet
+// from its result reads the source. Without a session_id nothing is
+// recorded, so nothing is untold; the told set comes back empty, not nil.
 func untold(stateDir string, in HookInput) ([]model.Hold, map[string]bool, error) {
 	if in.SessionID == "" {
-		return nil, nil, nil
+		return nil, map[string]bool{}, nil
 	}
 	rs := sessionRecords(stateDir, in.SessionID)
 	told := map[string]bool{}
@@ -446,7 +448,7 @@ func (a *app) reportUntold(ctx context.Context, in HookInput, v Verdict) (Verdic
 		v.Packets = append(v.Packets, ps...)
 	}
 	for _, x := range v.Packets {
-		if !told[x.ID] {
+		if in.SessionID != "" && !told[x.ID] {
 			told[x.ID] = true
 			if err := recordEdit(p.State, in.SessionID, sessionRecord{At: hooks.now().UTC(), Agent: in.AgentID, Told: x.ID}); err != nil {
 				return v, err
